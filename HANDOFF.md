@@ -112,6 +112,17 @@
    - 月次のときだけ「今年度累計」カードを追加表示（従来のダッシュボードKPIと整合）
    - 月別推移グラフは、月次選択時は「選んだ月までの12ヶ月」、それ以外は「選択期間そのもの」を表示
 
+## GitHub Pages公開（2026-07-28）
+
+- リポジトリ: https://github.com/akamar08taiyo-bot/taiyo-uriage-bunseki （public、mainブランチ直下のindex.htmlを配信）
+- 公開URL: **https://akamar08taiyo-bot.github.io/taiyo-uriage-bunseki/**
+- 初回セットアップ: `git init`→リポジトリ直下でcommit→`gh repo create --source=. --remote=origin`→push→
+  `gh api repos/.../pages -X POST -f "source[branch]=main" -f "source[path]=/"` でPages有効化
+- .gitignore: `build/node_modules/` `build/tailwind.output.css` `*.log` `_serve.cjs` `_testdata.csv`
+  （node_modulesはjspdf/html2canvas込みで数十MBあるため必ず除外。コミットされるのはビルド成果物のindex.htmlのみ）
+- 以後の更新手順は [[gh-pages-release]] スキル通り: `cd build && node build.js` → 検証 → `rtk git add index.html` → commit → push（1〜3分で反映）
+- 認証: ユーザーは`gh`未認証・ターミナル未経験だったため、その場で`gh auth login`のブラウザ認証を手順ごとに案内して完了させた
+
 ## CSV取込0件バグの修正（2026-07-28 第6次・重要）
 
 **現象**: 「このCSVデータが読み込めませんでした」。ユーザーが用意した最新の売上照会CSVが1件も取り込めない不具合。
