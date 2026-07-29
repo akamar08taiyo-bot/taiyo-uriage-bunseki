@@ -1,3 +1,5 @@
 build/node_modules/
 build/tailwind.output.css
 *.log
+_serve.cjs
+_testdata.csv

@@ -43,10 +43,10 @@ import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 import {
   LayoutDashboard, Building2, Users, Package, Warehouse, Upload, Settings,
-  Printer, X, Search, AlertTriangle, PhoneCall, ChevronDown, ChevronRight,
+  Printer, X, Search, AlertTriangle, PhoneCall, ChevronDown, ChevronUp, ChevronRight,
   FileSpreadsheet, Database, Trash2, Download, Info, CheckCircle2, Truck,
   TrendingDown, FileUp, ClipboardPaste, HardDrive, Sun, ArrowUpRight,
-  ArrowDownRight, JapaneseYen, Percent, Coins, ClipboardList
+  ArrowDownRight, JapaneseYen, Percent, Coins, ClipboardList, RotateCcw, Pencil
 } from 'lucide-react';
 
 /* ============================================================
@@ -120,18 +120,47 @@ const OFFICE_MASTER = [
   { name: '大分営業所', zip: '870-0142', addr: '大分県大分市三川下2-7-8', tel: '097-555-9684', fax: '097-555-9685', chief: '山下 厚' },
 ];
 const officeByName = (name) => OFFICE_MASTER.find(o => o.name === name) || null;
+// ポータル(taiyo-portal)でログイン済みなら、その営業所を初回選択の代わりに使う（同一オリジンのlocalStorageを参照するだけ）
+const portalSessionOffice = () => {
+  try {
+    const s = JSON.parse(localStorage.getItem('taiyo_portal_session') || 'null');
+    return s && officeByName(s.office) ? s.office : null;
+  } catch { return null; }
+};
 
 const DEFAULT_SETTINGS = { redPct: -50, yellowPct: -25, bufferDays: 7, stockMonths: 1, alertMinBase: 3000, office: null, reps: [] };
-const defaultMasters = () => ({ customers: {}, catOverrides: {}, catRules: [], priceOverrides: {}, itemHandling: {}, settings: { ...DEFAULT_SETTINGS } });
+const defaultMasters = () => ({
+  customers: {}, catOverrides: {}, catRules: [], priceOverrides: {}, itemHandling: {},
+  itemFacilityHandling: {}, stockQtyOverrides: {},
+  settings: { ...DEFAULT_SETTINGS },
+});
 const normalizeMasters = (m) => {
   if (!m || typeof m !== 'object') return defaultMasters();
   const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+  // 商品→施設→扱い のネストしたマップを検証（不正値は落として安全なオブジェクトだけ残す）
+  const HANDLING_VALUES = new Set(['stock', 'order', 'direct']);
+  const normFacilityHandling = (v) => {
+    const src = obj(v), out = {};
+    for (const prod in src) {
+      const facMap = obj(src[prod]), cleaned = {};
+      for (const fac in facMap) { if (HANDLING_VALUES.has(facMap[fac])) cleaned[fac] = facMap[fac]; }
+      if (Object.keys(cleaned).length) out[prod] = cleaned;
+    }
+    return out;
+  };
+  const normStockQtyOverrides = (v) => {
+    const src = obj(v), out = {};
+    for (const prod in src) { const n = Number(src[prod]); if (isFinite(n) && n >= 0) out[prod] = n; }
+    return out;
+  };
   return {
     customers: obj(m.customers),
     catOverrides: obj(m.catOverrides),
     catRules: Array.isArray(m.catRules) ? m.catRules.filter(r => r && r.kw && r.cat) : [],
     priceOverrides: obj(m.priceOverrides),
     itemHandling: obj(m.itemHandling),
+    itemFacilityHandling: normFacilityHandling(m.itemFacilityHandling),
+    stockQtyOverrides: normStockQtyOverrides(m.stockQtyOverrides),
     settings: {
       ...DEFAULT_SETTINGS, ...obj(m.settings),
       office: (m.settings && officeByName(m.settings.office)) ? m.settings.office : null,
@@ -471,7 +500,8 @@ function buildAnalytics(rows, masters, baseSel) {
     let pair = pairMap.get(pkey);
     if (!pair) {
       pair = { fac: name, prod: pname, direct: f.direct, qty12: zeros12(), sales12: zeros12(),
-               lastDate: null, lastPrice: 0, priceSort: -1, unit: '', unitSort: -1, baseAmt: 0, baseGross: 0 };
+               lastDate: null, lastPrice: 0, priceSort: -1, unit: '', unitSort: -1, baseAmt: 0, baseGross: 0,
+               orders: [] };
       pairMap.set(pkey, pair);
       f.pairs.push(pair);
       p.pairs.push(pair);
@@ -479,6 +509,7 @@ function buildAnalytics(rows, masters, baseSel) {
     if (inWin) {
       pair.qty12[slot] += qty; pair.sales12[slot] += amt;
       if (slot === 11) { pair.baseAmt += amt; pair.baseGross += gross; }
+      pair.orders.push({ idx: d.idx, no: r[0] });
     }
     if (!pair.lastDate || d.sort > pair.lastDate.sort) pair.lastDate = d;
     if (price > 0 && d.sort > pair.priceSort) { pair.lastPrice = price; pair.priceSort = d.sort; }
@@ -2155,6 +2186,9 @@ const HANDLING_PILL = {
   order: 'bg-violet-50 text-violet-600',
   direct: 'bg-amber-50 text-amber-600',
 };
+// 商品×施設の個別上書き（未設定なら在庫品として計上＝従来どおりの挙動と後方互換）
+const facHandlingOf = (product, facility, ifh) =>
+  (ifh[product] && ifh[product][facility]) || 'stock';
 
 function StockView({ data, masters, setMasters, showToast, openPrint }) {
   const [period, setPeriod] = useState(6);
@@ -2164,6 +2198,7 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
   const [catFilter, setCatFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [openProd, setOpenProd] = useState(null);
+  const [editQty, setEditQty] = useState(null); // 必要在庫を編集中の商品名
   const months = Math.max(0.5, +masters.settings.stockMonths || 1);
   const setMonths = (v) => setMasters(prev => ({ ...prev, settings: { ...prev.settings, stockMonths: v } }));
   const setHandling = (name, h) => setMasters(prev => {
@@ -2176,25 +2211,54 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
     if (v === resolveCategory(name, {}, prev.catRules).cat) delete co[name]; else co[name] = v;
     return { ...prev, catOverrides: co };
   });
+  // 商品×施設の個別上書きを更新（在庫品に戻すときはキー削除）
+  const setFacHandling = (product, facility, h) => setMasters(prev => {
+    const ifh = { ...prev.itemFacilityHandling };
+    const cur = { ...(ifh[product] || {}) };
+    if (h === 'stock') delete cur[facility]; else cur[facility] = h;
+    if (Object.keys(cur).length) ifh[product] = cur; else delete ifh[product];
+    return { ...prev, itemFacilityHandling: ifh };
+  });
+  const setStockQty = (name, v) => setMasters(prev => ({ ...prev, stockQtyOverrides: { ...prev.stockQtyOverrides, [name]: v } }));
+  const clearStockQty = (name) => setMasters(prev => {
+    const so = { ...prev.stockQtyOverrides };
+    delete so[name];
+    return { ...prev, stockQtyOverrides: so };
+  });
 
-  // 非直送施設への出荷実績から商品ごとの在庫指標を計算
+  // 非直送施設への出荷実績から商品ごとの在庫指標を計算（施設ごとの扱いが「在庫品」のものだけを合算）
   const stockAll = useMemo(() => {
     const start = 12 - period;
+    const periodStartIdx = data.win[start];
+    const ifh = masters.itemFacilityHandling;
     const list = [];
     for (const p of data.products) {
-      const slice = p.qtyND12.slice(start);
-      let tot = 0;
-      for (let i = 0; i < slice.length; i++) tot += slice[i];
-      if (tot <= 0) continue;
-      const avg = tot / period;
-      const mx = Math.max(...slice);
+      const monthTotals = zeros12();
+      const orderSet = new Set();
+      let periodQty = 0;
+      const breakdown = [];
+      for (const pair of p.pairs) {
+        if (pair.direct) continue;   // 施設全体が直送フラグの場合は従来通り対象外（表示もしない）
+        const resolved = facHandlingOf(p.name, pair.fac, ifh);
+        const included = resolved === 'stock';
+        const slice = pair.qty12.slice(start);
+        let t = 0; for (let i = 0; i < slice.length; i++) t += slice[i];
+        breakdown.push({ fac: pair.fac, avg: t / period, handling: resolved, included });
+        if (included) {
+          for (let i = 0; i < 12; i++) monthTotals[i] += pair.qty12[i];
+          periodQty += t;
+          for (let i = 0; i < pair.orders.length; i++) { if (pair.orders[i].idx >= periodStartIdx) orderSet.add(pair.orders[i].no); }
+        }
+      }
+      if (periodQty <= 0) continue;
+      breakdown.sort((a, b) => b.avg - a.avg);
+      const avg = periodQty / period;
+      const mx = Math.max(...monthTotals.slice(start));
       const cost = p.cost > 0 ? p.cost : 0;
-      const breakdown = p.pairs.filter(x => !x.direct)
-        .map(x => { const s2 = x.qty12.slice(start); let t = 0; for (let i = 0; i < s2.length; i++) t += s2[i]; return [x.fac, t / period]; })
-        .filter(x => x[1] > 0).sort((a, b) => b[1] - a[1]).slice(0, 6);
+      const avgPerOrder = orderSet.size > 0 ? periodQty / orderSet.size : null;
       list.push({
         name: p.name, cat: p.cat, catSrc: p.catSrc, unit: p.unit || '', supplier: p.supplier || '（仕入先未設定）',
-        avg, max: mx, cost, breakdown, tot,
+        avg, max: mx, cost, breakdown, tot: periodQty, avgPerOrder, orderCount: orderSet.size,
         handling: handlingOf(p.name, masters.itemHandling),
         classified: masters.itemHandling[p.name] !== undefined,
       });
@@ -2218,7 +2282,12 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
   }, [stockAll, handlingTab, catFilter, search]);
   const visible = filtered.slice(0, 100);
 
-  const calc = (p) => Math.max(0, Math.ceil(p.avg * months));
+  const rawCalc = (p) => Math.max(0, Math.ceil(p.avg * months));
+  const calc = (p) => {
+    const ov = masters.stockQtyOverrides[p.name];
+    return ov !== undefined ? ov : rawCalc(p);
+  };
+  const hasOverride = (p) => masters.stockQtyOverrides[p.name] !== undefined;
 
   // 絞り込み中の商品をまとめて分類（例:「部材」を全部 受注発注 にする）
   const bulkHandling = (h) => {
@@ -2232,10 +2301,10 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
   };
 
   const handleCsv = () => {
-    const head = ['商品名', '分類', '扱い', '仕入先', '単位', '月平均出荷', '最大月出荷', '必要在庫', '仕入単価'];
+    const head = ['商品名', '分類', '扱い', '仕入先', '単位', '月平均出荷', '最大月出荷', '必要在庫', '平均発注数', '仕入単価'];
     const lines = filtered.map(p => [
       p.name, p.cat, HANDLING_LABELS[p.handling], p.supplier, p.unit,
-      fmtQty(p.avg), fmtQty(p.max), calc(p), p.cost,
+      fmtQty(p.avg), fmtQty(p.max), calc(p), p.avgPerOrder != null ? fmtQty(p.avgPerOrder) : '', p.cost,
     ]);
     downloadText('適正在庫_' + todayCompact() + '.csv', buildCsv([head, ...lines]), 'text/csv');
     showToast('CSVを出力しました（Excelでそのまま開けます）');
@@ -2244,18 +2313,18 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
   return (
     <div className="space-y-4">
       <Card className="px-5 py-4 flex items-center gap-5 flex-wrap">
-        <span className="text-sm font-bold text-slate-500">計算条件</span>
-        <label className="inline-flex items-center gap-2 text-sm text-slate-600 font-bold">
+        <span className="text-sm font-bold text-slate-600">計算条件</span>
+        <label className="inline-flex items-center gap-2 text-sm text-slate-700 font-bold">
           在庫回数
           <input type="number" min="0.5" max="12" step="0.5" value={months}
             onChange={e => setMonths(Math.max(0.5, parseFloat(e.target.value || '1')))}
             className="h-10 w-16 px-2 rounded-xl border border-amber-300 bg-amber-50 text-right tabular-nums font-bold text-amber-800 focus:outline-none focus:border-amber-400" />
           回分
         </label>
-        <label className="inline-flex items-center gap-2 text-sm text-slate-600 font-bold">
+        <label className="inline-flex items-center gap-2 text-sm text-slate-700 font-bold">
           対象期間
           <select value={period} onChange={e => setPeriod(+e.target.value)}
-            className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-600">
+            className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-700">
             <option value={6}>過去6ヶ月</option>
             <option value={12}>過去12ヶ月</option>
           </select>
@@ -2285,11 +2354,11 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
             下の一覧で在庫を置く商品だけを<b className="text-sky-700">在庫品</b>に変えてください。必要在庫の計算対象は在庫品だけです。
           </div>
           <div className="mt-2 flex items-center gap-2 flex-wrap">
-            <span className="text-[11px] text-slate-500 font-bold tabular-nums">分類済み {num(counts.done)} / {num(stockAll.length)}件</span>
+            <span className="text-[11px] text-slate-600 font-bold tabular-nums">分類済み {num(counts.done)} / {num(stockAll.length)}件</span>
             <div className="w-40 bg-white rounded-full h-1.5 overflow-hidden border border-slate-200">
               <div className="bg-sky-400 h-full rounded-full" style={{ width: (stockAll.length ? Math.round(counts.done / stockAll.length * 100) : 0) + '%' }} />
             </div>
-            <span className="text-[11px] text-slate-400">在庫品 {num(counts.stock)} ／ 受注発注 {num(counts.order)} ／ 直送品 {num(counts.direct)}</span>
+            <span className="text-[11px] text-slate-500">在庫品 {num(counts.stock)} ／ 受注発注 {num(counts.order)} ／ 直送品 {num(counts.direct)}</span>
           </div>
         </div>
       </div>
@@ -2298,12 +2367,12 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
         <Segmented value={handlingTab} onChange={setHandlingTab}
           options={[['stock', '在庫品 ' + counts.stock], ['order', '受注発注 ' + counts.order], ['direct', '直送品 ' + counts.direct], ['all', 'すべて']]} />
         <select value={catFilter} onChange={e => setCatFilter(e.target.value)}
-          className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-600">
+          className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-700">
           <option value="all">すべての分類</option>
           {CATEGORY_NAMES.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
         <div className="relative">
-          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="商品名・仕入先で検索"
             className="h-10 pl-9 pr-3 rounded-xl border border-slate-200 text-sm w-52 bg-white shadow-sm focus:border-blue-400 focus:outline-none transition" />
         </div>
@@ -2311,7 +2380,7 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
 
       {(catFilter !== 'all' || search.trim()) && filtered.length > 0 && (
         <div className="flex items-center gap-2 bg-white border border-slate-200/70 rounded-2xl px-5 py-3 flex-wrap shadow-sm">
-          <span className="text-xs font-bold text-slate-500 tabular-nums">絞り込み中の {num(filtered.length)}件をまとめて:</span>
+          <span className="text-xs font-bold text-slate-600 tabular-nums">絞り込み中の {num(filtered.length)}件をまとめて:</span>
           {['stock', 'order', 'direct'].map(h => (
             <button key={h} onClick={() => bulkHandling(h)}
               className={"text-xs font-bold px-3 py-1.5 rounded-full transition text-white " +
@@ -2323,30 +2392,35 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
       )}
 
       <Card className="overflow-x-auto">
-        <table className="w-full text-sm min-w-[900px]">
+        <table className="w-full text-sm min-w-[860px]">
           <thead>
-            <tr className="text-[11px] uppercase tracking-wide text-slate-400 border-b border-slate-100">
+            <tr className="text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-100">
               <th className="text-left font-bold px-5 py-3">商品名</th>
               <th className="text-left font-bold px-2 py-3 w-[190px]">扱い</th>
               <th className="text-right font-bold px-2 py-3 pr-4">月平均出荷</th>
               <th className="text-right font-bold px-2 py-3 pr-4">最大月</th>
               <th className="text-right font-bold px-2 py-3 pr-4">必要在庫</th>
               <th className="text-right font-bold px-2 py-3 pr-4">仕入単価</th>
-              <th className="text-left font-bold px-2 py-3">単位</th>
               <th className="w-10"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-50">
-            {visible.map(p => (
+            {visible.map(p => {
+              const isOpen = openProd === p.name;
+              const editing = editQty === p.name;
+              return (
               <React.Fragment key={p.name}>
-                <tr onClick={() => setOpenProd(openProd === p.name ? null : p.name)}
-                  className={"cursor-pointer transition " + (openProd === p.name ? 'bg-sky-50/80' : 'hover:bg-slate-50')}>
+                <tr onClick={() => { setOpenProd(isOpen ? null : p.name); setEditQty(null); }}
+                  className={"cursor-pointer transition " + (isOpen ? 'bg-sky-50/80' : 'hover:bg-sky-50/50 hover:ring-1 hover:ring-inset hover:ring-sky-200')}>
                   <td className="px-5 py-3">
-                    <div className="font-bold text-slate-700">{p.name}</div>
-                    <div className="text-[10px] text-slate-400 flex items-center gap-1.5">
-                      <span className="bg-slate-100 text-slate-600 font-bold px-1.5 py-0.5 rounded-md">{p.cat}</span>
-                      <span className={"font-bold " + (p.catSrc === '手動' ? 'text-fuchsia-500' : p.catSrc === '学習' ? 'text-teal-500' : 'text-slate-300')}>{p.catSrc}</span>
+                    <div className="font-bold text-slate-800">{p.name}</div>
+                    <div className="text-[10px] text-slate-500 flex items-center gap-1.5 flex-wrap">
+                      <span className="bg-slate-100 text-slate-700 font-bold px-1.5 py-0.5 rounded-md">{p.cat}</span>
+                      <span className={"font-bold " + (p.catSrc === '手動' ? 'text-fuchsia-500' : p.catSrc === '学習' ? 'text-teal-500' : 'text-slate-400')}>{p.catSrc}</span>
                       {p.supplier}
+                      <span className="text-sky-600 font-bold inline-flex items-center gap-0.5">
+                        {isOpen ? <>閉じる <ChevronUp size={11} /></> : <>タップで詳細 <ChevronDown size={11} /></>}
+                      </span>
                     </div>
                   </td>
                   <td className="px-2 py-3" onClick={e => e.stopPropagation()}>
@@ -2356,68 +2430,116 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
                           className={"text-[10px] font-bold px-2 py-1 rounded-md transition " +
                             (p.handling === h
                               ? (h === 'stock' ? 'bg-sky-500 text-white shadow-sm' : h === 'order' ? 'bg-violet-500 text-white shadow-sm' : 'bg-amber-500 text-white shadow-sm')
-                              : 'text-slate-500 hover:text-slate-700')}>
+                              : 'text-slate-600 hover:text-slate-800')}>
                           {HANDLING_LABELS[h]}
                         </button>
                       ))}
                     </div>
                   </td>
-                  <td className="px-2 py-3 pr-4 text-right tabular-nums text-slate-500">{fmtQty(p.avg)}</td>
-                  <td className="px-2 py-3 pr-4 text-right tabular-nums text-slate-500">{fmtQty(p.max)}</td>
-                  <td className="px-2 py-3 pr-4 text-right">
-                    <span className="bg-sky-100 text-sky-700 font-extrabold tabular-nums px-2.5 py-1 rounded-lg">{calc(p)}</span>
+                  <td className="px-2 py-3 pr-4 text-right tabular-nums text-slate-700">{fmtQty(p.avg)}<span className="text-[10px] text-slate-500 ml-0.5">{p.unit}</span></td>
+                  <td className="px-2 py-3 pr-4 text-right tabular-nums text-slate-700">{fmtQty(p.max)}<span className="text-[10px] text-slate-500 ml-0.5">{p.unit}</span></td>
+                  <td className="px-2 py-3 pr-4 text-right" onClick={e => e.stopPropagation()}>
+                    {editing ? (
+                      <div className="inline-flex items-center gap-1">
+                        <input type="number" min="0" autoFocus defaultValue={calc(p)}
+                          onBlur={e => { const v = Math.max(0, parseInt(e.target.value || '0', 10)); setStockQty(p.name, v); setEditQty(null); }}
+                          onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setEditQty(null); }}
+                          className="h-8 w-20 px-2 rounded-lg border border-sky-300 bg-sky-50 text-right tabular-nums text-sm font-bold text-sky-800 focus:outline-none" />
+                        <span className="text-[10px] text-slate-500">{p.unit}</span>
+                      </div>
+                    ) : (
+                      <div className="inline-flex items-center gap-1">
+                        {hasOverride(p) && (
+                          <button onClick={() => clearStockQty(p.name)} title="自動計算に戻す"
+                            className="text-slate-400 hover:text-rose-500 transition"><RotateCcw size={12} /></button>
+                        )}
+                        <button onClick={() => setEditQty(p.name)}
+                          className={"font-extrabold tabular-nums px-2.5 py-1 rounded-lg inline-flex items-center gap-1 transition " +
+                            (hasOverride(p) ? 'bg-fuchsia-100 text-fuchsia-700 hover:bg-fuchsia-200' : 'bg-sky-100 text-sky-700 hover:bg-sky-200')}>
+                          {calc(p)}<span className="text-[10px] font-bold">{p.unit}</span> <Pencil size={10} className="opacity-60" />
+                        </button>
+                      </div>
+                    )}
                   </td>
-                  <td className="px-2 py-3 pr-4 text-right tabular-nums text-slate-500">{p.cost > 0 ? yen(p.cost) : '—'}</td>
-                  <td className="px-2 py-3 text-slate-400 text-xs font-bold">{p.unit}</td>
-                  <td className="pr-4 text-slate-300">{openProd === p.name ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</td>
+                  <td className="px-2 py-3 pr-4 text-right tabular-nums text-slate-700">{p.cost > 0 ? yen(p.cost) : '—'}</td>
+                  <td className="pr-4 text-slate-400">{isOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</td>
                 </tr>
-                {openProd === p.name && (
+                {isOpen && (
                   <tr>
-                    <td colSpan={8} className="bg-slate-50/70 px-6 py-3.5">
+                    <td colSpan={7} className="bg-slate-50/70 px-6 py-3.5">
                       <div className="flex items-center gap-2 mb-3 flex-wrap" onClick={e => e.stopPropagation()}>
-                        <span className="text-[11px] font-bold text-slate-400">分類:</span>
+                        <span className="text-[11px] font-bold text-slate-500">分類:</span>
                         <select value={p.cat} onChange={e => setCat(p.name, e.target.value)}
-                          className="h-9 px-2.5 rounded-lg border border-slate-200 bg-white text-xs shadow-sm font-bold text-slate-600">
+                          className="h-9 px-2.5 rounded-lg border border-slate-200 bg-white text-xs shadow-sm font-bold text-slate-700">
                           {CATEGORY_NAMES.map(c => <option key={c} value={c}>{c}</option>)}
                         </select>
                         <span className={"text-[10px] font-bold px-2 py-1 rounded-full " +
-                          (p.catSrc === '手動' ? 'bg-fuchsia-100 text-fuchsia-700' : p.catSrc === '学習' ? 'bg-teal-100 text-teal-700' : 'bg-slate-100 text-slate-400')}>
+                          (p.catSrc === '手動' ? 'bg-fuchsia-100 text-fuchsia-700' : p.catSrc === '学習' ? 'bg-teal-100 text-teal-700' : 'bg-slate-100 text-slate-500')}>
                           {p.catSrc === '手動' ? '手動で設定' : p.catSrc === '学習' ? '学習ルールで判定' : '商品名から自動判定'}
                         </span>
-                        <span className="text-[10px] text-slate-400">同じ言葉を含む商品をまとめて分類したいときは 設定→商品分類 のキーワード学習ルールへ</span>
+                        <span className="text-[10px] text-slate-500">同じ言葉を含む商品をまとめて分類したいときは 設定→商品分類 のキーワード学習ルールへ</span>
                       </div>
-                      <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wide mb-2">内訳：非直送施設への月平均出荷</div>
+
+                      <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wide mb-2">施設消費一覧（施設ごとに扱いを個別設定できます）</div>
                       <div className="flex gap-2 flex-wrap">
-                        {p.breakdown.map(([f, q], i) => (
-                          <span key={i} className="bg-white border border-slate-200/70 rounded-lg px-2.5 py-1 text-xs text-slate-600 shadow-sm">
-                            {f} <span className="font-extrabold tabular-nums text-slate-800">{fmtQty(q)}{p.unit}</span>
-                          </span>
+                        {p.breakdown.map((b, i) => (
+                          <div key={i} className={"flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 border shadow-sm " +
+                            (b.included ? 'bg-white border-slate-200/70' : 'bg-slate-100/70 border-slate-200 opacity-60')}>
+                            <span className="text-xs text-slate-700">
+                              {b.fac} <span className="font-extrabold tabular-nums text-slate-800">{fmtQty(b.avg)}{p.unit}</span>
+                            </span>
+                            <div className="inline-flex bg-slate-100 rounded-md p-0.5 gap-0.5">
+                              {['stock', 'order', 'direct'].map(h => (
+                                <button key={h} onClick={() => setFacHandling(p.name, b.fac, h)}
+                                  className={"text-[9px] font-bold px-1.5 py-0.5 rounded transition " +
+                                    (b.handling === h
+                                      ? (h === 'stock' ? 'bg-sky-500 text-white' : h === 'order' ? 'bg-violet-500 text-white' : 'bg-amber-500 text-white')
+                                      : 'text-slate-500 hover:text-slate-700')}>
+                                  {HANDLING_LABELS[h].slice(0, 2)}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
                         ))}
+                        {p.breakdown.length === 0 && <span className="text-xs text-slate-500">非直送施設への出荷実績がありません</span>}
                       </div>
-                      <div className="text-[11px] text-slate-500 mt-2.5 tabular-nums">
-                        計算: 月平均 {fmtQty(p.avg)}{p.unit} × {months}回分 = <b className="text-sky-700">{calc(p)}{p.unit}</b>（最大月 {fmtQty(p.max)}{p.unit} は参考値）
+                      <div className="text-[10px] text-slate-500 mt-1.5">
+                        グレー表示の施設は「在庫品」以外に設定済み ＝ この商品の必要在庫の計算から除外されています。ボタンで「{HANDLING_LABELS.stock}」に戻すと再度カウントされます。
                       </div>
-                      <div className="text-[10px] text-slate-400 mt-2">受注発注・直送品は在庫を持たない商品です（扱いの変更は行の「扱い」ボタンから）</div>
+
+                      <div className="text-[11px] text-slate-600 mt-3 tabular-nums">
+                        計算: 月平均 {fmtQty(p.avg)}{p.unit} × {months}回分 = <b className="text-sky-700">{rawCalc(p)}{p.unit}</b>
+                        {hasOverride(p) && <span className="ml-1.5 text-fuchsia-600 font-bold">（手動入力中: {calc(p)}{p.unit}）</span>}
+                        （最大月 {fmtQty(p.max)}{p.unit} は参考値）
+                      </div>
+                      {p.avgPerOrder != null && (
+                        <div className="text-[11px] text-slate-600 mt-1 tabular-nums">
+                          一回あたりの平均発注数: <b className="text-slate-800">{fmtQty(p.avgPerOrder)}{p.unit}</b>（対象期間中 {num(p.orderCount)}回の発注）
+                        </div>
+                      )}
+                      <div className="text-[10px] text-slate-500 mt-2">受注発注・直送品は在庫を持たない商品です（商品全体の扱いは行の「扱い」ボタンから）</div>
                     </td>
                   </tr>
                 )}
               </React.Fragment>
-            ))}
+              );
+            })}
             {visible.length === 0 && (
-              <tr><td colSpan={8} className="px-5 py-10 text-center text-sm text-slate-400">該当する商品がありません（施設直送分は在庫集計の対象外です）</td></tr>
+              <tr><td colSpan={7} className="px-5 py-10 text-center text-sm text-slate-500">該当する商品がありません（施設直送分は在庫集計の対象外です）</td></tr>
             )}
           </tbody>
         </table>
         {filtered.length > visible.length && (
-          <div className="px-5 py-2.5 text-[11px] text-slate-400 border-t border-slate-50">出荷量の多い順に{visible.length}件を表示中（全{num(filtered.length)}件）— 検索で絞り込めます。CSV出力は全件が対象です</div>
+          <div className="px-5 py-2.5 text-[11px] text-slate-500 border-t border-slate-50">出荷量の多い順に{visible.length}件を表示中（全{num(filtered.length)}件）— 検索で絞り込めます。CSV出力は全件が対象です</div>
         )}
       </Card>
 
       <div className="bg-sky-50/70 border border-sky-100 rounded-2xl px-5 py-4 text-xs text-slate-600 flex gap-3">
         <Info size={16} className="text-sky-500 shrink-0 mt-0.5" />
         <div className="leading-relaxed">
-          <b className="text-slate-700">必要在庫 = 月平均出荷 × 在庫回数（初期値は1回分＝1ヶ月分）</b> — 余剰在庫を持ちすぎないよう、直近実績の平均を基準にしています。数量は非直送施設への出荷実績のみで計算しています。<br />
-          <b className="text-slate-700">在庫品</b>＝営業所に在庫を置く商品（この必要在庫を目安に補充）／<b className="text-slate-700">受注発注</b>＝注文が来てから仕入れる商品（初期値）／<b className="text-slate-700">直送品</b>＝仕入先から施設へ直接届く商品。分類は行の「扱い」ボタン、または絞り込み後の一括変更で切り替えられます。
+          <b className="text-slate-700">必要在庫 = 月平均出荷 × 在庫回数（初期値は1回分＝1ヶ月分）</b> — 余剰在庫を持ちすぎないよう、直近実績の平均を基準にしています。数量は非直送施設への出荷実績のみで計算しています。計算結果は右側の鉛筆アイコンから手動で上書きできます。<br />
+          <b className="text-slate-700">在庫品</b>＝営業所に在庫を置く商品（この必要在庫を目安に補充）／<b className="text-slate-700">受注発注</b>＝注文が来てから仕入れる商品（初期値）／<b className="text-slate-700">直送品</b>＝仕入先から施設へ直接届く商品。商品全体の扱いは行の「扱い」ボタン、または絞り込み後の一括変更で切り替えられます。<br />
+          商品名をタップして開くと、<b className="text-slate-700">施設ごとに個別の扱い</b>も設定できます（同じ商品でも施設Aは在庫品・施設Bは直送、といった使い分けが可能です）。
         </div>
       </div>
     </div>
@@ -3237,6 +3359,8 @@ function SettingsView({ rows, masters, setRows, setMasters, setOffice, meta, set
           catOverrides: { ...imp.masters.catOverrides, ...prev.catOverrides },
           priceOverrides: { ...imp.masters.priceOverrides, ...prev.priceOverrides },
           itemHandling: { ...imp.masters.itemHandling, ...prev.itemHandling },
+          itemFacilityHandling: { ...imp.masters.itemFacilityHandling, ...prev.itemFacilityHandling },
+          stockQtyOverrides: { ...imp.masters.stockQtyOverrides, ...prev.stockQtyOverrides },
           settings: { ...prev.settings, reps: [...new Set([...(prev.settings.reps || []), ...(imp.masters.settings.reps || [])])] },
         };
       });
@@ -3677,7 +3801,14 @@ const TABS = [
 function App() {
   const [tab, setTab] = useState('dash');
   const [rows, setRows] = useState(() => loadStorage(K.ROWS, []));
-  const [masters, setMasters] = useState(() => normalizeMasters(loadStorage(K.MASTERS, null)));
+  const [masters, setMasters] = useState(() => {
+    const loaded = normalizeMasters(loadStorage(K.MASTERS, null));
+    if (!loaded.settings.office) {
+      const portalOffice = portalSessionOffice();
+      if (portalOffice) loaded.settings.office = portalOffice;
+    }
+    return loaded;
+  });
   const [meta, setMeta] = useState(() => loadStorage(K.META, { schema: 1 }));
   const [docs, setDocs] = useState(() => {
     const v = loadStorage(K.DOCS, []);
