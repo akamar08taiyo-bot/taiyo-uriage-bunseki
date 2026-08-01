@@ -377,7 +377,7 @@ function classifyCustomerName(rawName) {
 ============================================================ */
 const CATEGORY_NAMES = [
   'オムツ・パッド', '紙製品', '手袋・マスク', '清拭・入浴', '衛生用品', '洗剤類', '栄養補助食品',
-  'ポータブルトイレ用品', 'リハビリ・福祉用具', '部材', '施設消耗品', '住宅改修', 'その他',
+  'ポータブルトイレ用品', 'ベッド・車いす・歩行器', 'リハビリ・福祉用具', 'マット・モップ', '部材', 'ゴミ袋・ポリ袋', '住宅改修', 'その他',
 ];
 // 順番が重要: 上から順に最初に当たった分類を採用
 const CAT_RULES = [
@@ -385,17 +385,19 @@ const CAT_RULES = [
   ['部材', ['丸棒', 'ブラケット', 'ベースプレート', 'インテリアバー', 'アッシュ', 'ディンプル', 'エンドキャップ', '部材', 'ジョイント', '座金', 'ビス', 'ネジ', '取付金具', 'フランジ']],
   ['栄養補助食品', ['とろみ', 'ゼリー', '栄養', 'ミルク', '飲料', '介護食', '流動食', 'ムース', 'プリン', 'スープ', 'ジュース', 'ドリンク']],
   ['手袋・マスク', ['手袋', 'グローブ', 'マスク', 'エプロン', '指サック', 'ガウン', 'フェイスシールド']],
-  ['オムツ・パッド', ['パンツ', 'パッド', 'パット', 'オムツ', 'おむつ', 'おしりふき', 'お尻ふき', '尿とり', '尿取り', 'テープ止', 'ライナー', 'サルバ', 'アテント', 'リフレ', 'いちばん', '防水シーツ']],
+  ['オムツ・パッド', ['パンツ', 'パッド', 'パット', 'オムツ', 'おむつ', 'おしりふき', 'お尻ふき', '尿とり', '尿取り', 'テープ止', 'ライナー', 'サルバ', 'アテント', 'リフレ', 'いちばん', '防水シーツ', 'ウェットワイプ']],
   ['紙製品', ['トイレット', 'トイレッ', 'ティシュ', 'ティッシュ', 'ペーパータオル', 'キッチンタオル', 'キッチンペーパー', 'ペーパー', '芯なし', 'シングル', 'ダブル', 'ロールタオル', '紙タオル']],
   ['清拭・入浴', ['清拭', 'タオル', 'シャンプー', 'リンス', '入浴', 'バス', 'ボディ', '石鹸', 'せっけん', 'ソープ', '洗髪', '沐浴']],
   // 衛生用品: 手指消毒・除菌・アルコール類（洗剤とは別に分離）
   ['衛生用品', ['ハンドスキッシュ', 'サンマルチ', '手指消毒', '手指消毒剤', '除菌', '消毒', 'アルコール', '抗菌', 'ウェットティッシュ', 'ウェットワイパー', '除菌シート']],
   // 洗剤類: 台所用・住居用・漂白剤など（メーカー名も手がかりに含める）
   ['洗剤類', ['洗剤', '漂白', 'ハイター', 'キッチンハイター', 'ブリーチ', '花王', 'ライオン', 'P&G', 'ファブリーズ', '柔軟剤', 'クリーナー', '中性洗剤']],
-  ['施設消耗品', ['ゴミ袋', 'ポリ袋', 'レジ袋', '規格袋', 'ウェット', 'カップ', '電池', 'スリッパ', 'ラップフィルム30cm']],
+  ['ゴミ袋・ポリ袋', ['ゴミ袋', 'ポリ袋', 'レジ袋', '規格袋']],
   ['ポータブルトイレ用品', ['ポータブルトイレ', 'トイレ', '凝固', 'ラップ', 'フィルム', '消臭', '防臭', '排泄袋', '尿器', 'しびん', '採尿']],
   ['オムツ・パッド', ['シーツ', 'シート']],
-  ['リハビリ・福祉用具', ['車いす', '車椅子', '歩行', '杖', 'ステッキ', '手すり', 'スロープ', 'マット', 'ベッド', 'クッション', 'ポジショニング', 'リハビリ', '福祉', 'スプーン', '自助', '徘徊', 'センサー', '体位', '入れ歯', '補聴']],
+  ['ベッド・車いす・歩行器', ['車いす', '車椅子', '歩行', 'ベッド']],
+  ['マット・モップ', ['マット', 'モップ', 'マイクロクロス']],
+  ['リハビリ・福祉用具', ['杖', 'ステッキ', '手すり', 'スロープ', 'クッション', 'ポジショニング', 'リハビリ', '福祉', 'スプーン', '自助', '徘徊', 'センサー', '体位', '入れ歯', '補聴']],
 ];
 const _catCache = new Map();
 function autoCategory(rawName) {
@@ -1142,8 +1144,8 @@ function KpiCard({ icon: Icon, tint, label, value, delta, deltaSuffix, note, ext
         <span className={"inline-flex items-center justify-center w-9 h-9 rounded-xl shrink-0 " + tint}>
           <Icon size={17} />
         </span>
-        <div className="flex items-center gap-1.5 min-w-0">
-          {note && <span className="text-[10px] text-slate-600 font-bold whitespace-nowrap">{note}</span>}
+        <div className="flex items-center flex-wrap justify-end gap-1.5 min-w-0">
+          {note && <span className="text-[10px] text-slate-600 font-bold text-right">{note}</span>}
           {delta !== undefined && <DeltaPill v={delta} suffix={deltaSuffix} />}
         </div>
       </div>
@@ -1440,7 +1442,7 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
         <KpiCard icon={Building2} tint="bg-amber-50 text-amber-600" label="取引施設" value={rep.kpi.count + '件'} note="施設のみ集計" />
         {repType === 'month' && (
           <KpiCard icon={ClipboardList} tint="bg-teal-50 text-teal-600" label={data.fyLabel + '累計'} value={yen(fyTotal.sales)}
-            delta={fyTotal.pct === null ? undefined : fyTotal.pct} note={fyPrevLabel + '比・' + data.fyRangeLabel}
+            delta={fyTotal.pct === null ? undefined : fyTotal.pct} note={fyPrevLabel + '比'}
             extra={(
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[10px] text-slate-600 font-bold">{fyPrevLabel}同期（{fyPrevRangeLabel}）</span>
@@ -2630,8 +2632,8 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
                       <div className="flex gap-2 flex-wrap">
                         {p.breakdown.map((b, i) => (
                           <div key={i} className={"flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 border shadow-sm " +
-                            (b.included ? 'bg-white border-slate-200/70' : 'bg-slate-100/70 border-slate-200 opacity-60')}>
-                            <span className="text-xs font-semibold text-slate-900">
+                            (b.included ? 'bg-white border-slate-200/70' : 'bg-slate-100 border-slate-300')}>
+                            <span className="text-xs font-bold text-slate-900">
                               {b.fac} <span className="font-extrabold tabular-nums text-slate-900">{fmtQty(b.avg)}{p.unit}</span>
                             </span>
                             <div className="inline-flex bg-slate-100 rounded-md p-0.5 gap-0.5">
@@ -4372,6 +4374,12 @@ function App() {
               <h1 className="font-extrabold text-slate-800 text-lg leading-tight truncate">{current.label}</h1>
               <div className="text-[11px] text-slate-600 truncate">{current.sub}</div>
             </div>
+            {tab !== 'import' && (
+              <button onClick={() => setTab('import')}
+                className="h-10 px-3.5 rounded-xl border border-emerald-300 bg-white hover:bg-emerald-50 hover:border-emerald-400 active:scale-[.98] text-emerald-700 text-sm shadow-sm font-bold shrink-0 transition inline-flex items-center gap-1.5">
+                <FileUp size={15} /> 最新データを取り込む
+              </button>
+            )}
             {monthsDesc.length > 0 && (
               <select value={data.baseIdx} onChange={e => setBaseSel(+e.target.value)}
                 className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-600 shrink-0">
