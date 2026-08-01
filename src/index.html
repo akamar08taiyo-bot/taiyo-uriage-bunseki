@@ -1138,11 +1138,14 @@ function DeltaPill({ v, suffix }) {
 function KpiCard({ icon: Icon, tint, label, value, delta, deltaSuffix, note, extra }) {
   return (
     <div className="bg-white rounded-2xl border border-slate-200/70 shadow-sm hover:shadow-md transition p-4 flex-1 min-w-[160px]">
-      <div className="flex items-center justify-between">
-        <span className={"inline-flex items-center justify-center w-9 h-9 rounded-xl " + tint}>
+      <div className="flex items-center justify-between gap-2">
+        <span className={"inline-flex items-center justify-center w-9 h-9 rounded-xl shrink-0 " + tint}>
           <Icon size={17} />
         </span>
-        {delta !== undefined ? <DeltaPill v={delta} suffix={deltaSuffix} /> : note ? <span className="text-[10px] text-slate-600 font-bold">{note}</span> : null}
+        <div className="flex items-center gap-1.5 min-w-0">
+          {note && <span className="text-[10px] text-slate-600 font-bold whitespace-nowrap">{note}</span>}
+          {delta !== undefined && <DeltaPill v={delta} suffix={deltaSuffix} />}
+        </div>
       </div>
       <div className="text-2xl font-extrabold text-slate-800 tabular-nums mt-2.5 leading-none">{value}</div>
       <div className="text-xs text-slate-700 font-bold mt-1.5">{label}</div>
@@ -1417,7 +1420,7 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
       </div>
       <div className="flex gap-3 flex-wrap">
         <KpiCard icon={JapaneseYen} tint="bg-blue-50 text-blue-600" label="純売上" value={yen(rep.kpi.sales)}
-          delta={momSales === null ? undefined : momSales} note={spec.prevName ? spec.prevName + '比 —' : '全期間'}
+          delta={momSales === null ? undefined : momSales} note={spec.prevName ? spec.prevName + '比' : '全期間'}
           extra={repType === 'month' && (
             <div className="flex items-center justify-between gap-2">
               <span className="text-[10px] text-slate-600 font-bold">前年同月比（{yoyLabel}）</span>
@@ -1425,7 +1428,7 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
             </div>
           )} />
         <KpiCard icon={Coins} tint="bg-emerald-50 text-emerald-600" label="粗利額" value={yen(rep.kpi.gross)}
-          delta={momGross === null ? undefined : momGross} note={spec.prevName ? spec.prevName + '比 —' : '全期間'}
+          delta={momGross === null ? undefined : momGross} note={spec.prevName ? spec.prevName + '比' : '全期間'}
           extra={repType === 'month' && (
             <div className="flex items-center justify-between gap-2">
               <span className="text-[10px] text-slate-600 font-bold">前年同月比（{yoyLabel}）</span>
@@ -1437,7 +1440,7 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
         <KpiCard icon={Building2} tint="bg-amber-50 text-amber-600" label="取引施設" value={rep.kpi.count + '件'} note="施設のみ集計" />
         {repType === 'month' && (
           <KpiCard icon={ClipboardList} tint="bg-teal-50 text-teal-600" label={data.fyLabel + '累計'} value={yen(fyTotal.sales)}
-            delta={fyTotal.pct === null ? undefined : fyTotal.pct} note={data.fyRangeLabel}
+            delta={fyTotal.pct === null ? undefined : fyTotal.pct} note={fyPrevLabel + '比・' + data.fyRangeLabel}
             extra={(
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[10px] text-slate-600 font-bold">{fyPrevLabel}同期（{fyPrevRangeLabel}）</span>
@@ -1833,7 +1836,7 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
 
         {/* 基本指標 */}
         <div className="flex gap-3 flex-wrap">
-          <KpiCard icon={JapaneseYen} tint="bg-blue-50 text-blue-600" label="今月売上" value={yen(f.monthly[11])} delta={f.pct} deltaSuffix="%" />
+          <KpiCard icon={JapaneseYen} tint="bg-blue-50 text-blue-600" label="今月売上" value={yen(f.monthly[11])} delta={f.pct} deltaSuffix="%" note="直近3ヶ月平均比" />
           <KpiCard icon={Coins} tint="bg-emerald-50 text-emerald-600" label="月平均" value={yen(f.avg)} note="12ヶ月" />
           <KpiCard icon={JapaneseYen} tint="bg-sky-50 text-sky-600" label="年間累計" value={yen(f.winSum)} note="12ヶ月" />
           <KpiCard icon={Percent} tint="bg-violet-50 text-violet-600" label="粗利率" value={f.margin + '%'} note="12ヶ月" />
