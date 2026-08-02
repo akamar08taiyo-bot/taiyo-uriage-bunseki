@@ -1166,9 +1166,11 @@ function DeltaPill({ v, suffix }) {
   return <span className="bg-slate-100 text-slate-700 text-xs font-bold px-2 py-0.5 rounded-full tabular-nums">±0{suffix || '%'}</span>;
 }
 
-function KpiCard({ icon: Icon, tint, label, value, delta, deltaSuffix, note, extra }) {
+function KpiCard({ icon: Icon, tint, label, value, delta, deltaSuffix, note, extra, onClick }) {
   return (
-    <div className="bg-white rounded-2xl border border-slate-200/70 shadow-sm hover:shadow-md transition p-4 flex-1 min-w-[160px]">
+    <div onClick={onClick}
+      className={"bg-white rounded-2xl border border-slate-200/70 shadow-sm hover:shadow-md transition p-4 flex-1 min-w-[160px]" + (onClick ? ' cursor-pointer hover:border-sky-300 active:scale-[.99]' : '')}
+      title={onClick ? '施設別の内訳を見る' : undefined}>
       <div className="flex items-center justify-between gap-2">
         <span className={"inline-flex items-center justify-center w-9 h-9 rounded-xl shrink-0 " + tint}>
           <Icon size={17} />
@@ -1179,8 +1181,93 @@ function KpiCard({ icon: Icon, tint, label, value, delta, deltaSuffix, note, ext
         </div>
       </div>
       <div className="text-2xl font-extrabold text-slate-800 tabular-nums mt-2.5 leading-none">{value}</div>
-      <div className="text-xs text-slate-700 font-bold mt-1.5">{label}</div>
+      <div className="text-xs text-slate-700 font-bold mt-1.5 flex items-center gap-1">
+        {label}
+        {onClick && <span className="text-[10px] text-sky-600 font-bold">（施設別を見る）</span>}
+      </div>
       {extra && <div className="mt-2 pt-2 border-t border-slate-100">{extra}</div>}
+    </div>
+  );
+}
+
+// 施設別ランキング(buildPeriodReportのranking)2本を突き合わせ、当期・前期・差分を施設ごとに算出する。
+// metric: 'sales' | 'gross' | 'margin'。取引施設カード用に新規/離脱施設も判定できるようnameのSetも返す。
+function buildFacilityComparison(curRanking, prevRanking, metric) {
+  const curMap = new Map((curRanking || []).map(f => [f.name, f]));
+  const prevMap = new Map((prevRanking || []).map(f => [f.name, f]));
+  const names = new Set([...curMap.keys(), ...prevMap.keys()]);
+  const rows = [...names].map(name => {
+    const c = curMap.get(name), p = prevMap.get(name);
+    const curVal = c ? (c[metric] ?? 0) : 0;
+    const prevVal = p ? (p[metric] ?? 0) : 0;
+    return {
+      name,
+      repName: (c || p).repName,
+      curVal, prevVal,
+      diff: curVal - prevVal,
+      isNew: !!c && !p,
+      isGone: !c && !!p,
+    };
+  });
+  rows.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+  return rows;
+}
+
+function KpiDrilldownModal({ title, curLabel, prevLabel, curRanking, prevRanking, metric, unit, onClose }) {
+  const rows = React.useMemo(() => buildFacilityComparison(curRanking, prevRanking, metric), [curRanking, prevRanking, metric]);
+  const fmt = (v) => unit === '%' ? v.toFixed(1) + '%' : yen(v);
+  const fmtDiff = (v) => unit === '%' ? (v > 0 ? '+' : '') + v.toFixed(1) + 'pt' : (v > 0 ? '+' : '') + yen(v);
+  const increased = rows.filter(r => r.diff > 0).length;
+  const decreased = rows.filter(r => r.diff < 0).length;
+  return (
+    <div className="fixed inset-0 z-40 bg-slate-600/50 backdrop-blur-sm overflow-auto py-8 px-4 no-print" onClick={onClose}>
+      <div className="max-w-2xl mx-auto bg-white rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-3 bg-gradient-to-r from-sky-50 to-blue-50">
+          <span className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-sky-100 text-sky-600"><Building2 size={17} /></span>
+          <div className="flex-1 min-w-0">
+            <div className="font-extrabold text-slate-800">{title}：施設別の増減</div>
+            <div className="text-[11px] text-slate-600">{prevLabel} → {curLabel}</div>
+          </div>
+          <button onClick={onClose} className="text-slate-600 hover:text-slate-800 transition"><X size={20} /></button>
+        </div>
+        <div className="px-6 pt-4 flex gap-4 text-xs text-slate-600 font-bold">
+          <span className="text-emerald-600">増加 {increased}施設</span>
+          <span className="text-rose-600">減少 {decreased}施設</span>
+        </div>
+        <div className="max-h-[60vh] overflow-auto px-6 py-4">
+          {rows.length === 0 ? (
+            <div className="text-sm text-slate-600 text-center py-6">比較できるデータがありません。</div>
+          ) : (
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-slate-600 border-b border-slate-200">
+                  <th className="text-left font-bold py-2">施設名</th>
+                  <th className="text-right font-bold py-2">{prevLabel}</th>
+                  <th className="text-right font-bold py-2">{curLabel}</th>
+                  <th className="text-right font-bold py-2">増減</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(r => (
+                  <tr key={r.name} className="border-b border-slate-100">
+                    <td className="py-2 text-slate-800 font-bold">
+                      {r.name}
+                      {r.isNew && <span className="ml-1.5 text-[10px] text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-full font-bold">新規</span>}
+                      {r.isGone && <span className="ml-1.5 text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-full font-bold">離脱</span>}
+                    </td>
+                    <td className="py-2 text-right text-slate-600 tabular-nums">{fmt(r.prevVal)}</td>
+                    <td className="py-2 text-right text-slate-800 tabular-nums font-bold">{fmt(r.curVal)}</td>
+                    <td className={"py-2 text-right tabular-nums font-bold " + (r.diff > 0 ? 'text-emerald-600' : r.diff < 0 ? 'text-rose-600' : 'text-slate-500')}>{fmtDiff(r.diff)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div className="px-6 py-4 flex justify-end border-t border-slate-100">
+          <button onClick={onClose} className="bg-slate-100 hover:bg-slate-200 active:scale-[.98] text-slate-700 px-4 py-2.5 rounded-xl text-sm font-bold transition">閉じる</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1289,6 +1376,7 @@ function EmptyState({ goImport }) {
 function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office, showToast }) {
   const [repType, setRepType] = useState('month');
   const [consumableOnly, setConsumableOnly] = useState(false);
+  const [drilldown, setDrilldown] = useState(null); // KPIカードの施設別内訳モーダル
   const [repMonth, setRepMonth] = useState(data.baseIdx);
   const [repFy, setRepFy] = useState(Math.floor(fiscalStartIdx(data.baseIdx) / 12));
   const [customFrom, setCustomFrom] = useState(data.monthsAll[0] ?? data.baseIdx);
@@ -1342,6 +1430,9 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
   const yoyPctSales = yoyRep ? pctYoy(rep.kpi.sales, yoyRep.kpi.sales) : null;
   const yoyPctGross = yoyRep ? pctYoy(rep.kpi.gross, yoyRep.kpi.gross) : null;
   const yoyLabel = repType === 'month' ? idxLabel(repMonth - 12) : '';
+  // KPIカードの施設別ドリルダウン用：月次モードは前年同月、それ以外は選択期間の直前と比較する
+  const compareRep = repType === 'month' ? yoyRep : prevRep;
+  const compareLabel = repType === 'month' ? (yoyLabel + '（前年同月）') : (spec.prevName || '前期');
 
   // 推移グラフ: 月次は選んだ月までの12ヶ月、それ以外は期間内の各月
   const chartRep = useMemo(() => (repType === 'month' ? buildPeriodReport(rows, masters, repMonth - 11, repMonth, consumableOnly) : rep),
@@ -1469,6 +1560,7 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
       <div className="flex gap-3 flex-wrap">
         <KpiCard icon={JapaneseYen} tint="bg-blue-50 text-blue-600" label="純売上" value={yen(rep.kpi.sales)}
           delta={momSales === null ? undefined : momSales} note={spec.prevName ? spec.prevName + '比' : '全期間'}
+          onClick={() => setDrilldown({ title: '純売上', curLabel: spec.label, prevLabel: compareLabel, curRanking: rep.ranking, prevRanking: compareRep ? compareRep.ranking : [], metric: 'sales', unit: '¥' })}
           extra={repType === 'month' && (
             <div className="flex items-center justify-between gap-2">
               <span className="text-[10px] text-slate-600 font-bold">前年同月比（{yoyLabel}）</span>
@@ -1477,6 +1569,7 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
           )} />
         <KpiCard icon={Coins} tint="bg-emerald-50 text-emerald-600" label="粗利額" value={yen(rep.kpi.gross)}
           delta={momGross === null ? undefined : momGross} note={spec.prevName ? spec.prevName + '比' : '全期間'}
+          onClick={() => setDrilldown({ title: '粗利額', curLabel: spec.label, prevLabel: compareLabel, curRanking: rep.ranking, prevRanking: compareRep ? compareRep.ranking : [], metric: 'gross', unit: '¥' })}
           extra={repType === 'month' && (
             <div className="flex items-center justify-between gap-2">
               <span className="text-[10px] text-slate-600 font-bold">前年同月比（{yoyLabel}）</span>
@@ -1484,11 +1577,14 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
             </div>
           )} />
         <KpiCard icon={Percent} tint="bg-violet-50 text-violet-600" label="粗利率" value={rep.kpi.rate + '%'}
-          note={hasPrev ? spec.prevName + ' ' + prevRep.kpi.rate + '%' : '—'} />
-        <KpiCard icon={Building2} tint="bg-amber-50 text-amber-600" label="取引施設" value={rep.kpi.count + '件'} note="施設のみ集計" />
+          note={hasPrev ? spec.prevName + ' ' + prevRep.kpi.rate + '%' : '—'}
+          onClick={() => setDrilldown({ title: '粗利率', curLabel: spec.label, prevLabel: compareLabel, curRanking: rep.ranking, prevRanking: compareRep ? compareRep.ranking : [], metric: 'margin', unit: '%' })} />
+        <KpiCard icon={Building2} tint="bg-amber-50 text-amber-600" label="取引施設" value={rep.kpi.count + '件'} note="施設のみ集計"
+          onClick={() => setDrilldown({ title: '取引施設', curLabel: spec.label, prevLabel: compareLabel, curRanking: rep.ranking, prevRanking: compareRep ? compareRep.ranking : [], metric: 'sales', unit: '¥' })} />
         {repType === 'month' && (
           <KpiCard icon={ClipboardList} tint="bg-teal-50 text-teal-600" label={data.fyLabel + '累計'} value={yen(fyTotal.sales)}
             delta={fyTotal.pct === null ? undefined : fyTotal.pct} note={fyPrevLabel + '比'}
+            onClick={() => setDrilldown({ title: data.fyLabel + '累計', curLabel: data.fyLabel, prevLabel: fyPrevLabel, curRanking: fyRepCur ? fyRepCur.ranking : [], prevRanking: fyRepPrev ? fyRepPrev.ranking : [], metric: 'sales', unit: '¥' })}
             extra={(
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[10px] text-slate-600 font-bold">{fyPrevLabel}同期（{fyPrevRangeLabel}）</span>
@@ -1497,6 +1593,7 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
             )} />
         )}
       </div>
+      {drilldown && <KpiDrilldownModal {...drilldown} onClose={() => setDrilldown(null)} />}
 
       {/* ランキング2枚 */}
       <div className="grid lg:grid-cols-2 gap-4">
@@ -2671,7 +2768,7 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
                           (p.catSrc === '手動' ? 'bg-fuchsia-100 text-fuchsia-700' : p.catSrc === '学習' ? 'bg-teal-100 text-teal-700' : 'bg-slate-100 text-slate-800')}>
                           {p.catSrc === '手動' ? '手動で設定' : p.catSrc === '学習' ? '学習ルールで判定' : '商品名から自動判定'}
                         </span>
-                        <span className="text-[10px] text-slate-700 font-semibold">同じ言葉を含む商品をまとめて分類したいときは 設定→商品分類 のキーワード学習ルールへ</span>
+                        <span className="text-[10px] text-slate-900 font-semibold">同じ言葉を含む商品をまとめて分類したいときは 設定→商品分類 のキーワード学習ルールへ</span>
                       </div>
 
                       <div className="text-[11px] font-bold text-slate-900 uppercase tracking-wide mb-2">施設消費一覧（施設ごとに扱いを個別設定できます）</div>
@@ -2688,20 +2785,20 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
                                   className={"text-[9px] font-bold px-1.5 py-0.5 rounded transition " +
                                     (b.handling === h
                                       ? (h === 'stock' ? 'bg-sky-500 text-white' : 'bg-violet-500 text-white')
-                                      : 'text-slate-800 hover:text-slate-900')}>
+                                      : 'text-slate-900 hover:text-slate-900')}>
                                   {HANDLING_LABELS[h].slice(0, 2)}
                                 </button>
                               ))}
                             </div>
                           </div>
                         ))}
-                        {p.breakdown.length === 0 && <span className="text-xs font-semibold text-slate-800">非直送施設への出荷実績がありません</span>}
+                        {p.breakdown.length === 0 && <span className="text-xs font-semibold text-slate-900">非直送施設への出荷実績がありません</span>}
                       </div>
-                      <div className="text-[10px] text-slate-700 font-medium mt-1.5">
+                      <div className="text-[10px] text-slate-900 font-medium mt-1.5">
                         すべての施設は最初「{HANDLING_LABELS.order}」＝この商品の必要在庫の計算から除外された状態です。実際に在庫を置いている施設だけ、ボタンで「{HANDLING_LABELS.stock}」に変えてください（変えた施設だけ白背景で表示されます）。
                       </div>
 
-                      <div className="text-[11px] font-semibold text-slate-800 mt-3 tabular-nums flex items-center gap-1.5 flex-wrap" onClick={e => e.stopPropagation()}>
+                      <div className="text-[11px] font-semibold text-slate-900 mt-3 tabular-nums flex items-center gap-1.5 flex-wrap" onClick={e => e.stopPropagation()}>
                         <span>計算: 月平均 {fmtQty(p.avg)}{p.unit} ×</span>
                         {editMonth === p.name ? (
                           <select autoFocus defaultValue={0.25}
@@ -2713,23 +2810,23 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
                         ) : (
                           <button onClick={() => setEditMonth(p.name)}
                             className={"text-xs font-bold px-1.5 py-0.5 rounded-md inline-flex items-center gap-0.5 transition " +
-                              (hasMonthOverride(p) ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-slate-100 text-slate-800 hover:bg-slate-200')}>
+                              (hasMonthOverride(p) ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-slate-100 text-slate-900 hover:bg-slate-200')}>
                             {hasMonthOverride(p) ? monthLabel(monthsFor(p)) : '共通（' + monthLabel(months) + '）'} <Pencil size={9} className="opacity-60" />
                           </button>
                         )}
                         {hasMonthOverride(p) && (
-                          <button onClick={() => clearStockMonth(p.name)} title="共通設定に戻す" className="text-slate-500 hover:text-rose-500 transition"><RotateCcw size={11} /></button>
+                          <button onClick={() => clearStockMonth(p.name)} title="共通設定に戻す" className="text-slate-700 hover:text-rose-500 transition"><RotateCcw size={11} /></button>
                         )}
                         <span>回分 = <b className="text-sky-700">{rawCalc(p)}{p.unit}</b></span>
                         {hasOverride(p) && <span className="text-fuchsia-600 font-bold">（手動入力中: {calc(p)}{p.unit}）</span>}
                         <span>（最大月 {fmtQty(p.max)}{p.unit} は参考値）</span>
                       </div>
                       {p.avgPerOrder != null && (
-                        <div className="text-[11px] font-semibold text-slate-800 mt-1 tabular-nums">
+                        <div className="text-[11px] font-semibold text-slate-900 mt-1 tabular-nums">
                           一回あたりの平均発注数: <b className="text-slate-900">{fmtQty(p.avgPerOrder)}{p.unit}</b>（対象期間中 {num(p.orderCount)}回の発注）
                         </div>
                       )}
-                      <div className="text-[10px] text-slate-700 font-medium mt-2">受注発注は在庫を持たない商品です（商品全体の扱いは行の「扱い」ボタンから）</div>
+                      <div className="text-[10px] text-slate-900 font-medium mt-2">受注発注は在庫を持たない商品です（商品全体の扱いは行の「扱い」ボタンから）</div>
                     </td>
                   </tr>
                 )}
