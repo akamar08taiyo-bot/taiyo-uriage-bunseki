@@ -49,7 +49,7 @@ import {
   Printer, X, Search, AlertTriangle, PhoneCall, ChevronDown, ChevronUp, ChevronRight,
   FileSpreadsheet, Database, Trash2, Download, Info, CheckCircle2, Truck,
   TrendingDown, FileUp, ClipboardPaste, HardDrive, Sun, ArrowUpRight,
-  ArrowDownRight, JapaneseYen, Percent, Coins, ClipboardList, RotateCcw, Pencil, FilePlus, CalendarDays
+  ArrowDownRight, JapaneseYen, Percent, Coins, ClipboardList, RotateCcw, Pencil, FilePlus, CalendarDays, Filter
 } from 'lucide-react';
 
 /* ============================================================
@@ -372,6 +372,23 @@ function classifyCustomerName(rawName) {
   return { type: 'facility', uncertain: true };
 }
 
+// 「消耗品のみ」集計から除外する対象の判定。
+// 地域包括支援センター経由の個人名（例:「築上町包括　水ノ江」）や、姓名のみの表記（例:「水ノ江」「熊本　千佳」）は
+// 住宅改修など個人向け取引であることが多いため対象外とする。○○工務店・株式会社等の実事業者名は除外しない。
+const PERSON_TOKEN_RE = /^[一-鿿゠-ヿー々〆ヶ]{1,6}$/;
+function looksLikeIndividualRecipient(rawName) {
+  const name = String(rawName || '').normalize('NFKC').trim();
+  if (!name) return false;
+  if (name.includes('包括')) return true;
+  for (let i = 0; i < FACILITY_KEYWORDS_STRONG.length; i++) {
+    if (FACILITY_KEYWORDS_STRONG[i] !== '包括' && name.includes(FACILITY_KEYWORDS_STRONG[i])) return false;
+  }
+  const tokens = name.split(/\s+/).filter(Boolean);
+  if (tokens.length === 1) return PERSON_TOKEN_RE.test(tokens[0]);
+  if (tokens.length === 2) return PERSON_TOKEN_RE.test(tokens[0]) && PERSON_TOKEN_RE.test(tokens[1]);
+  return false;
+}
+
 /* ============================================================
    商品分類辞書（キーワード自動分類。手直し catOverrides が常に優先）
 ============================================================ */
@@ -386,10 +403,11 @@ const CAT_RULES = [
   ['栄養補助食品', ['とろみ', 'ゼリー', '栄養', 'ミルク', '飲料', '介護食', '流動食', 'ムース', 'プリン', 'スープ', 'ジュース', 'ドリンク']],
   ['手袋・マスク', ['手袋', 'グローブ', 'マスク', 'エプロン', '指サック', 'ガウン', 'フェイスシールド']],
   ['オムツ・パッド', ['パンツ', 'パッド', 'パット', 'オムツ', 'おむつ', 'おしりふき', 'お尻ふき', '尿とり', '尿取り', 'テープ止', 'ライナー', 'サルバ', 'アテント', 'リフレ', 'いちばん', '防水シーツ', 'ウェットワイプ']],
-  ['紙製品', ['トイレット', 'トイレッ', 'ティシュ', 'ティッシュ', 'ペーパータオル', 'キッチンタオル', 'キッチンペーパー', 'ペーパー', '芯なし', 'シングル', 'ダブル', 'ロールタオル', '紙タオル']],
+  ['紙製品', ['トイレット', 'トイレッ', 'ティシュ', 'ティッシュ', 'ペーパータオル', 'キッチンタオル', 'キッチンペーパー', 'ペーパー', '芯なし', 'シングル', 'ダブル', 'ロールタオル', '紙タオル', 'ベルライト']],
+  // 衛生用品: 手指消毒・除菌・アルコール類・ハンドソープ（洗剤・清拭用品とは別に分離）
+  // 「清拭・入浴」の"ソープ"より先に評価し、ハンドソープを確実に衛生用品として拾う
+  ['衛生用品', ['ハンドスキッシュ', 'サンマルチ', '手指消毒', '手指消毒剤', '除菌', '消毒', 'アルコール', '抗菌', 'ウェットティッシュ', 'ウェットワイパー', '除菌シート', 'ケアマイルド', 'ハンドソープ']],
   ['清拭・入浴', ['清拭', 'タオル', 'シャンプー', 'リンス', '入浴', 'バス', 'ボディ', '石鹸', 'せっけん', 'ソープ', '洗髪', '沐浴']],
-  // 衛生用品: 手指消毒・除菌・アルコール類（洗剤とは別に分離）
-  ['衛生用品', ['ハンドスキッシュ', 'サンマルチ', '手指消毒', '手指消毒剤', '除菌', '消毒', 'アルコール', '抗菌', 'ウェットティッシュ', 'ウェットワイパー', '除菌シート', 'ケアマイルド']],
   // 洗剤類: 台所用・住居用・漂白剤など（メーカー名も手がかりに含める）
   ['洗剤類', ['洗剤', '漂白', 'ハイター', 'キッチンハイター', 'ブリーチ', '花王', 'ライオン', 'P&G', 'ファブリーズ', '柔軟剤', 'クリーナー', '中性洗剤']],
   // 台所用品: 食器・調理関連の消耗品（キッチン用の紙・洗剤は既存分類を優先）
@@ -401,6 +419,8 @@ const CAT_RULES = [
   ['マット・モップ', ['マット', 'モップ', 'マイクロクロス']],
   ['リハビリ・福祉用具', ['杖', 'ステッキ', '手すり', 'スロープ', 'クッション', 'ポジショニング', 'リハビリ', '福祉', 'スプーン', '自助', '徘徊', 'センサー', '体位', '入れ歯', '補聴']],
 ];
+// 「消耗品のみ」表示で除外する分類（住宅改修・器具本体・部材など、日々使い切る消耗品ではないもの）
+const NON_CONSUMABLE_CATS = new Set(['住宅改修', 'ベッド・車いす・歩行器', 'リハビリ・福祉用具', '部材']);
 const _catCache = new Map();
 function autoCategory(rawName) {
   if (_catCache.has(rawName)) return _catCache.get(rawName);
@@ -697,7 +717,7 @@ function buildAnalytics(rows, masters, baseSel) {
 /* ============================================================
    任意期間のレポート集計（明細を範囲で走査。12ヶ月窓に依存しない）
 ============================================================ */
-function buildPeriodReport(rows, masters, fromIdx, toIdx) {
+function buildPeriodReport(rows, masters, fromIdx, toIdx, consumableOnly) {
   const custs = masters.customers, catOv = masters.catOverrides, catRules = masters.catRules;
   const facMap = new Map(), prodMap = new Map(), monMap = new Map();
   let sales = 0, gross = 0;
@@ -705,19 +725,25 @@ function buildPeriodReport(rows, masters, fromIdx, toIdx) {
     const r = rows[i];
     const name = r[2];
     const c = custs[name] || classifyCustomerName(name);
-    if (c.type !== 'facility') continue;          // 集計対象は施設のみ
     const d = parseDateStr(r[1]);
     if (!d || d.idx < fromIdx || d.idx > toIdx) continue;
+    const pn = r[3];
+    const cat = categoryOf(pn, catOv, catRules);
+    // 正確な売上把握のため施設・個人・事業者を問わず集計する。
+    // 「消耗品のみ」表示のときだけ、消耗品以外の分類と、個人受給者向けとみられる売上を除外する。
+    if (consumableOnly && (NON_CONSUMABLE_CATS.has(cat) || looksLikeIndividualRecipient(name))) continue;
     const amt = +r[7] || 0, g = +r[8] || 0, qty = +r[4] || 0;
     sales += amt; gross += g;
 
-    let f = facMap.get(name);
-    if (!f) { f = { name, repName: c.rep || '未設定', sales: 0, gross: 0, months: new Set() }; facMap.set(name, f); }
-    f.sales += amt; f.gross += g; f.months.add(d.idx);
+    // 施設別ランキング等が個人客で長くならないよう、施設のみに限定する
+    if (c.type === 'facility') {
+      let f = facMap.get(name);
+      if (!f) { f = { name, repName: c.rep || '未設定', sales: 0, gross: 0, months: new Set() }; facMap.set(name, f); }
+      f.sales += amt; f.gross += g; f.months.add(d.idx);
+    }
 
-    const pn = r[3];
     let p = prodMap.get(pn);
-    if (!p) { p = { name: pn, cat: categoryOf(pn, catOv, catRules), unit: r[5] || '', unitSort: -1, qty: 0, sales: 0, gross: 0 }; prodMap.set(pn, p); }
+    if (!p) { p = { name: pn, cat, unit: r[5] || '', unitSort: -1, qty: 0, sales: 0, gross: 0 }; prodMap.set(pn, p); }
     if (r[5] && d.sort > p.unitSort) { p.unit = r[5]; p.unitSort = d.sort; }
     p.qty += qty; p.sales += amt; p.gross += g;
 
@@ -1262,6 +1288,7 @@ function EmptyState({ goImport }) {
 ============================================================ */
 function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office, showToast }) {
   const [repType, setRepType] = useState('month');
+  const [consumableOnly, setConsumableOnly] = useState(false);
   const [repMonth, setRepMonth] = useState(data.baseIdx);
   const [repFy, setRepFy] = useState(Math.floor(fiscalStartIdx(data.baseIdx) / 12));
   const [customFrom, setCustomFrom] = useState(data.monthsAll[0] ?? data.baseIdx);
@@ -1301,15 +1328,15 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
   }, [repType, repMonth, repFy, customFrom, customTo, data]);
 
   // 画面表示・帳票の両方がこの集計を参照する
-  const rep = useMemo(() => buildPeriodReport(rows, masters, spec.from, spec.to), [rows, masters, spec]);
-  const prevRep = useMemo(() => (spec.prevFrom === null ? null : buildPeriodReport(rows, masters, spec.prevFrom, spec.prevTo)), [rows, masters, spec]);
+  const rep = useMemo(() => buildPeriodReport(rows, masters, spec.from, spec.to, consumableOnly), [rows, masters, spec, consumableOnly]);
+  const prevRep = useMemo(() => (spec.prevFrom === null ? null : buildPeriodReport(rows, masters, spec.prevFrom, spec.prevTo, consumableOnly)), [rows, masters, spec, consumableOnly]);
   const hasPrev = !!(prevRep && prevRep.kpi.count > 0);
   const pct = (now, base) => (hasPrev && base !== 0 ? Math.round((now - base) / Math.abs(base) * 100) : null);
   const momSales = prevRep ? pct(rep.kpi.sales, prevRep.kpi.sales) : null;
   const momGross = prevRep ? pct(rep.kpi.gross, prevRep.kpi.gross) : null;
 
   // 前年同月比（月次モードのときだけ意味を持つ）
-  const yoyRep = useMemo(() => (repType === 'month' ? buildPeriodReport(rows, masters, repMonth - 12, repMonth - 12) : null), [repType, repMonth, rows, masters]);
+  const yoyRep = useMemo(() => (repType === 'month' ? buildPeriodReport(rows, masters, repMonth - 12, repMonth - 12, consumableOnly) : null), [repType, repMonth, rows, masters, consumableOnly]);
   const hasYoy = !!(yoyRep && yoyRep.kpi.count > 0);
   const pctYoy = (now, base) => (hasYoy && base !== 0 ? Math.round((now - base) / Math.abs(base) * 100) : null);
   const yoyPctSales = yoyRep ? pctYoy(rep.kpi.sales, yoyRep.kpi.sales) : null;
@@ -1317,8 +1344,8 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
   const yoyLabel = repType === 'month' ? idxLabel(repMonth - 12) : '';
 
   // 推移グラフ: 月次は選んだ月までの12ヶ月、それ以外は期間内の各月
-  const chartRep = useMemo(() => (repType === 'month' ? buildPeriodReport(rows, masters, repMonth - 11, repMonth) : rep),
-    [repType, repMonth, rows, masters, rep]);
+  const chartRep = useMemo(() => (repType === 'month' ? buildPeriodReport(rows, masters, repMonth - 11, repMonth, consumableOnly) : rep),
+    [repType, repMonth, rows, masters, rep, consumableOnly]);
   const chart = useMemo(() => {
     const m = chartRep.monthly;
     return { values: m.map(x => x.sales), labels: m.map(x => idxShort(x.idx)) };
@@ -1328,11 +1355,17 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
   const facMax = facTop.length ? facTop[0].sales : 1;
   const topProducts = rep.topProducts;
 
-  // 今年度累計（期間の選択とは別に、常に4月〜基準月で表示）
+  // 今年度累計（期間の選択とは別に、常に4月〜基準月で表示）。全売上ベースなので data.reps（施設のみ）ではなく
+  // buildPeriodReport を年度範囲で直接呼び出す。
+  const fyRepCur = useMemo(() => (data.baseIdx == null ? null :
+    buildPeriodReport(rows, masters, fiscalStartIdx(data.baseIdx), data.baseIdx, consumableOnly)), [rows, masters, data.baseIdx, consumableOnly]);
+  const fyRepPrev = useMemo(() => (data.baseIdx == null ? null :
+    buildPeriodReport(rows, masters, fiscalStartIdx(data.baseIdx) - 12, data.baseIdx - 12, consumableOnly)), [rows, masters, data.baseIdx, consumableOnly]);
+  const fyHasPrev = !!(fyRepPrev && fyRepPrev.monthly.length > 0);
   const fyTotal = useMemo(() => {
-    const t = data.reps.reduce((a, r) => ({ fy: a.fy + r.fy, fyPrev: a.fyPrev + r.fyPrev }), { fy: 0, fyPrev: 0 });
-    return { sales: t.fy, prevSales: t.fyPrev, pct: data.hasFyPrev && t.fyPrev !== 0 ? Math.round((t.fy - t.fyPrev) / Math.abs(t.fyPrev) * 100) : null };
-  }, [data]);
+    const s = fyRepCur ? fyRepCur.kpi.sales : 0, p = fyRepPrev ? fyRepPrev.kpi.sales : 0;
+    return { sales: s, prevSales: p, pct: fyHasPrev && p !== 0 ? Math.round((s - p) / Math.abs(p) * 100) : null };
+  }, [fyRepCur, fyRepPrev, fyHasPrev]);
   const fyPrevLabel = data.fyLabel ? (parseInt(data.fyLabel, 10) - 1) + '年度' : '';
   const fyPrevRangeLabel = useMemo(() => {
     if (data.baseIdx == null) return '';
@@ -1417,12 +1450,22 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
       </Card>
 
       {/* KPIカード */}
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
         <h2 className="text-sm font-bold text-slate-700">
           {repType === 'month' ? '月次サマリー' : repType === 'trend' ? '全期間サマリー' : '期間サマリー'}
           <span className="text-slate-600 font-normal">（{spec.label}）</span>
         </h2>
+        <button onClick={() => setConsumableOnly(v => !v)} title="住宅改修・器具本体等を除いた、消耗品の売上だけで集計します"
+          className={"h-8 px-3 rounded-full text-xs font-bold border transition inline-flex items-center gap-1.5 shrink-0 " +
+            (consumableOnly ? 'bg-sky-500 border-sky-500 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50')}>
+          <Filter size={13} /> 消耗品のみ
+        </button>
       </div>
+      {consumableOnly && (
+        <div className="text-[11px] text-sky-700 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2 -mt-2">
+          消耗品のみ表示中：住宅改修・車いす等の器具本体・部材と、個人（地域包括支援センター経由等）向けとみられる売上を除いて集計しています。
+        </div>
+      )}
       <div className="flex gap-3 flex-wrap">
         <KpiCard icon={JapaneseYen} tint="bg-blue-50 text-blue-600" label="純売上" value={yen(rep.kpi.sales)}
           delta={momSales === null ? undefined : momSales} note={spec.prevName ? spec.prevName + '比' : '全期間'}
@@ -1449,7 +1492,7 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
             extra={(
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[10px] text-slate-600 font-bold">{fyPrevLabel}同期（{fyPrevRangeLabel}）</span>
-                <span className="text-[10px] text-slate-800 font-extrabold tabular-nums">{data.hasFyPrev ? yen(fyTotal.prevSales) : '—'}</span>
+                <span className="text-[10px] text-slate-800 font-extrabold tabular-nums">{fyHasPrev ? yen(fyTotal.prevSales) : '—'}</span>
               </div>
             )} />
         )}
@@ -3285,12 +3328,6 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                 (busy ? 'bg-slate-300' : 'bg-indigo-600 hover:bg-indigo-700 active:scale-[.98] shadow-indigo-200')}>
               <Download size={15} /> {busy ? '作成中…' : 'PDF保存'}
             </button>
-            {goImport && (
-              <button onClick={goImport}
-                className="bg-white border border-emerald-300 hover:border-emerald-400 hover:bg-emerald-50 active:scale-[.98] text-emerald-700 px-4 py-2.5 rounded-xl shadow-sm text-sm font-bold transition inline-flex items-center gap-1.5">
-                <FileUp size={15} /> 最新データを取り込む
-              </button>
-            )}
             <button onClick={handlePrint}
               className="bg-sky-600 hover:bg-sky-700 active:scale-[.98] text-white px-4 py-2.5 rounded-xl shadow-sm shadow-sky-200 text-sm font-bold transition inline-flex items-center gap-1.5">
               <Printer size={15} /> 印刷
