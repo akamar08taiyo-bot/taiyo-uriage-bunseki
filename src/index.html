@@ -2468,6 +2468,8 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
   const [openProd, setOpenProd] = useState(null);
   const [editQty, setEditQty] = useState(null); // 必要在庫を編集中の商品名
   const [editMonth, setEditMonth] = useState(null); // 在庫回数を個別編集中の商品名
+  const [qtyView, setQtyView] = useState('shipment'); // 一覧表示: 'shipment'=通常の出荷数 / 'stock'=在庫数（在庫回数を掛けた数）
+  const [qtyViewMonths, setQtyViewMonths] = useState(0.5); // 在庫数タブでの倍率（1/2ヶ月・1/4ヶ月など）
   const months = Math.max(0.25, +masters.settings.stockMonths || 1);
   // プリセットに無い値（旧バージョンで設定された値など）が保存されていれば選択肢に足しておく
   const monthPresetOptions = useMemo(() => {
@@ -2655,6 +2657,14 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
       <div className="flex items-center gap-2.5 flex-wrap">
         <Segmented value={handlingTab} onChange={setHandlingTab}
           options={[['stock', '在庫品 ' + counts.stock], ['order', '受注発注 ' + counts.order], ['all', 'すべて']]} />
+        <Segmented value={qtyView} onChange={setQtyView}
+          options={[['shipment', '出荷数'], ['stock', '在庫数']]} />
+        {qtyView === 'stock' && (
+          <select value={qtyViewMonths} onChange={e => setQtyViewMonths(parseFloat(e.target.value))}
+            className="h-10 px-3 rounded-xl border border-amber-300 bg-amber-50 text-sm shadow-sm font-bold text-amber-800">
+            {STOCK_MONTH_PRESETS.map(([v, label]) => <option key={v} value={v}>{label}分</option>)}
+          </select>
+        )}
         <select value={catFilter} onChange={e => setCatFilter(e.target.value)}
           className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-700">
           <option value="all">すべての分類</option>
@@ -2686,8 +2696,8 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
             <tr className="text-[11px] uppercase tracking-wide text-slate-700 border-b border-slate-100">
               <th className="text-left font-bold px-5 py-3">商品名</th>
               <th className="text-left font-bold px-2 py-3 w-[190px]">扱い</th>
-              <th className="text-right font-bold px-2 py-3 pr-4">月平均出荷</th>
-              <th className="text-right font-bold px-2 py-3 pr-4">最大月</th>
+              <th className="text-right font-bold px-2 py-3 pr-4">{qtyView === 'stock' ? monthLabel(qtyViewMonths) + '分' : '月平均出荷'}</th>
+              <th className="text-right font-bold px-2 py-3 pr-4">{qtyView === 'stock' ? '最大月換算' : '最大月'}</th>
               <th className="text-right font-bold px-2 py-3 pr-4">必要在庫</th>
               <th className="text-right font-bold px-2 py-3 pr-4">仕入単価</th>
               <th className="w-10"></th>
@@ -2725,8 +2735,8 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
                       ))}
                     </div>
                   </td>
-                  <td className="px-2 py-3 pr-4 text-right tabular-nums text-slate-700">{fmtQty(p.avg)}<span className="text-[10px] text-slate-700 ml-0.5">{p.unit}</span></td>
-                  <td className="px-2 py-3 pr-4 text-right tabular-nums text-slate-700">{fmtQty(p.max)}<span className="text-[10px] text-slate-700 ml-0.5">{p.unit}</span></td>
+                  <td className="px-2 py-3 pr-4 text-right tabular-nums text-slate-700">{fmtQty(qtyView === 'stock' ? p.avg * qtyViewMonths : p.avg)}<span className="text-[10px] text-slate-700 ml-0.5">{p.unit}</span></td>
+                  <td className="px-2 py-3 pr-4 text-right tabular-nums text-slate-700">{fmtQty(qtyView === 'stock' ? p.max * qtyViewMonths : p.max)}<span className="text-[10px] text-slate-700 ml-0.5">{p.unit}</span></td>
                   <td className="px-2 py-3 pr-4 text-right" onClick={e => e.stopPropagation()}>
                     {editing ? (
                       <div className="inline-flex items-center gap-1">
