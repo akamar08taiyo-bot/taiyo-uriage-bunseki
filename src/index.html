@@ -49,7 +49,7 @@ import {
   Printer, X, Search, AlertTriangle, PhoneCall, ChevronDown, ChevronUp, ChevronRight,
   FileSpreadsheet, Database, Trash2, Download, Info, CheckCircle2, Truck,
   TrendingDown, FileUp, ClipboardPaste, HardDrive, Sun, ArrowUpRight,
-  ArrowDownRight, JapaneseYen, Percent, Coins, ClipboardList, RotateCcw, Pencil, FilePlus, CalendarDays, Filter
+  ArrowDownRight, JapaneseYen, Percent, Coins, ClipboardList, RotateCcw, Pencil, FilePlus, CalendarDays, Filter, Eye, EyeOff
 } from 'lucide-react';
 
 /* ============================================================
@@ -2115,13 +2115,13 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
           <thead>
             <tr className="text-[11px] uppercase tracking-wide text-slate-600 border-b border-slate-100">
               <th className="text-left font-bold px-5 py-3">施設名</th>
-              <th className="text-right font-bold px-2 py-3 pr-4">今月売上</th>
-              <th className="text-right font-bold px-2 py-3 pr-4">月平均</th>
-              <th className="text-left font-bold px-2 py-3">前月比</th>
-              <th className="text-left font-bold px-2 py-3">前年同月比</th>
-              <th className="text-right font-bold px-2 py-3 pr-4">増減(3ヶ月比)</th>
-              <th className="text-right font-bold px-2 py-3 pr-4">粗利率</th>
-              <th className="text-left font-bold px-2 py-3">担当</th>
+              <th className="text-center font-bold px-2 py-3 pr-4">今月売上</th>
+              <th className="text-center font-bold px-2 py-3 pr-4">月平均</th>
+              <th className="text-center font-bold px-2 py-3">前月比</th>
+              <th className="text-center font-bold px-2 py-3">前年同月比</th>
+              <th className="text-center font-bold px-2 py-3 pr-4">増減(3ヶ月比)</th>
+              <th className="text-center font-bold px-2 py-3 pr-4">粗利率</th>
+              <th className="text-center font-bold px-2 py-3">担当</th>
               <th className="w-10"></th>
             </tr>
           </thead>
@@ -2134,14 +2134,14 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
                     {f.direct && <span className="inline-flex items-center gap-0.5 bg-violet-50 text-violet-600 text-[10px] font-bold px-1.5 py-0.5 rounded-md"><Truck size={10} />直送</span>}
                   </span>
                 </td>
-                <td className="px-2 py-3 pr-4 text-right tabular-nums font-bold text-slate-800">{yen(f.monthly[11])}</td>
-                <td className="px-2 py-3 pr-4 text-right tabular-nums text-slate-700">{yen(f.avg)}</td>
-                <td className="px-2 py-3.5">{f.mom === null ? <span className="text-xs text-slate-400 font-bold">—</span> : <DeltaPill v={f.mom} />}</td>
-                <td className="px-2 py-3.5">{f.yoyPct === null ? <span className="text-xs text-slate-400 font-bold">—</span> : <DeltaPill v={f.yoyPct} />}</td>
-                <td className="px-2 py-3 pr-4 text-right"><DeltaPill v={f.pct} /></td>
-                <td className="px-2 py-3 pr-4 text-right tabular-nums text-slate-700">{f.margin}%</td>
+                <td className="px-2 py-3 pr-4 text-center tabular-nums font-bold text-slate-800">{yen(f.monthly[11])}</td>
+                <td className="px-2 py-3 pr-4 text-center tabular-nums text-slate-700">{yen(f.avg)}</td>
+                <td className="px-2 py-3.5 text-center">{f.mom === null ? <span className="text-xs text-slate-400 font-bold">—</span> : <DeltaPill v={f.mom} />}</td>
+                <td className="px-2 py-3.5 text-center">{f.yoyPct === null ? <span className="text-xs text-slate-400 font-bold">—</span> : <DeltaPill v={f.yoyPct} />}</td>
+                <td className="px-2 py-3 pr-4 text-center"><DeltaPill v={f.pct} /></td>
+                <td className="px-2 py-3 pr-4 text-center tabular-nums text-slate-700">{f.margin}%</td>
                 <td className="px-2 py-3">
-                  <span className="inline-flex items-center gap-1.5 text-slate-600">
+                  <span className="inline-flex items-center justify-center gap-1.5 text-slate-600">
                     <span className="w-6 h-6 rounded-full bg-slate-100 text-slate-700 text-[10px] font-bold inline-flex items-center justify-center">{f.repName[0]}</span>
                     <span className="text-xs font-bold">{f.repName}</span>
                   </span>
@@ -2171,13 +2171,13 @@ function RepsView({ data, goFacilities }) {
         <thead>
           <tr className="text-[11px] uppercase tracking-wide text-slate-600 border-b border-slate-100">
             <th className="text-left font-bold px-5 py-3">担当者</th>
-            <th className="text-right font-bold px-2 py-3 pr-4">担当施設数</th>
-            <th className="text-right font-bold px-2 py-3 pr-4">今月売上</th>
-            <th className="text-left font-bold px-2 py-3">前月比</th>
-            <th className="text-left font-bold px-2 py-3">前年同月比</th>
-            <th className="text-right font-bold px-2 py-3 pr-4">今年度累計</th>
-            <th className="text-left font-bold px-2 py-3">前年度同期比</th>
-            <th className="text-right font-bold px-2 py-3 pr-4">粗利率</th>
+            <th className="text-center font-bold px-2 py-3 pr-4">担当施設数</th>
+            <th className="text-center font-bold px-2 py-3 pr-4">今月売上</th>
+            <th className="text-center font-bold px-2 py-3">前月比</th>
+            <th className="text-center font-bold px-2 py-3">前年同月比</th>
+            <th className="text-center font-bold px-2 py-3 pr-4">今年度累計</th>
+            <th className="text-center font-bold px-2 py-3">前年度同期比</th>
+            <th className="text-center font-bold px-2 py-3 pr-4">粗利率</th>
             <th className="w-10"></th>
           </tr>
         </thead>
@@ -2190,13 +2190,13 @@ function RepsView({ data, goFacilities }) {
                   <span className="font-bold text-slate-800">{r.rep}</span>
                 </span>
               </td>
-              <td className="px-2 py-3.5 pr-4 text-right tabular-nums text-slate-700">{r.count}件</td>
-              <td className="px-2 py-3.5 pr-4 text-right tabular-nums font-bold text-slate-800">{yen(r.sales)}</td>
-              <td className="px-2 py-3.5">{pill(r.mom)}</td>
-              <td className="px-2 py-3.5">{pill(r.yoyPct)}</td>
-              <td className="px-2 py-3.5 pr-4 text-right tabular-nums font-bold text-slate-700">{yen(r.fy)}</td>
-              <td className="px-2 py-3.5">{pill(r.fyPct)}</td>
-              <td className="px-2 py-3.5 pr-4 text-right tabular-nums text-slate-700">{r.rate}%</td>
+              <td className="px-2 py-3.5 pr-4 text-center tabular-nums text-slate-700">{r.count}件</td>
+              <td className="px-2 py-3.5 pr-4 text-center tabular-nums font-bold text-slate-800">{yen(r.sales)}</td>
+              <td className="px-2 py-3.5 text-center">{pill(r.mom)}</td>
+              <td className="px-2 py-3.5 text-center">{pill(r.yoyPct)}</td>
+              <td className="px-2 py-3.5 pr-4 text-center tabular-nums font-bold text-slate-700">{yen(r.fy)}</td>
+              <td className="px-2 py-3.5 text-center">{pill(r.fyPct)}</td>
+              <td className="px-2 py-3.5 pr-4 text-center tabular-nums text-slate-700">{r.rate}%</td>
               <td className="pr-4 text-slate-400 group-hover:text-slate-700 transition"><ChevronRight size={16} /></td>
             </tr>
           ))}
@@ -2776,13 +2776,13 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
                         {p.breakdown.map((b, i) => (
                           <div key={i} className={"flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 border shadow-sm " +
                             (b.included ? 'bg-white border-slate-200/70' : 'bg-slate-100 border-slate-300')}>
-                            <span className="text-xs font-bold text-slate-900">
+                            <span className="text-sm font-bold text-slate-900">
                               {b.fac} <span className="font-extrabold tabular-nums text-slate-900">{fmtQty(b.avg)}{p.unit}</span>
                             </span>
                             <div className="inline-flex bg-slate-100 rounded-md p-0.5 gap-0.5">
                               {HANDLING_TYPES.map(h => (
                                 <button key={h} onClick={() => setFacHandling(p.name, b.fac, h)}
-                                  className={"text-[9px] font-bold px-1.5 py-0.5 rounded transition " +
+                                  className={"text-[11px] font-bold px-1.5 py-0.5 rounded transition " +
                                     (b.handling === h
                                       ? (h === 'stock' ? 'bg-sky-500 text-white' : 'bg-violet-500 text-white')
                                       : 'text-slate-900 hover:text-slate-900')}>
@@ -2792,9 +2792,9 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
                             </div>
                           </div>
                         ))}
-                        {p.breakdown.length === 0 && <span className="text-xs font-semibold text-slate-900">非直送施設への出荷実績がありません</span>}
+                        {p.breakdown.length === 0 && <span className="text-sm font-semibold text-slate-900">非直送施設への出荷実績がありません</span>}
                       </div>
-                      <div className="text-[10px] text-slate-900 font-medium mt-1.5">
+                      <div className="text-[11px] text-slate-900 font-medium mt-1.5">
                         すべての施設は最初「{HANDLING_LABELS.order}」＝この商品の必要在庫の計算から除外された状態です。実際に在庫を置いている施設だけ、ボタンで「{HANDLING_LABELS.stock}」に変えてください（変えた施設だけ白背景で表示されます）。
                       </div>
 
@@ -3188,7 +3188,7 @@ const newDocDraft = (type, facility) => ({
   note: type === 'quote' ? DEFAULT_QUOTE_NOTE : DEFAULT_ORDER_NOTE,
   items: [],
   showPrices: false,   // 発注書・見積書とも初期状態は金額なし
-  showTotal: true,     // 見積書の合計金額欄。単価非表示でも合計だけは初期表示
+  showTotal: false,    // 見積書の合計金額欄。デフォルト非表示（見積明細の表示切替ボタンで切り替え）
   taxIncluded: false,   // 見積書はデフォルト税抜表記。チェックで税込に切替
 });
 const isoToJa = (iso) => {
@@ -3548,6 +3548,14 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                 <div className="font-bold text-sm text-slate-800">{isQuote ? '見積明細' : '発注明細'}<span className="text-slate-600 font-normal ml-1.5">{draft.items.length}品目</span></div>
                 <div className="text-[11px] text-slate-600">{draft.facility} {isQuote ? '宛の御見積書' : '→ 当社宛の発注書'}</div>
               </div>
+              {isQuote && (
+                <button onClick={() => patch({ showTotal: !(draft.showTotal !== false) })}
+                  title={draft.showTotal !== false ? '合計金額を非表示にする' : '合計金額を表示する'}
+                  className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-600 hover:text-slate-800 px-2 py-1 rounded-md hover:bg-slate-100 transition shrink-0">
+                  {draft.showTotal !== false ? <Eye size={13} /> : <EyeOff size={13} />}
+                  合計{draft.showTotal !== false ? '表示中' : '非表示中'}
+                </button>
+              )}
               {(isQuote ? draft.showTotal !== false : draft.showPrices) && <span className="text-sm font-extrabold text-slate-800 tabular-nums">{yen(total)}<span className="text-[10px] text-slate-600 font-bold ml-1">税抜</span></span>}
             </div>
             <div className="overflow-x-auto">
