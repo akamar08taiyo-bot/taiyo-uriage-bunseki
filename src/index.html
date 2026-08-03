@@ -1166,10 +1166,12 @@ function DeltaPill({ v, suffix }) {
   return <span className="bg-slate-100 text-slate-700 text-xs font-bold px-2 py-0.5 rounded-full tabular-nums">±0{suffix || '%'}</span>;
 }
 
-function KpiCard({ icon: Icon, tint, label, value, delta, deltaSuffix, note, extra, onClick }) {
+function KpiCard({ icon: Icon, tint, label, value, delta, deltaSuffix, note, extra, onClick, emphasize }) {
   return (
     <div onClick={onClick}
-      className={"bg-white rounded-2xl border border-slate-200/70 shadow-sm hover:shadow-md transition p-4 flex-1 min-w-[160px]" + (onClick ? ' cursor-pointer hover:border-sky-300 active:scale-[.99]' : '')}
+      className={"bg-white rounded-2xl p-4 flex-1 min-w-[160px] transition " +
+        (emphasize ? 'border-2 border-teal-300 shadow-md ring-1 ring-teal-100' : 'border border-slate-200/70 shadow-sm hover:shadow-md') +
+        (onClick ? ' cursor-pointer hover:border-sky-300 active:scale-[.99]' : '')}
       title={onClick ? '施設別の内訳を見る' : undefined}>
       <div className="flex items-center justify-between gap-2">
         <span className={"inline-flex items-center justify-center w-9 h-9 rounded-xl shrink-0 " + tint}>
@@ -1196,7 +1198,7 @@ function buildFacilityComparison(curRanking, prevRanking, metric) {
   const curMap = new Map((curRanking || []).map(f => [f.name, f]));
   const prevMap = new Map((prevRanking || []).map(f => [f.name, f]));
   const names = new Set([...curMap.keys(), ...prevMap.keys()]);
-  const rows = [...names].map(name => {
+  let rows = [...names].map(name => {
     const c = curMap.get(name), p = prevMap.get(name);
     const curVal = c ? (c[metric] ?? 0) : 0;
     const prevVal = p ? (p[metric] ?? 0) : 0;
@@ -1209,6 +1211,12 @@ function buildFacilityComparison(curRanking, prevRanking, metric) {
       isGone: !c && !!p,
     };
   });
+  // 粗利率は片方の期間に実績がない施設を除外する（存在しない側が便宜上0%扱いになり、
+  // 「0%→20%」のような取引実態のない変化が紛れ込んでしまうため。前年度・今年度の
+  // 両方に数字がある施設のみを比較対象とする）。
+  if (metric === 'margin') {
+    rows = rows.filter(r => !r.isNew && !r.isGone);
+  }
   rows.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
   return rows;
 }
@@ -1584,6 +1592,7 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
         {repType === 'month' && (
           <KpiCard icon={ClipboardList} tint="bg-teal-50 text-teal-600" label={data.fyLabel + '累計'} value={yen(fyTotal.sales)}
             delta={fyTotal.pct === null ? undefined : fyTotal.pct} note={fyPrevLabel + '比'}
+            emphasize
             onClick={() => setDrilldown({ title: data.fyLabel + '累計', curLabel: data.fyLabel, prevLabel: fyPrevLabel, curRanking: fyRepCur ? fyRepCur.ranking : [], prevRanking: fyRepPrev ? fyRepPrev.ranking : [], metric: 'sales', unit: '¥' })}
             extra={(
               <div className="flex items-center justify-between gap-2">
@@ -2119,7 +2128,6 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
               <th className="text-center font-bold px-2 py-3 pr-4">月平均</th>
               <th className="text-center font-bold px-2 py-3">前月比</th>
               <th className="text-center font-bold px-2 py-3">前年同月比</th>
-              <th className="text-center font-bold px-2 py-3 pr-4">増減(3ヶ月比)</th>
               <th className="text-center font-bold px-2 py-3 pr-4">粗利率</th>
               <th className="text-center font-bold px-2 py-3">担当</th>
               <th className="w-10"></th>
@@ -2138,7 +2146,6 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
                 <td className="px-2 py-3 pr-4 text-center tabular-nums text-slate-700">{yen(f.avg)}</td>
                 <td className="px-2 py-3.5 text-center">{f.mom === null ? <span className="text-xs text-slate-400 font-bold">—</span> : <DeltaPill v={f.mom} />}</td>
                 <td className="px-2 py-3.5 text-center">{f.yoyPct === null ? <span className="text-xs text-slate-400 font-bold">—</span> : <DeltaPill v={f.yoyPct} />}</td>
-                <td className="px-2 py-3 pr-4 text-center"><DeltaPill v={f.pct} /></td>
                 <td className="px-2 py-3 pr-4 text-center tabular-nums text-slate-700">{f.margin}%</td>
                 <td className="px-2 py-3">
                   <span className="inline-flex items-center justify-center gap-1.5 text-slate-600">
@@ -3475,27 +3482,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
         )}
       </Card>
 
-      {!String(draft.facility).trim() ? (
-        <Card className="px-6 py-14 text-center">
-          <span className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-sky-50 text-sky-500 mb-3">
-            {isQuote ? <FileSpreadsheet size={26} /> : <ClipboardList size={26} />}
-          </span>
-          <div className="font-extrabold text-slate-700">{isQuote ? '見積書を作成' : '発注書を作成'}</div>
-          <div className="text-xs text-slate-600 mt-1.5 mb-4 leading-relaxed">
-            新しい施設で作るか、登録済みの施設から作るか選んでください。
-          </div>
-          <div className="flex items-center justify-center gap-3 flex-wrap">
-            <button onClick={() => facInputRef.current && facInputRef.current.focus()}
-              className="bg-white border-2 border-slate-200 hover:border-sky-300 active:scale-[.98] text-slate-700 px-5 py-3 rounded-xl shadow-sm text-sm font-bold transition inline-flex items-center gap-2">
-              <FilePlus size={16} className="text-sky-500" /> 新規作成
-            </button>
-            <button onClick={() => setFacPickerOpen(true)}
-              className="bg-white border-2 border-slate-200 hover:border-sky-300 active:scale-[.98] text-slate-700 px-5 py-3 rounded-xl shadow-sm text-sm font-bold transition inline-flex items-center gap-2">
-              <Search size={16} className="text-sky-500" /> 既存施設から作成
-            </button>
-          </div>
-        </Card>
-      ) : (
+      {(
         <div className="grid lg:grid-cols-2 gap-4 items-start">
           {/* 商品マスタ */}
           <Card>
