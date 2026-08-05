@@ -48,7 +48,7 @@ import {
   LayoutDashboard, Building2, Users, Package, Warehouse, Upload, Settings,
   Printer, X, Search, AlertTriangle, PhoneCall, ChevronDown, ChevronUp, ChevronRight,
   FileSpreadsheet, Database, Trash2, Download, Info, CheckCircle2, Truck,
-  TrendingDown, FileUp, ClipboardPaste, HardDrive, Sun, ArrowUpRight,
+  TrendingDown, TrendingUp, FileUp, ClipboardPaste, HardDrive, Sun, ArrowUpRight,
   ArrowDownRight, JapaneseYen, Percent, Coins, ClipboardList, RotateCcw, Pencil, FilePlus, CalendarDays, Filter, Eye, EyeOff
 } from 'lucide-react';
 
@@ -2157,6 +2157,208 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
               </tr>
             ))}
             {rows.length === 0 && (
+              <tr><td colSpan={9} className="px-5 py-10 text-center text-sm text-slate-600">該当する施設がありません</td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================
+   画面2.5: 施設別推移（月次推移・年度平均比較・伸び/減り施設）
+============================================================ */
+// 12ヶ月分の値を簡易棒グラフで表示（行内スパークライン。0はグレーの点で表示）
+function Sparkline({ values, width, height }) {
+  const w = width || 128, h = height || 32;
+  const max = Math.max(1, ...values.map(v => Math.abs(v)));
+  const barW = w / values.length;
+  return (
+    <svg width={w} height={h} viewBox={'0 0 ' + w + ' ' + h} className="shrink-0">
+      {values.map((v, i) => {
+        const barH = Math.max(1.5, Math.round(Math.abs(v) / max * (h - 4)));
+        const x = i * barW + barW * 0.18;
+        const bw = Math.max(1.5, barW * 0.64);
+        const y = h - barH;
+        const isLast = i === values.length - 1;
+        return <rect key={i} x={x} y={y} width={bw} height={barH} rx={1}
+          fill={v === 0 ? '#e2e8f0' : (isLast ? '#0284c7' : '#93c5fd')} />;
+      })}
+    </svg>
+  );
+}
+
+const FAC_TREND_SORTS = [
+  ['growth', '伸び率順（年度平均比較）'],
+  ['sales', '直近月売上順'],
+  ['avg', '今年度平均順'],
+  ['name', '施設名順'],
+];
+
+function FacilityTrendView({ data, jumpToFacility, showToast }) {
+  const [search, setSearch] = useState('');
+  const [repFilter, setRepFilter] = useState(null);
+  const [sortKey, setSortKey] = useState('growth');
+  const [minBase, setMinBase] = useState(true); // 少額施設のノイズを除くか
+
+  const fyStart = data.baseIdx == null ? null : fiscalStartIdx(data.baseIdx);
+  const monthsElapsed = fyStart == null ? 0 : (data.baseIdx - fyStart + 1);
+  const fyLabel = data.fyLabel || '';
+  const fyPrevLabel = fyLabel ? (parseInt(fyLabel, 10) - 1) + '年度' : '';
+
+  // 施設ごとに「今年度平均・前年度同期平均・増減率・12ヶ月推移」を算出
+  const trend = useMemo(() => {
+    if (fyStart == null) return [];
+    const periodAvg = (f, fromIdx, toIdx) => {
+      if (monthsElapsed <= 0) return 0;
+      let sum = 0;
+      for (let i = fromIdx; i <= toIdx; i++) { const m = f.byMonth.get(i); if (m) sum += m.sales; }
+      return sum / monthsElapsed;
+    };
+    return data.facilities.map(f => {
+      const fyAvg = periodAvg(f, fyStart, data.baseIdx);
+      const fyPrevAvg = periodAvg(f, fyStart - 12, data.baseIdx - 12);
+      const growth = fyPrevAvg !== 0 ? Math.round((fyAvg - fyPrevAvg) / Math.abs(fyPrevAvg) * 100) : (fyAvg > 0 ? null : 0);
+      return { f, fyAvg, fyPrevAvg, growth };
+    });
+  }, [data, fyStart, monthsElapsed]);
+
+  const reps = useMemo(() => data.reps.map(r => r.rep).sort((a, b) => a.localeCompare(b, 'ja')), [data]);
+
+  const filtered = useMemo(() => {
+    let list = trend;
+    if (repFilter !== null) list = list.filter(t => t.f.repName === repFilter);
+    if (search.trim()) list = list.filter(t => t.f.name.includes(search.trim()));
+    if (minBase) list = list.filter(t => t.fyPrevAvg >= DECLINE_MIN_BASE / 3 || t.fyAvg >= DECLINE_MIN_BASE / 3);
+    const sorters = {
+      growth: (a, b) => (b.growth ?? -999) - (a.growth ?? -999),
+      sales: (a, b) => b.f.monthly[11] - a.f.monthly[11],
+      avg: (a, b) => b.fyAvg - a.fyAvg,
+      name: (a, b) => a.f.name.localeCompare(b.f.name, 'ja'),
+    };
+    return list.slice().sort(sorters[sortKey]);
+  }, [trend, repFilter, search, minBase, sortKey]);
+
+  // 伸びている施設 / 減っている施設 TOP5（ノイズ除去のため一定額以上の施設のみ対象）
+  const movers = useMemo(() => {
+    const base = trend.filter(t => t.growth !== null && Math.max(t.fyAvg, t.fyPrevAvg) >= DECLINE_MIN_BASE / 3);
+    const up = base.filter(t => t.growth > 0).sort((a, b) => b.growth - a.growth).slice(0, 5);
+    const down = base.filter(t => t.growth < 0).sort((a, b) => a.growth - b.growth).slice(0, 5);
+    return { up, down };
+  }, [trend]);
+
+  const handleCsv = () => {
+    if (fyStart == null) { showToast('データがありません', 'error'); return; }
+    const head = ['施設名', '担当', ...data.win.map(idxLabel), fyLabel + '平均', fyPrevLabel + '平均', '増減率%'];
+    const lines = filtered.map(t => ([
+      t.f.name, t.f.repName, ...t.f.monthly.map(v => Math.round(v)),
+      Math.round(t.fyAvg), Math.round(t.fyPrevAvg), t.growth === null ? '' : t.growth,
+    ]));
+    downloadText('施設別売上推移_' + todayCompact() + '.csv', buildCsv([head, ...lines]), 'text/csv');
+    showToast('施設別売上推移のCSVを出力しました（' + num(filtered.length) + '施設）');
+  };
+
+  const MoverCard = ({ title, tone, list, emptyText }) => (
+    <Card className="p-4 flex-1 min-w-[260px]">
+      <div className={"text-xs font-bold mb-2.5 " + (tone === 'up' ? 'text-emerald-700' : 'text-rose-600')}>{title}</div>
+      <div className="space-y-2">
+        {list.map(t => (
+          <button key={t.f.name} onClick={() => jumpToFacility(t.f.name)}
+            className="w-full flex items-center justify-between gap-2 text-left hover:bg-slate-50 rounded-lg px-2 py-1.5 -mx-2 transition">
+            <span className="text-xs font-bold text-slate-700 truncate">{t.f.name}</span>
+            <DeltaPill v={t.growth} />
+          </button>
+        ))}
+        {list.length === 0 && <div className="text-[11px] text-slate-600 py-2">{emptyText}</div>}
+      </div>
+    </Card>
+  );
+
+  if (data.empty) {
+    return (
+      <Card className="p-10 text-center text-sm text-slate-600">データを取り込むと、施設別の月次推移が表示されます。</Card>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <Card className="p-5">
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="relative">
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="施設名で絞り込み"
+              className="h-10 pl-10 pr-3 rounded-xl border border-slate-200 text-sm w-56 bg-white shadow-sm focus:border-sky-400 focus:outline-none font-bold text-slate-700 placeholder:font-normal" />
+          </div>
+          <select value={repFilter ?? ''} onChange={e => setRepFilter(e.target.value || null)}
+            className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-600">
+            <option value="">担当: 全員</option>
+            {reps.map(r => <option key={r} value={r}>担当: {r}</option>)}
+          </select>
+          <select value={sortKey} onChange={e => setSortKey(e.target.value)}
+            className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-600">
+            {FAC_TREND_SORTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <label className="flex items-center gap-1.5 text-xs font-bold text-slate-600 cursor-pointer select-none">
+            <input type="checkbox" checked={minBase} onChange={e => setMinBase(e.target.checked)} className="accent-sky-500" />
+            少額施設を除く
+          </label>
+          <div className="ml-auto">
+            <button onClick={handleCsv}
+              className="bg-teal-600 hover:bg-teal-700 active:scale-[.98] text-white px-4 py-2.5 rounded-xl shadow-sm shadow-teal-200 text-sm font-bold transition inline-flex items-center gap-1.5">
+              <FileSpreadsheet size={15} /> CSV出力
+            </button>
+          </div>
+        </div>
+        <div className="text-[11px] text-slate-600 mt-3 leading-relaxed">
+          {fyLabel}平均・{fyPrevLabel}平均は、いずれも{data.baseLabel}までの経過月数（{monthsElapsed}ヶ月）で割った同期間比較です。
+          直近12ヶ月推移は{idxLabel(data.win[0])} 〜 {idxLabel(data.win[11])}。
+        </div>
+      </Card>
+
+      <div className="flex gap-4 flex-wrap">
+        <MoverCard title={'伸びている施設 TOP5（' + fyPrevLabel + '同期比）'} tone="up" list={movers.up} emptyText="対象となる施設がありません" />
+        <MoverCard title={'減っている施設 TOP5（' + fyPrevLabel + '同期比）'} tone="down" list={movers.down} emptyText="対象となる施設がありません" />
+      </div>
+
+      <Card>
+        <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5">
+          <span className="inline-flex items-center justify-center w-8 h-8 rounded-xl bg-sky-50 text-sky-500"><TrendingUp size={16} /></span>
+          <div className="flex-1">
+            <div className="font-bold text-sm text-slate-800">施設別売上推移表</div>
+            <div className="text-[11px] text-slate-600">{num(filtered.length)}施設・行をクリックすると施設の詳細分析へ</div>
+          </div>
+        </div>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-[11px] text-slate-600 border-b border-slate-100">
+              <th className="px-5 py-2.5 font-bold">施設名</th>
+              <th className="px-3 py-2.5 font-bold">担当</th>
+              <th className="px-3 py-2.5 font-bold">直近12ヶ月推移</th>
+              <th className="px-3 py-2.5 font-bold text-right">{fyLabel}平均/月</th>
+              <th className="px-3 py-2.5 font-bold text-right">{fyPrevLabel}平均/月</th>
+              <th className="px-3 py-2.5 font-bold text-right">増減率</th>
+              <th className="px-3 py-2.5 font-bold text-right">今月</th>
+              <th className="px-5 py-2.5 font-bold text-right">前月比</th>
+              <th className="pr-4"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-50">
+            {filtered.map(t => (
+              <tr key={t.f.name} onClick={() => jumpToFacility(t.f.name)}
+                className="hover:bg-slate-50 cursor-pointer transition group">
+                <td className="px-5 py-3 font-bold text-slate-700">{t.f.name}</td>
+                <td className="px-3 py-3 text-slate-600">{t.f.repName}</td>
+                <td className="px-3 py-3"><Sparkline values={t.f.monthly} /></td>
+                <td className="px-3 py-3 text-right tabular-nums font-bold text-slate-700">{yen(t.fyAvg)}</td>
+                <td className="px-3 py-3 text-right tabular-nums text-slate-600">{yen(t.fyPrevAvg)}</td>
+                <td className="px-3 py-3 text-right">{t.growth === null ? <span className="text-slate-400 text-xs">—</span> : <DeltaPill v={t.growth} />}</td>
+                <td className="px-3 py-3 text-right tabular-nums font-bold text-slate-700">{yen(t.f.monthly[11])}</td>
+                <td className="px-5 py-3 text-right">{t.f.mom === null ? <span className="text-slate-400 text-xs">—</span> : <DeltaPill v={t.f.mom} />}</td>
+                <td className="pr-4 text-slate-400 group-hover:text-sky-500 group-hover:translate-x-0.5 transition"><ChevronRight size={16} /></td>
+              </tr>
+            ))}
+            {filtered.length === 0 && (
               <tr><td colSpan={9} className="px-5 py-10 text-center text-sm text-slate-600">該当する施設がありません</td></tr>
             )}
           </tbody>
@@ -4392,6 +4594,7 @@ function SalesLookupView({ rows, masters, showToast }) {
 const TABS = [
   { id: 'dash', label: 'ダッシュボード', icon: LayoutDashboard, sub: '減少アラートと発注漏れを毎朝チェック' },
   { id: 'fac', label: '施設別', icon: Building2, sub: '施設ごとの売上・粗利・購入傾向' },
+  { id: 'factrend', label: '施設別推移', icon: TrendingUp, sub: '月次推移・年度平均比較・伸び施設/減り施設の把握' },
   { id: 'rep', label: '担当別', icon: Users, sub: '担当者ごとの数字とアラート' },
   { id: 'prod', label: '商品分析', icon: Package, sub: '分類別の動きと粗利率チェック' },
   { id: 'stock', label: '適正在庫', icon: Warehouse, sub: '必要在庫 = 月平均 × 在庫回数。商品の扱い分類もここで' },
@@ -4555,6 +4758,7 @@ function App() {
               {tab === 'dash' && <DashboardView data={data} rows={rows} masters={masters} jumpToFacility={jumpToFacility} openPrint={setPrintHtml} office={masters.settings.office} showToast={showToast} />}
               {tab === 'lookup' && <SalesLookupView rows={rows} masters={masters} showToast={showToast} />}
               {tab === 'fac' && <FacilitiesView data={data} openId={openFacId} setOpenId={setOpenFacId} repFilter={repFilter} setRepFilter={setRepFilter} showToast={showToast} openPrint={setPrintHtml} startDoc={startDoc} office={masters.settings.office} />}
+              {tab === 'factrend' && <FacilityTrendView data={data} jumpToFacility={jumpToFacility} showToast={showToast} />}
               {tab === 'rep' && <RepsView data={data} goFacilities={goFacilities} />}
               {tab === 'prod' && <ProductsView data={data} masters={masters} setMasters={setMasters} />}
               {tab === 'stock' && <StockView data={data} masters={masters} setMasters={setMasters} showToast={showToast} openPrint={setPrintHtml} />}
