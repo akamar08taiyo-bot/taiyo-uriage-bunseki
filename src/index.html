@@ -1295,15 +1295,27 @@ function MiniBars({ values, height = 40, barW = 10, gap = 3, color = '#38bdf8', 
   );
 }
 
-function AreaChart({ values, labels, height = 190 }) {
+function AreaChart({ values, labels, height = 190, prevValues }) {
   const stepX = 60, padL = 14, padR = 26, padT = 30, padB = 24;
   const w = padL + padR + stepX * (values.length - 1);
-  const min = Math.min(...values), max = Math.max(...values);
+  const prevKnown = (prevValues || []).filter(v => v != null);
+  const allValues = prevKnown.length ? values.concat(prevKnown) : values;
+  const min = Math.min(...allValues), max = Math.max(...allValues);
   const range = Math.max(max - min, 1);
   const X = (i) => padL + i * stepX;
   const Y = (v) => padT + (height - padT - padB) * (1 - (v - min) / range);
   const line = values.map((v, i) => (i ? 'L' : 'M') + X(i) + ',' + Y(v)).join(' ');
   const area = line + ` L${X(values.length - 1)},${height - padB} L${X(0)},${height - padB} Z`;
+  // 前年同月の線: データが連続している区間だけをつなぐ（欠測月で線を切る）
+  const prevSegments = [];
+  if (prevValues) {
+    let seg = [];
+    prevValues.forEach((v, i) => {
+      if (v == null) { if (seg.length > 1) prevSegments.push(seg); seg = []; return; }
+      seg.push([i, v]);
+    });
+    if (seg.length > 1) prevSegments.push(seg);
+  }
   return (
     <div className="overflow-x-auto">
       <svg width={w} height={height} className="block">
@@ -1318,6 +1330,10 @@ function AreaChart({ values, labels, height = 190 }) {
             stroke="#e2e8f0" strokeDasharray="3 4" strokeWidth="1" />
         ))}
         <path d={area} fill="url(#areaGrad)" />
+        {prevSegments.map((seg, si) => (
+          <path key={si} d={seg.map(([i, v], j) => (j ? 'L' : 'M') + X(i) + ',' + Y(v)).join(' ')}
+            fill="none" stroke="#cbd5e1" strokeWidth="2" strokeDasharray="4 3" strokeLinecap="round" strokeLinejoin="round" />
+        ))}
         <path d={line} fill="none" stroke="#0ea5e9" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
         {values.map((v, i) => {
           const isLast = i === values.length - 1;
@@ -1333,6 +1349,12 @@ function AreaChart({ values, labels, height = 190 }) {
             </g>
           );
         })}
+        {prevValues && prevValues.some(v => v != null) && (
+          <g transform={`translate(${w - padR - 96}, ${padT - 20})`}>
+            <line x1="0" y1="0" x2="16" y2="0" stroke="#cbd5e1" strokeWidth="2" strokeDasharray="4 3" />
+            <text x="20" y="3.5" fontSize="10" fill="#64748b" fontWeight="bold">前年同月</text>
+          </g>
+        )}
       </svg>
     </div>
   );
@@ -1806,7 +1828,12 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
       .sort((a, b) => ((parseDateStr(b[1]) || {}).sort || 0) - ((parseDateStr(a[1]) || {}).sort || 0))
       .slice(0, 12)
       .map(r => [r[1], r[3], num(+r[4] || 0) + ' ' + (r[5] || ''), +r[7] || 0]);
-    return { f, salesRank, salesMax, qtyRank, qtyMax, cats, catTotal, lastD, recent };
+    // 前年同月（月別売上推移グラフの比較線用）。データがない月は null にして線を切る
+    const prevMonthly = data.win.map(idx => {
+      const m = f.byMonth.get(idx - 12);
+      return m ? m.sales : null;
+    });
+    return { f, salesRank, salesMax, qtyRank, qtyMax, cats, catTotal, lastD, recent, prevMonthly };
   }, [data, openId]);
 
   const handleFacPrint = (f) => {
@@ -1990,7 +2017,13 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
 
         {/* 基本指標 */}
         <div className="flex gap-3 flex-wrap">
-          <KpiCard icon={JapaneseYen} tint="bg-blue-50 text-blue-600" label="今月売上" value={yen(f.monthly[11])} delta={f.pct} deltaSuffix="%" note="直近3ヶ月平均比" />
+          <KpiCard icon={JapaneseYen} tint="bg-blue-50 text-blue-600" label="今月売上" value={yen(f.monthly[11])} delta={f.pct} deltaSuffix="%" note="直近3ヶ月平均比"
+            extra={(
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-slate-600 font-bold">前年同月比（{idxLabel(data.baseIdx - 12)}）</span>
+                {f.yoyPct === null ? <span className="text-[10px] text-slate-400 font-bold">—</span> : <DeltaPill v={f.yoyPct} />}
+              </div>
+            )} />
           <KpiCard icon={Coins} tint="bg-emerald-50 text-emerald-600" label="月平均" value={yen(f.avg)} note="12ヶ月" />
           <KpiCard icon={JapaneseYen} tint="bg-sky-50 text-sky-600" label="年間累計" value={yen(f.winSum)} note="12ヶ月" />
           <KpiCard icon={Percent} tint="bg-violet-50 text-violet-600" label="粗利率" value={f.margin + '%'} note="12ヶ月" />
@@ -2004,7 +2037,7 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
               過去12ヶ月 ・ 単位: 千円 ・ 最終購入 {detail.lastD ? detail.lastD.y + '/' + detail.lastD.mo + '/' + detail.lastD.d : '—'}
             </span>
           </div>
-          <AreaChart values={f.monthly} labels={data.winShort} height={200} />
+          <AreaChart values={f.monthly} labels={data.winShort} height={200} prevValues={detail.prevMonthly} />
         </Card>
 
         <div className="grid md:grid-cols-2 gap-4">
