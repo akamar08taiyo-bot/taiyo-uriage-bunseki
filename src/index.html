@@ -360,6 +360,7 @@ const FACILITY_KEYWORDS_STRONG = [
 // 弱いキーワード: 施設らしいが人名にも現れうる一文字
 const FACILITY_KEYWORDS_WEAK = ['苑', '園', '荘', '館', '会', '庵', '寮', '亭', '堂', '院', '店', '屋'];
 const KANJI_NAME_RE = /^[一-龥々〆ヶ]{2,5}$/;
+const HAS_KANJI_RE = /[一-龥々〆ヶ]/;
 
 function classifyCustomerName(rawName) {
   const name = String(rawName || '').normalize('NFKC').trim();
@@ -367,7 +368,10 @@ function classifyCustomerName(rawName) {
     if (name.includes(FACILITY_KEYWORDS_STRONG[i])) return { type: 'facility', uncertain: false };
   }
   const tokens = name.split(/\s+/).filter(Boolean);
+  // 「姓 名」形の個人名は、実在の日本人の姓がほぼ必ず漢字を含む点で判定する。
+  // 「あさがお 新田原」のようにひらがなだけの単語（施設の愛称に多い）+ 地名は姓名ではないため対象外。
   if (tokens.length === 2 && tokens[0].length <= 5 && tokens[1].length <= 6 &&
+      HAS_KANJI_RE.test(tokens[0]) &&
       !FACILITY_KEYWORDS_WEAK.some(k => name.includes(k))) {
     return { type: 'person', uncertain: false };  // 「姓 名」形
   }
