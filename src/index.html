@@ -1081,8 +1081,8 @@ function buildFacilityOrderHtml(m) {
 
     <table style="width:100%;border-collapse:collapse;margin-top:7mm;table-layout:fixed;">
       ${colgroup}
-      <tr><th style="${th}">No.</th><th style="${th}">商品名</th>${sc ? `<th style="${th}">入数</th>` : ''}<th style="${th}">数量</th><th style="${th}">単位</th>${sp ? `<th style="${th}">単価（税抜）</th>` : ''}</tr>
-      ${rows}
+      <thead><tr><th style="${th}">No.</th><th style="${th}">商品名</th>${sc ? `<th style="${th}">入数</th>` : ''}<th style="${th}">数量</th><th style="${th}">単位</th>${sp ? `<th style="${th}">単価（税抜）</th>` : ''}</tr></thead>
+      <tbody>${rows}</tbody>
     </table>
     ${m.items.some(it => !String(it.name).trim()) ? `<div style="margin-top:2mm;font-size:7.5pt;color:#9ca3af;">※商品名が空欄の行は、リストにない商品を手書きでご記入いただく欄です。</div>` : ''}
 
@@ -1151,7 +1151,8 @@ function buildQuoteHtml(m) {
 
     <table style="width:100%;border-collapse:collapse;margin-top:7mm;table-layout:fixed;">
       ${colgroup}
-      <tr><th style="${th}">品目</th>${sc ? `<th style="${th}">入数</th>` : ''}<th style="${th}">数量</th><th style="${th}">単位</th>${sp ? `<th style="${th}">単価（税抜）</th><th style="${th}">金額（税抜）</th>` : ''}</tr>
+      <thead><tr><th style="${th}">品目</th>${sc ? `<th style="${th}">入数</th>` : ''}<th style="${th}">数量</th><th style="${th}">単位</th>${sp ? `<th style="${th}">単価（税抜）</th><th style="${th}">金額（税抜）</th>` : ''}</tr></thead>
+      <tbody>
       ${rows}
       ${st ? `
       <tr>
@@ -1166,6 +1167,7 @@ function buildQuoteHtml(m) {
         <td colspan="${totalColspan}" style="${td}text-align:right;font-weight:bold;color:#1e3a8a;background:#eff6ff;">合計（税込）</td>
         <td style="${tdR}font-weight:bold;font-size:11pt;background:#eff6ff;">${yen(total)}</td>
       </tr>` : ''}
+      </tbody>
     </table>
 
     <div style="margin-top:8mm;border:1px solid #bfdbfe;background:#eff6ff;padding:3mm;font-size:8.5pt;color:#4b5563;">
@@ -1222,8 +1224,8 @@ function buildSalesSearchHtml(m) {
     <div style="margin-top:6mm;color:#1e3a8a;font-weight:bold;font-size:10pt;border-left:3px solid #2563eb;padding-left:2mm;">取引明細（${num(m.rows.length)}件）</div>
     <table style="width:100%;border-collapse:collapse;margin-top:2mm;table-layout:fixed;">
       <colgroup><col style="width:8%"><col style="width:15%"><col style="width:20%"><col style="width:8%"><col style="width:9%"><col style="width:9%"><col style="width:7%"><col style="width:7%"><col style="width:7%"><col style="width:7%"></colgroup>
-      <tr><th style="${th}">日付</th><th style="${th}">お客様名</th><th style="${th}">商品名</th><th style="${th}">数量</th><th style="${th}">販売単価</th><th style="${th}">金額</th><th style="${thCost}">仕入単価</th><th style="${thCost}">仕入金額</th><th style="${th}">粗利額</th><th style="${th}">利益率</th></tr>
-      ${body}
+      <thead><tr><th style="${th}">日付</th><th style="${th}">お客様名</th><th style="${th}">商品名</th><th style="${th}">数量</th><th style="${th}">販売単価</th><th style="${th}">金額</th><th style="${thCost}">仕入単価</th><th style="${thCost}">仕入金額</th><th style="${th}">粗利額</th><th style="${th}">利益率</th></tr></thead>
+      <tbody>${body}</tbody>
     </table>
 
     <div style="margin-top:8mm;border:1px solid #bfdbfe;background:#eff6ff;padding:3mm;font-size:8.5pt;color:#4b5563;">
@@ -1289,8 +1291,8 @@ function buildPriceRevisionHtml(m) {
 
     <table style="width:100%;border-collapse:collapse;margin-top:5mm;table-layout:fixed;">
       ${colgroup}
-      <tr>${headCells}</tr>
-      ${rows}
+      <thead><tr>${headCells}</tr></thead>
+      <tbody>${rows}</tbody>
     </table>
 
     ${m.note ? `<div style="margin-top:5mm;border:1px solid #bfdbfe;background:#eff6ff;padding:2.5mm;font-size:8pt;color:#4b5563;">
@@ -3903,8 +3905,17 @@ function PriceRevisionView({ data, masters, draft, setDraft, showToast, openPrin
                   return (
                     <tr key={i}>
                       <td className="px-4 py-2.5 max-w-0">
+                        <div className="flex items-center gap-1 mb-0.5">
+                          <input value={it.cat || ''} onChange={e => setItem(i, { cat: e.target.value })}
+                            placeholder="分類名（商品名の上に印刷。空欄で非表示）"
+                            className="h-5 flex-1 min-w-0 px-1.5 rounded border border-slate-100 bg-sky-50/50 text-[9px] text-sky-700 font-bold focus:border-sky-400 focus:outline-none placeholder:font-normal placeholder:text-slate-400" />
+                          {it.cat && (
+                            <button type="button" onClick={() => setItem(i, { cat: '' })} title="分類名を削除"
+                              className="text-slate-400 hover:text-rose-500 transition shrink-0"><X size={11} /></button>
+                          )}
+                        </div>
                         <div className="font-bold text-sm text-slate-800 truncate" title={it.name}>{it.name}</div>
-                        <div className="text-[10px] text-slate-500 truncate">{it.cat}{it.unit ? '・' + it.unit : ''}</div>
+                        <div className="text-[10px] text-slate-500 truncate">{it.unit}</div>
                         {it.cost > 0 && <div className="text-[10px] text-amber-700 font-bold">仕入 {yen(it.cost)}</div>}
                       </td>
                       {draft.showCaseSize && (
@@ -4515,6 +4526,15 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                   {draft.items.map((it, i) => (
                     <tr key={i}>
                       <td className="px-4 py-2.5">
+                        <div className="flex items-center gap-1 mb-1">
+                          <input value={it.cat || ''} onChange={e => setItem(i, { cat: e.target.value })}
+                            placeholder="分類名（商品名の上に印刷。空欄で非表示）"
+                            className="h-6 flex-1 min-w-0 px-2 rounded border border-slate-100 bg-sky-50/50 text-[10px] text-sky-700 font-bold focus:border-sky-400 focus:outline-none placeholder:font-normal placeholder:text-slate-400" />
+                          {it.cat && (
+                            <button type="button" onClick={() => setItem(i, { cat: '' })} title="分類名を削除"
+                              className="text-slate-400 hover:text-rose-500 transition shrink-0"><X size={12} /></button>
+                          )}
+                        </div>
                         <input value={it.name} onChange={e => setItem(i, { name: e.target.value })}
                           placeholder="商品名"
                           className="h-12 w-full px-3 rounded-lg border border-slate-200 text-sm font-bold text-slate-800 focus:border-sky-400 focus:outline-none" />
