@@ -138,7 +138,7 @@ const portalSessionOffice = () => {
   } catch { return null; }
 };
 
-const DEFAULT_SETTINGS = { redPct: -50, yellowPct: -25, bufferDays: 7, stockMonths: 1, alertMinBase: 3000, office: null, reps: [] };
+const DEFAULT_SETTINGS = { redPct: -50, yellowPct: -25, bufferDays: 7, stockMonths: 1, alertMinBase: 3000, office: null, reps: [], tabLabels: {} };
 const defaultMasters = () => ({
   customers: {}, catOverrides: {}, catRules: [], priceOverrides: {}, itemHandling: {},
   itemFacilityHandling: {}, stockQtyOverrides: {}, stockMonthOverrides: {},
@@ -189,6 +189,7 @@ const normalizeMasters = (m) => {
       ...DEFAULT_SETTINGS, ...obj(m.settings),
       office: (m.settings && officeByName(m.settings.office)) ? m.settings.office : null,
       reps: Array.isArray(m.settings && m.settings.reps) ? m.settings.reps : [],
+      tabLabels: obj(m.settings && m.settings.tabLabels),
     },
   };
 };
@@ -1064,6 +1065,8 @@ function buildFacilityOrderHtml(m) {
           <div style="font-size:7.5pt;color:#2563eb;font-weight:bold;">発注元</div>
           <div style="font-weight:bold;color:#1e3a8a;font-size:10pt;" ${ed}>${escapeHTML(m.facilityName)}</div>
           ${m.facilityAddress ? `<div style="margin-top:1mm;font-size:8pt;" ${ed}>${escapeHTML(m.facilityAddress)}</div>` : ''}
+          ${m.facilityTel ? `<div style="margin-top:1mm;font-size:8pt;" ${ed}>TEL：${escapeHTML(m.facilityTel)}</div>` : ''}
+          ${m.facilityFax ? `<div style="margin-top:1mm;font-size:8pt;" ${ed}>FAX：${escapeHTML(m.facilityFax)}</div>` : ''}
           <div style="margin-top:1.5mm;" ${ed}>ご担当者：　　　　　　　　　</div>
         </div>
       </div>
@@ -1102,6 +1105,7 @@ function buildQuoteHtml(m) {
         ${it.note ? `<div style="margin-top:0.5mm;font-size:7.5pt;color:#6b7280;" ${ed}>${escapeHTML(it.note)}</div>` : ''}
       </td>
       <td style="${tdR}" ${ed}>${it.qty === '' ? '' : num(it.qty)}</td>
+      <td style="${td}text-align:center;" ${ed}>${escapeHTML(it.caseSize || '')}</td>
       <td style="${td}text-align:center;" ${ed}>${escapeHTML(it.unit)}</td>
       ${sp ? `<td style="${tdR}" ${ed}>${yen(it.price)}</td><td style="${tdR}" ${ed}>${yen(qn(it.qty) * it.price)}</td>` : ''}
     </tr>`).join('');
@@ -1109,9 +1113,9 @@ function buildQuoteHtml(m) {
   const tax = Math.floor(sub * 0.1);
   const total = sub + tax;
   const colgroup = sp
-    ? '<colgroup><col style="width:46%"><col style="width:10%"><col style="width:8%"><col style="width:17%"><col style="width:19%"></colgroup>'
-    : '<colgroup><col style="width:68%"><col style="width:16%"><col style="width:16%"></colgroup>';
-  const totalColspan = sp ? 4 : 2;
+    ? '<colgroup><col style="width:42%"><col style="width:9%"><col style="width:8%"><col style="width:7%"><col style="width:16%"><col style="width:18%"></colgroup>'
+    : '<colgroup><col style="width:58%"><col style="width:14%"><col style="width:12%"><col style="width:16%"></colgroup>';
+  const totalColspan = sp ? 5 : 3;
   return `
   <style>.editable{outline:1px dashed transparent;outline-offset:1px;cursor:text;}.editable:hover,.editable:focus{outline-color:#93c5fd;background:rgba(219,234,254,.35);}</style>
   <div class="doc" style="width:210mm;min-height:297mm;padding:14mm 13mm;background:#fff;box-sizing:border-box;font-family:'BIZ UDPMincho','Yu Mincho','Hiragino Mincho ProN',serif;color:#1f2937;font-size:9.5pt;line-height:1.6;">
@@ -1137,7 +1141,7 @@ function buildQuoteHtml(m) {
 
     <table style="width:100%;border-collapse:collapse;margin-top:7mm;table-layout:fixed;">
       ${colgroup}
-      <tr><th style="${th}">品目</th><th style="${th}">数量</th><th style="${th}">単位</th>${sp ? `<th style="${th}">単価（税抜）</th><th style="${th}">金額（税抜）</th>` : ''}</tr>
+      <tr><th style="${th}">品目</th><th style="${th}">数量</th><th style="${th}">入数</th><th style="${th}">単位</th>${sp ? `<th style="${th}">単価（税抜）</th><th style="${th}">金額（税抜）</th>` : ''}</tr>
       ${rows}
       ${st ? `
       <tr>
@@ -1230,6 +1234,7 @@ function buildPriceRevisionHtml(m) {
         ${it.cat ? `<div style="font-size:7pt;color:#2563eb;font-weight:bold;">${escapeHTML(it.cat)}</div>` : ''}
         <div>${escapeHTML(it.name)}</div>
       </td>
+      <td style="${td}text-align:center;">${escapeHTML(it.caseSize || '')}</td>
       <td style="${td}text-align:center;">${escapeHTML(it.unit || '')}</td>
       <td style="${tdR}">${yen(it.currentPrice)}</td>
       <td style="${tdR}font-weight:bold;">${yen(it.newPrice)}</td>
@@ -1252,8 +1257,8 @@ function buildPriceRevisionHtml(m) {
     </div>
 
     <table style="width:100%;border-collapse:collapse;margin-top:7mm;table-layout:fixed;">
-      <colgroup><col style="width:6%"><col style="width:38%"><col style="width:10%"><col style="width:15%"><col style="width:15%"><col style="width:8%"><col style="width:8%"></colgroup>
-      <tr><th style="${th}">No.</th><th style="${th}">商品名</th><th style="${th}">単位</th><th style="${th}">現状価格（税抜）</th><th style="${th}">改定価格（税抜）</th><th style="${th}">増加額</th><th style="${th}">増加率</th></tr>
+      <colgroup><col style="width:6%"><col style="width:32%"><col style="width:8%"><col style="width:8%"><col style="width:14%"><col style="width:14%"><col style="width:9%"><col style="width:9%"></colgroup>
+      <tr><th style="${th}">No.</th><th style="${th}">商品名</th><th style="${th}">入数</th><th style="${th}">単位</th><th style="${th}">現状価格（税抜）</th><th style="${th}">改定価格（税抜）</th><th style="${th}">増加額</th><th style="${th}">増加率</th></tr>
       ${rows}
     </table>
 
@@ -3597,7 +3602,7 @@ function PriceRevisionView({ data, masters, draft, setDraft, showToast, openPrin
   const addItem = (m) => {
     if (inItems.has(m.name)) { showToast('「' + m.name + '」はすでに明細にあります', 'info'); return; }
     const cur = Math.round(m.lastPrice) || 0;
-    setDraft(prev => ({ ...prev, items: [...prev.items, { name: m.name, cat: m.cat || '', unit: m.unit || '', currentPrice: cur, newPrice: cur }] }));
+    setDraft(prev => ({ ...prev, items: [...prev.items, { name: m.name, cat: m.cat || '', unit: m.unit || '', caseSize: '', cost: Math.round(m.cost) || 0, currentPrice: cur, newPrice: cur }] }));
   };
   const setItem = (idx, p) => setDraft(prev => ({ ...prev, items: prev.items.map((it, i) => (i === idx ? { ...it, ...p } : it)) }));
   const delItem = (idx) => setDraft(prev => ({ ...prev, items: prev.items.filter((_, i) => i !== idx) }));
@@ -3678,6 +3683,7 @@ function PriceRevisionView({ data, masters, draft, setDraft, showToast, openPrin
                   <div className="font-bold text-sm text-slate-800 truncate">{m.name}</div>
                   <div className="text-xs text-slate-600 tabular-nums mt-0.5">
                     {m.cat}{m.lastPrice > 0 && <> ・ 現状価格 <b className="text-slate-700">{yen(m.lastPrice)}</b></>}
+                    {m.cost > 0 && <> ・ 仕入 <b className="text-amber-700">{yen(m.cost)}</b></>}
                   </div>
                 </div>
                 <span className={"text-xs font-bold px-2.5 py-1 rounded-full shrink-0 " +
@@ -3699,6 +3705,7 @@ function PriceRevisionView({ data, masters, draft, setDraft, showToast, openPrin
               <thead>
                 <tr className="text-xs uppercase tracking-wide text-slate-600 border-b border-slate-100">
                   <th className="text-left font-bold px-4 py-2.5">商品名</th>
+                  <th className="text-center font-bold px-1 py-2.5 w-16">入数</th>
                   <th className="text-right font-bold px-1 py-2.5 w-28">現状価格</th>
                   <th className="text-right font-bold px-1 py-2.5 w-28">改定価格</th>
                   <th className="text-right font-bold px-1 py-2.5 w-24">増加額</th>
@@ -3716,6 +3723,12 @@ function PriceRevisionView({ data, masters, draft, setDraft, showToast, openPrin
                       <td className="px-4 py-2.5">
                         <div className="font-bold text-sm text-slate-800">{it.name}</div>
                         <div className="text-[10px] text-slate-500">{it.cat}{it.unit ? '・' + it.unit : ''}</div>
+                        {it.cost > 0 && <div className="text-[10px] text-amber-700 font-bold">仕入 {yen(it.cost)}</div>}
+                      </td>
+                      <td className="px-1 py-2.5">
+                        <input value={it.caseSize || ''} onChange={e => setItem(i, { caseSize: e.target.value })}
+                          placeholder="例: 4"
+                          className="h-11 w-full px-2 rounded-lg border border-slate-200 text-sm text-slate-700 font-bold text-center focus:border-sky-400 focus:outline-none" />
                       </td>
                       <td className="px-1 py-2.5 text-right">
                         <input type="number" min="0" value={it.currentPrice}
@@ -3736,7 +3749,7 @@ function PriceRevisionView({ data, masters, draft, setDraft, showToast, openPrin
                   );
                 })}
                 {draft.items.length === 0 && (
-                  <tr><td colSpan={6} className="px-5 py-10 text-center text-xs text-slate-600">左の商品一覧から「＋追加」で価格改定表に入れてください</td></tr>
+                  <tr><td colSpan={7} className="px-5 py-10 text-center text-xs text-slate-600">左の商品一覧から「＋追加」で価格改定表に入れてください</td></tr>
                 )}
               </tbody>
             </table>
@@ -3806,6 +3819,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
           name: p.prod, cat: prod ? prod.cat : 'その他', unit: p.unit || (prod ? prod.unit : ''),
           price: p.lastPrice > 0 ? p.lastPrice : (prod ? prod.lastPrice : 0),
           priceSrc: p.lastPrice > 0 ? 'この施設' : '全体',
+          cost: prod ? prod.cost : 0,
           last: dstr(p.lastDate),
         };
       });
@@ -3816,6 +3830,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
           name: prod.name, cat: prod.cat, unit: prod.unit,
           price: pair && pair.lastPrice > 0 ? pair.lastPrice : prod.lastPrice,
           priceSrc: pair && pair.lastPrice > 0 ? 'この施設' : '全体',
+          cost: prod.cost,
           last: pair ? dstr(pair.lastDate) : null,
         };
       });
@@ -3831,7 +3846,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
   const patch = (p) => setDraft(prev => ({ ...prev, ...p }));
   const addItem = (m) => {
     if (inItems.has(m.name)) { showToast('「' + m.name + '」はすでに明細にあります', 'info'); return; }
-    setDraft(prev => ({ ...prev, items: [...prev.items, { name: m.name, cat: m.cat || '', note: '', qty: isQuote ? 1 : '', unit: m.unit || '', caseSize: '', price: Math.round(m.price) || 0 }] }));
+    setDraft(prev => ({ ...prev, items: [...prev.items, { name: m.name, cat: m.cat || '', note: '', qty: isQuote ? 1 : '', unit: m.unit || '', caseSize: '', price: Math.round(m.price) || 0, cost: Math.round(m.cost) || 0 }] }));
   };
   const addBlank = () => setDraft(prev => ({ ...prev, items: [...prev.items, { name: '', cat: '', note: '', qty: isQuote ? 1 : '', unit: '', caseSize: '', price: 0 }] }));
   const setItem = (idx, p) => setDraft(prev => ({ ...prev, items: prev.items.map((it, i) => (i === idx ? { ...it, ...p } : it)) }));
@@ -3841,7 +3856,8 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
     // 商品名が空欄の行も、施設側が手書きで記入できるようそのまま印刷に含める。
     const items = draft.items;
     const common = {
-      facilityName: draft.facility, facilityAddress: draft.facilityAddress || '', repName: repName || '未設定', items,
+      facilityName: draft.facility, facilityAddress: draft.facilityAddress || '',
+      facilityTel: draft.facilityTel || '', facilityFax: draft.facilityFax || '', repName: repName || '未設定', items,
       showPrices: draft.showPrices, issued: isoToJa(draft.issued),
       note: draft.note, title: draft.title, office: masters.settings.office,
     };
@@ -3936,6 +3952,14 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
             <button type="button" onClick={() => patch({ facilityAddress: ' ' })}
               className="text-xs font-bold text-sky-600 hover:text-sky-800 transition">＋住所を追加</button>
           ) : null}
+          {draft.facilityTel === undefined || draft.facilityTel === '' ? (
+            <button type="button" onClick={() => patch({ facilityTel: ' ' })}
+              className="text-xs font-bold text-sky-600 hover:text-sky-800 transition">＋電話番号を追加</button>
+          ) : null}
+          {draft.facilityFax === undefined || draft.facilityFax === '' ? (
+            <button type="button" onClick={() => patch({ facilityFax: ' ' })}
+              className="text-xs font-bold text-sky-600 hover:text-sky-800 transition">＋FAX番号を追加</button>
+          ) : null}
         </div>
         {draft.facilityAddress !== undefined && draft.facilityAddress !== '' && (
           <div className="flex items-center gap-2">
@@ -3948,25 +3972,28 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
               className="text-slate-400 hover:text-rose-500 transition"><X size={15} /></button>
           </div>
         )}
-        <div className={"rounded-xl px-4 py-2.5 flex items-center gap-3 flex-wrap border " +
-          (draft.showPrices ? 'bg-amber-50 border-amber-200' : 'bg-slate-50 border-slate-200')}>
-          <span className="text-xs font-bold text-slate-600 shrink-0">金額表示</span>
-          <Toggle on={draft.showPrices} onChange={v => patch({ showPrices: v })}
-            labelOn="金額を記載する" labelOff="金額なし（数量のみ）" />
-          {isQuote && (
-            <span className="inline-flex items-center gap-3 border-l border-amber-200 pl-3">
-              <Toggle on={draft.showTotal !== false} onChange={v => patch({ showTotal: v })}
-                labelOn="合計金額を表示する" labelOff="合計金額を表示しない" />
-              {draft.showPrices && (
-                <label className="inline-flex items-center gap-1.5 text-sm text-slate-600 font-bold cursor-pointer select-none">
-                  <input type="checkbox" checked={!!draft.taxIncluded} onChange={e => patch({ taxIncluded: e.target.checked })}
-                    className="w-4 h-4 accent-sky-600 cursor-pointer" />
-                  （税込）で表示
-                </label>
-              )}
-            </span>
-          )}
-        </div>
+        {draft.facilityTel !== undefined && draft.facilityTel !== '' && (
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-slate-600 font-bold shrink-0">電話番号</span>
+            <input value={draft.facilityTel.trim() === '' ? '' : draft.facilityTel}
+              onChange={e => patch({ facilityTel: e.target.value })}
+              placeholder="発注元の電話番号（帳票に印刷されます）"
+              className={inputCls + ' w-64'} />
+            <button type="button" onClick={() => patch({ facilityTel: '' })}
+              className="text-slate-400 hover:text-rose-500 transition"><X size={15} /></button>
+          </div>
+        )}
+        {draft.facilityFax !== undefined && draft.facilityFax !== '' && (
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-slate-600 font-bold shrink-0">FAX番号</span>
+            <input value={draft.facilityFax.trim() === '' ? '' : draft.facilityFax}
+              onChange={e => patch({ facilityFax: e.target.value })}
+              placeholder="発注元のFAX番号（帳票に印刷されます）"
+              className={inputCls + ' w-64'} />
+            <button type="button" onClick={() => patch({ facilityFax: '' })}
+              className="text-slate-400 hover:text-rose-500 transition"><X size={15} /></button>
+          </div>
+        )}
         <div className="flex items-center gap-2 flex-wrap">
           <label className="inline-flex items-center gap-2 text-sm text-slate-600 font-bold">
             表題
@@ -4066,6 +4093,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                     <div className="text-xs text-slate-600 tabular-nums mt-0.5">
                       {m.cat}
                       {m.price > 0 && <> ・ 直近単価 <b className="text-slate-700">{yen(m.price)}</b>（{m.priceSrc}）</>}
+                      {m.cost > 0 && <> ・ 仕入 <b className="text-amber-700">{yen(m.cost)}</b></>}
                       {m.last && <> ・ 最終 {m.last}</>}
                     </div>
                   </div>
@@ -4090,11 +4118,17 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
 
           {/* 明細（すべて編集可） */}
           <Card>
-            <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5">
-              <div className="flex-1">
+            <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5 flex-wrap">
+              <div className="flex-1 min-w-[160px]">
                 <div className="font-bold text-sm text-slate-800">{isQuote ? '見積明細' : '発注明細'}<span className="text-slate-600 font-normal ml-1.5">{draft.items.length}品目</span></div>
                 <div className="text-[11px] text-slate-600">{draft.facility} {isQuote ? '宛の御見積書' : '→ 当社宛の発注書'}</div>
               </div>
+              <button onClick={() => patch({ showPrices: !draft.showPrices })}
+                title={draft.showPrices ? '金額を非表示にする' : '金額を表示する'}
+                className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-600 hover:text-slate-800 px-2 py-1 rounded-md hover:bg-slate-100 transition shrink-0">
+                {draft.showPrices ? <Eye size={13} /> : <EyeOff size={13} />}
+                金額{draft.showPrices ? '表示中' : '非表示中'}
+              </button>
               {isQuote && (
                 <button onClick={() => patch({ showTotal: !(draft.showTotal !== false) })}
                   title={draft.showTotal !== false ? '合計金額を非表示にする' : '合計金額を表示する'}
@@ -4102,6 +4136,13 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                   {draft.showTotal !== false ? <Eye size={13} /> : <EyeOff size={13} />}
                   合計{draft.showTotal !== false ? '表示中' : '非表示中'}
                 </button>
+              )}
+              {isQuote && draft.showPrices && (
+                <label className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-600 cursor-pointer select-none shrink-0">
+                  <input type="checkbox" checked={!!draft.taxIncluded} onChange={e => patch({ taxIncluded: e.target.checked })}
+                    className="w-3.5 h-3.5 accent-sky-600 cursor-pointer" />
+                  税込表示
+                </label>
               )}
               {(isQuote ? draft.showTotal !== false : draft.showPrices) && <span className="text-sm font-extrabold text-slate-800 tabular-nums">{yen(total)}<span className="text-[10px] text-slate-600 font-bold ml-1">税抜</span></span>}
             </div>
@@ -4111,8 +4152,8 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                   <tr className="text-xs uppercase tracking-wide text-slate-600 border-b border-slate-100">
                     <th className={"text-left font-bold px-4 py-2.5" + (isQuote ? '' : ' w-auto')}>商品名</th>
                     <th className={"text-right font-bold px-1 py-2.5 " + (isQuote ? 'w-20' : 'w-14')}>数量</th>
+                    <th className="text-center font-bold px-1 py-2.5 w-16">入数</th>
                     <th className={"text-left font-bold px-1 py-2.5 " + (isQuote ? 'w-16' : 'w-16')}>単位</th>
-                    {!isQuote && <th className="text-center font-bold px-1 py-2.5 w-16">入数</th>}
                     {draft.showPrices && <th className={"text-right font-bold px-1 py-2.5 " + (isQuote ? 'w-28' : 'w-24')}>単価</th>}
                     {draft.showPrices && !isQuote ? null : draft.showPrices ? <th className="text-right font-bold px-1 py-2.5 w-28">金額</th> : null}
                     <th className="w-16"></th>
@@ -4125,6 +4166,9 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                         <input value={it.name} onChange={e => setItem(i, { name: e.target.value })}
                           placeholder="商品名"
                           className="h-12 w-full px-3 rounded-lg border border-slate-200 text-sm font-bold text-slate-800 focus:border-sky-400 focus:outline-none" />
+                        {draft.showPrices && it.cost > 0 && (
+                          <div className="mt-1 text-[10px] text-amber-700 font-bold">仕入 {yen(it.cost)}{it.price > 0 && <> ・ 粗利 {yen(it.price - it.cost)}（{Math.round((it.price - it.cost) / it.price * 1000) / 10}%）</>}</div>
+                        )}
                         <input value={it.note || ''} onChange={e => setItem(i, { note: e.target.value })}
                           placeholder="備考（商品名の下に印刷されます）"
                           className="mt-1 h-8 w-full px-3 rounded-lg border border-slate-100 bg-slate-50 text-xs text-slate-600 focus:border-sky-400 focus:outline-none" />
@@ -4139,16 +4183,14 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                         )}
                       </td>
                       <td className="px-1 py-2.5">
+                        <input value={it.caseSize || ''} onChange={e => setItem(i, { caseSize: e.target.value })}
+                          placeholder="例: 4"
+                          className="h-12 w-full px-2 rounded-lg border border-slate-200 text-sm text-slate-700 font-bold text-center focus:border-sky-400 focus:outline-none" />
+                      </td>
+                      <td className="px-1 py-2.5">
                         <input value={it.unit} onChange={e => setItem(i, { unit: e.target.value })}
                           className="h-12 w-full px-2 rounded-lg border border-slate-200 text-sm text-slate-700 font-bold focus:border-sky-400 focus:outline-none" />
                       </td>
-                      {!isQuote && (
-                        <td className="px-1 py-2.5">
-                          <input value={it.caseSize || ''} onChange={e => setItem(i, { caseSize: e.target.value })}
-                            placeholder="例: 4"
-                            className="h-12 w-full px-2 rounded-lg border border-slate-200 text-sm text-slate-700 font-bold text-center focus:border-sky-400 focus:outline-none" />
-                        </td>
-                      )}
                       {draft.showPrices && (
                         <td className="px-1 py-2.5 text-right">
                           <input type="number" min="0" value={it.price}
@@ -4415,7 +4457,34 @@ function SettingsView({ rows, masters, setRows, setMasters, setOffice, meta, set
   return (
     <div className="space-y-4">
       <Segmented value={sub} onChange={setSub}
-        options={[['office', '営業所'], ['rep', '担当者対応表'], ['direct', '直送フラグ'], ['cat', '商品分類'], ['handling', '在庫扱い'], ['person', '施設/個人判定'], ['data', 'データ管理']]} />
+        options={[['office', '営業所'], ['rep', '担当者対応表'], ['direct', '直送フラグ'], ['cat', '商品分類'], ['handling', '在庫扱い'], ['person', '施設/個人判定'], ['labels', '画面名'], ['data', 'データ管理']]} />
+
+      {sub === 'labels' && (
+        <Card className="p-5 max-w-2xl">
+          <div className="font-bold text-sm text-slate-800 mb-1">画面名の変更</div>
+          <div className="text-xs text-slate-600 leading-relaxed mb-3">
+            左側メニューに表示される画面名を、自由に書き換えられます。空欄にすると元の名前に戻ります。
+          </div>
+          <div className="space-y-2">
+            {TABS.map(t => (
+              <div key={t.id} className="flex items-center gap-3">
+                <span className="w-40 shrink-0 text-xs text-slate-600 font-bold">{t.label}</span>
+                <input value={(masters.settings.tabLabels && masters.settings.tabLabels[t.id]) || ''}
+                  onChange={e => {
+                    const v = e.target.value;
+                    setMasters(prev => {
+                      const next = { ...(prev.settings.tabLabels || {}) };
+                      if (v.trim()) next[t.id] = v; else delete next[t.id];
+                      return { ...prev, settings: { ...prev.settings, tabLabels: next } };
+                    });
+                  }}
+                  placeholder={t.label}
+                  className="h-10 flex-1 px-3 rounded-xl border border-slate-200 bg-white text-sm shadow-sm focus:border-blue-400 focus:outline-none transition" />
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {sub === 'office' && (
         <Card className="p-5 max-w-2xl">
@@ -5100,6 +5169,7 @@ function App() {
   }, [printHtml]);
 
   const current = TABS.find(t => t.id === tab);
+  const labelOf = (t) => (masters.settings.tabLabels && masters.settings.tabLabels[t.id]) || t.label;
   const needData = data.empty && ['dash', 'fac', 'rep', 'prod', 'stock', 'lookup'].includes(tab);
   const office = officeByName(masters.settings.office);
 
@@ -5128,7 +5198,7 @@ function App() {
                 className={"w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-bold transition " +
                   (active ? 'bg-sky-500 text-white shadow-lg shadow-sky-200' : 'text-slate-700 hover:bg-sky-100/70 hover:text-sky-800')}>
                 <Icon size={16} className="shrink-0" />
-                <span className="flex-1 text-left">{t.label}</span>
+                <span className="flex-1 text-left">{labelOf(t)}</span>
               </button>
             );
           })}
@@ -5144,7 +5214,7 @@ function App() {
               <Sun size={16} className="text-white" />
             </div>
             <div className="flex-1 min-w-0">
-              <h1 className="font-extrabold text-slate-800 text-lg leading-tight truncate">{current.label}</h1>
+              <h1 className="font-extrabold text-slate-800 text-lg leading-tight truncate">{labelOf(current)}</h1>
               <div className="text-[11px] text-slate-600 truncate">{current.sub}</div>
             </div>
             {tab !== 'import' && (
@@ -5171,7 +5241,7 @@ function App() {
                 <button key={t.id} onClick={() => setTab(t.id)}
                   className={"inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition " +
                     (active ? 'bg-sky-500 text-white shadow-sm' : 'text-slate-700 bg-white border border-sky-100')}>
-                  <Icon size={13} /> {t.label}
+                  <Icon size={13} /> {labelOf(t)}
                 </button>
               );
             })}
