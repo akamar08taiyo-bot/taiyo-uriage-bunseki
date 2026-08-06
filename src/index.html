@@ -1151,7 +1151,7 @@ function buildQuoteHtml(m) {
 
     <table style="width:100%;border-collapse:collapse;margin-top:7mm;table-layout:fixed;">
       ${colgroup}
-      <tr><th style="${th}">品目</th><th style="${th}">入数</th><th style="${th}">数量</th><th style="${th}">単位</th>${sp ? `<th style="${th}">単価（税抜）</th><th style="${th}">金額（税抜）</th>` : ''}</tr>
+      <tr><th style="${th}">品目</th>${sc ? `<th style="${th}">入数</th>` : ''}<th style="${th}">数量</th><th style="${th}">単位</th>${sp ? `<th style="${th}">単価（税抜）</th><th style="${th}">金額（税抜）</th>` : ''}</tr>
       ${rows}
       ${st ? `
       <tr>
@@ -1251,12 +1251,13 @@ function buildPriceRevisionHtml(m) {
     ...(sa ? [{ w: 13 }, { w: 13 }, { w: 9.5 }, { w: 9.5 }] : []), // 現状/改定/増加額/増加率
   ];
   const colgroup = '<colgroup>' + cols.map(c => `<col style="width:${c.w}%">`).join('') + '</colgroup>';
-  const headCells = ['No.', '商品名', sc ? '入数' : null, '単位', sa ? '現状価格（税抜）' : null, sa ? '改定価格（税抜）' : null, sa ? '増加額' : null, sa ? '増加率' : null]
+  const headCells = ['No.', '商品名', sc ? '入数' : null, '単位', sa ? '現状価格（税抜）' : null, sa ? '改定価格（税抜）' : null, sa ? '値上がり／値下がり額' : null, sa ? '変動率' : null]
     .filter((v) => v !== null).map((label) => `<th style="${th}">${label}</th>`).join('');
   const rows = m.items.map((it, i) => {
     const diff = it.newPrice - it.currentPrice;
     const rate = it.currentPrice > 0 ? Math.round(diff / it.currentPrice * 1000) / 10 : 0;
     const diffColor = diff > 0 ? '#b91c1c' : diff < 0 ? '#1d4ed8' : '#4b5563';
+    const diffLabel = diff > 0 ? '値上がり' : diff < 0 ? '値下がり' : '';
     return `
     <tr style="background:${i % 2 === 1 ? '#f8fbff' : '#fff'}">
       <td style="${tdR}">${i + 1}</td>
@@ -1268,8 +1269,8 @@ function buildPriceRevisionHtml(m) {
       <td style="${td}text-align:center;">${escapeHTML(it.unit || '')}</td>
       ${sa ? `<td style="${tdR}">${yen(it.currentPrice)}</td>` : ''}
       ${sa ? `<td style="${tdR}font-weight:bold;">${yen(it.newPrice)}</td>` : ''}
-      ${sa ? `<td style="${tdR}color:${diffColor};font-weight:bold;">${diff > 0 ? '+' : ''}${yen(diff)}</td>` : ''}
-      ${sa ? `<td style="${tdR}color:${diffColor};font-weight:bold;">${diff > 0 ? '+' : ''}${rate}%</td>` : ''}
+      ${sa ? `<td style="${tdR}color:${diffColor};font-weight:bold;">${diff === 0 ? '―' : `<div style="font-size:6.5pt;">${diffLabel}</div>${yen(Math.abs(diff))}`}</td>` : ''}
+      ${sa ? `<td style="${tdR}color:${diffColor};font-weight:bold;">${diff === 0 ? '―' : Math.abs(rate) + '%'}</td>` : ''}
     </tr>`;
   }).join('');
   return `
@@ -3889,8 +3890,8 @@ function PriceRevisionView({ data, masters, draft, setDraft, showToast, openPrin
                   {draft.showCaseSize && <th className="text-center font-bold px-1 py-2.5 w-12 shrink-0">入数</th>}
                   {draft.showAmounts && <th className="text-right font-bold px-1 py-2.5 w-20 shrink-0">現状価格</th>}
                   {draft.showAmounts && <th className="text-right font-bold px-1 py-2.5 w-20 shrink-0">改定価格</th>}
-                  {draft.showAmounts && <th className="text-right font-bold px-1 py-2.5 w-16 shrink-0">増加額</th>}
-                  {draft.showAmounts && <th className="text-right font-bold px-1 py-2.5 w-14 shrink-0">増加率</th>}
+                  {draft.showAmounts && <th className="text-right font-bold px-1 py-2.5 w-20 shrink-0">値上がり／値下がり額</th>}
+                  {draft.showAmounts && <th className="text-right font-bold px-1 py-2.5 w-14 shrink-0">変動率</th>}
                   <th className="w-8"></th>
                 </tr>
               </thead>
@@ -3926,8 +3927,15 @@ function PriceRevisionView({ data, masters, draft, setDraft, showToast, openPrin
                             className="h-11 w-full px-2 rounded-lg border border-amber-200 bg-amber-50/50 text-right tabular-nums text-sm font-bold focus:border-amber-400 focus:outline-none" />
                         </td>
                       )}
-                      {draft.showAmounts && <td className={"px-1 py-2.5 text-right tabular-nums font-extrabold text-sm " + tone}>{diff > 0 ? '+' : ''}{num(diff)}</td>}
-                      {draft.showAmounts && <td className={"px-1 py-2.5 text-right tabular-nums font-extrabold text-sm " + tone}>{diff > 0 ? '+' : ''}{rate}%</td>}
+                      {draft.showAmounts && (
+                        <td className={"px-1 py-2.5 text-right tabular-nums font-extrabold text-sm " + tone}>
+                          {diff === 0 ? '―' : <>
+                            <div className="text-[9px] font-bold leading-none mb-0.5">{diff > 0 ? '値上がり' : '値下がり'}</div>
+                            {num(Math.abs(diff))}
+                          </>}
+                        </td>
+                      )}
+                      {draft.showAmounts && <td className={"px-1 py-2.5 text-right tabular-nums font-extrabold text-sm " + tone}>{diff === 0 ? '―' : Math.abs(rate) + '%'}</td>}
                       <td className="pr-3 text-right">
                         <button onClick={() => delItem(i)} className="text-slate-400 hover:text-rose-500 transition"><X size={15} /></button>
                       </td>
