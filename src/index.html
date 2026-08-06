@@ -1031,6 +1031,7 @@ function buildFacilityOrderHtml(m) {
   const td = 'padding:2.2mm 2mm;border:1px solid #bfdbfe;font-size:9.5pt;';
   const tdR = td + 'text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;';
   const sp = m.showPrices;
+  const sc = m.showCaseSize !== false;
   const o = officeByName(m.office);
   // 数量は施設側が手書きで記入する欄。入力済みなら数字、未入力なら空欄のまま
   const qtyCell = (q) => (q === '' || q === null || q === undefined ? '' : num(q));
@@ -1043,14 +1044,16 @@ function buildFacilityOrderHtml(m) {
         <div ${ed}>${escapeHTML(it.name)}</div>
         ${it.note ? `<div style="margin-top:0.5mm;font-size:7.5pt;color:#6b7280;" ${ed}>${escapeHTML(it.note)}</div>` : ''}
       </td>
-      <td style="${td}text-align:center;" ${ed}>${escapeHTML(it.caseSize || '')}</td>
+      ${sc ? `<td style="${td}text-align:center;" ${ed}>${escapeHTML(it.caseSize || '')}</td>` : ''}
       <td style="${tdR}background:#fffdf5;" ${ed}>${qtyCell(it.qty)}</td>
       <td style="${td}text-align:center;" ${ed}>${escapeHTML(it.unit)}</td>
       ${sp ? `<td style="${tdR}" ${ed}>${it.price > 0 ? yen(it.price) : ''}</td>` : ''}
     </tr>`).join('');
   const colgroup = sp
-    ? '<colgroup><col style="width:7%"><col style="width:47%"><col style="width:9%"><col style="width:12%"><col style="width:8%"><col style="width:17%"></colgroup>'
-    : '<colgroup><col style="width:8%"><col style="width:56%"><col style="width:12%"><col style="width:12%"><col style="width:12%"></colgroup>';
+    ? (sc ? '<colgroup><col style="width:7%"><col style="width:40%"><col style="width:9%"><col style="width:12%"><col style="width:8%"><col style="width:17%"></colgroup>'
+          : '<colgroup><col style="width:7%"><col style="width:49%"><col style="width:12%"><col style="width:8%"><col style="width:17%"></colgroup>')
+    : (sc ? '<colgroup><col style="width:8%"><col style="width:48%"><col style="width:12%"><col style="width:12%"><col style="width:12%"></colgroup>'
+          : '<colgroup><col style="width:8%"><col style="width:60%"><col style="width:16%"><col style="width:16%"></colgroup>');
   const noteHtml = String(m.note || '').split('\n').map(l => escapeHTML(l)).join('<br>');
   return `
   <style>.editable{outline:1px dashed transparent;outline-offset:1px;cursor:text;}.editable:hover,.editable:focus{outline-color:#93c5fd;background:rgba(219,234,254,.35);}</style>
@@ -1078,7 +1081,7 @@ function buildFacilityOrderHtml(m) {
 
     <table style="width:100%;border-collapse:collapse;margin-top:7mm;table-layout:fixed;">
       ${colgroup}
-      <tr><th style="${th}">No.</th><th style="${th}">商品名</th><th style="${th}">入数</th><th style="${th}">数量</th><th style="${th}">単位</th>${sp ? `<th style="${th}">単価（税抜）</th>` : ''}</tr>
+      <tr><th style="${th}">No.</th><th style="${th}">商品名</th>${sc ? `<th style="${th}">入数</th>` : ''}<th style="${th}">数量</th><th style="${th}">単位</th>${sp ? `<th style="${th}">単価（税抜）</th>` : ''}</tr>
       ${rows}
     </table>
     ${m.items.some(it => !String(it.name).trim()) ? `<div style="margin-top:2mm;font-size:7.5pt;color:#9ca3af;">※商品名が空欄の行は、リストにない商品を手書きでご記入いただく欄です。</div>` : ''}
@@ -1098,6 +1101,7 @@ function buildQuoteHtml(m) {
   const td = 'padding:1.8mm 2mm;border:1px solid #bfdbfe;font-size:9.5pt;';
   const tdR = td + 'text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;';
   const sp = m.showPrices;
+  const sc = m.showCaseSize !== false;
   const st = m.showTotal !== false;   // 合計金額の表示（単価・明細金額とは独立したトグル）
   const qn = (q) => (Number(q) || 0);
   const ed = 'class="editable" contenteditable="true"';
@@ -1108,7 +1112,7 @@ function buildQuoteHtml(m) {
         <div ${ed}>${escapeHTML(it.name)}</div>
         ${it.note ? `<div style="margin-top:0.5mm;font-size:7.5pt;color:#6b7280;" ${ed}>${escapeHTML(it.note)}</div>` : ''}
       </td>
-      <td style="${td}text-align:center;" ${ed}>${escapeHTML(it.caseSize || '')}</td>
+      ${sc ? `<td style="${td}text-align:center;" ${ed}>${escapeHTML(it.caseSize || '')}</td>` : ''}
       <td style="${tdR}" ${ed}>${it.qty === '' ? '' : num(it.qty)}</td>
       <td style="${td}text-align:center;" ${ed}>${escapeHTML(it.unit)}</td>
       ${sp ? `<td style="${tdR}" ${ed}>${yen(it.price)}</td><td style="${tdR}" ${ed}>${yen(qn(it.qty) * it.price)}</td>` : ''}
@@ -1117,9 +1121,11 @@ function buildQuoteHtml(m) {
   const tax = Math.floor(sub * 0.1);
   const total = sub + tax;
   const colgroup = sp
-    ? '<colgroup><col style="width:42%"><col style="width:8%"><col style="width:9%"><col style="width:7%"><col style="width:16%"><col style="width:18%"></colgroup>'
-    : '<colgroup><col style="width:58%"><col style="width:12%"><col style="width:14%"><col style="width:16%"></colgroup>';
-  const totalColspan = sp ? 5 : 3;
+    ? (sc ? '<colgroup><col style="width:42%"><col style="width:8%"><col style="width:9%"><col style="width:7%"><col style="width:16%"><col style="width:18%"></colgroup>'
+          : '<colgroup><col style="width:48%"><col style="width:11%"><col style="width:9%"><col style="width:16%"><col style="width:16%"></colgroup>')
+    : (sc ? '<colgroup><col style="width:58%"><col style="width:12%"><col style="width:14%"><col style="width:16%"></colgroup>'
+          : '<colgroup><col style="width:66%"><col style="width:16%"><col style="width:18%"></colgroup>');
+  const totalColspan = (sp ? 4 : 2) + (sc ? 1 : 0);
   return `
   <style>.editable{outline:1px dashed transparent;outline-offset:1px;cursor:text;}.editable:hover,.editable:focus{outline-color:#93c5fd;background:rgba(219,234,254,.35);}</style>
   <div class="doc" style="width:210mm;min-height:297mm;padding:14mm 13mm;background:#fff;box-sizing:border-box;font-family:'BIZ UDPMincho','Yu Mincho','Hiragino Mincho ProN',serif;color:#1f2937;font-size:9.5pt;line-height:1.6;">
@@ -1179,7 +1185,9 @@ function buildSalesSearchHtml(m) {
   // 仕入単価・仕入金額は社内限り情報のため、印刷時にひと目で分かるよう色付けする
   const thCost = 'background:#fef3c7;color:#92400e;font-size:8pt;padding:1.5mm 1.8mm;border:1px solid #fcd34d;font-weight:bold;';
   const tdCost = 'padding:1.4mm 1.8mm;border:1px solid #fde68a;background:#fffbeb;font-size:8.5pt;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;color:#92400e;font-weight:bold;';
-  const body = m.rows.length ? m.rows.map((r, i) => `
+  const body = m.rows.length ? m.rows.map((r, i) => {
+    const marginPct = r.amount > 0 ? Math.round(r.gross / r.amount * 1000) / 10 : null;
+    return `
     <tr style="background:${i % 2 === 1 ? '#f8fbff' : '#fff'}">
       <td style="${td}white-space:nowrap;">${escapeHTML(r.date)}</td>
       <td style="${td}overflow-wrap:anywhere;">${escapeHTML(r.customer)}${r.custType ? '（' + escapeHTML(r.custType) + '）' : ''}</td>
@@ -1190,7 +1198,9 @@ function buildSalesSearchHtml(m) {
       <td style="${tdCost}">${r.costPrice > 0 ? yen(r.costPrice) : '—'}</td>
       <td style="${tdCost}">${r.costPrice > 0 ? yen(r.qty * r.costPrice) : '—'}</td>
       <td style="${tdR}">${yen(r.gross)}</td>
-    </tr>`).join('') : `<tr><td colspan="9" style="${td}text-align:center;color:#6b7280;">該当する取引はありません</td></tr>`;
+      <td style="${tdR}">${marginPct === null ? '—' : marginPct + '%'}</td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="10" style="${td}text-align:center;color:#6b7280;">該当する取引はありません</td></tr>`;
   return `
   <div class="doc" style="width:210mm;min-height:297mm;padding:14mm 13mm;background:#fff;box-sizing:border-box;font-family:'BIZ UDPMincho','Yu Mincho','Hiragino Mincho ProN',serif;color:#1f2937;font-size:9.5pt;line-height:1.6;">
     <div style="font-size:18pt;letter-spacing:0.4em;color:#1e3a8a;border-bottom:1.5px solid #3b82f6;padding-bottom:2mm;display:inline-block;">売上検索結果</div>
@@ -1211,8 +1221,8 @@ function buildSalesSearchHtml(m) {
 
     <div style="margin-top:6mm;color:#1e3a8a;font-weight:bold;font-size:10pt;border-left:3px solid #2563eb;padding-left:2mm;">取引明細（${num(m.rows.length)}件）</div>
     <table style="width:100%;border-collapse:collapse;margin-top:2mm;table-layout:fixed;">
-      <colgroup><col style="width:9%"><col style="width:16%"><col style="width:22%"><col style="width:9%"><col style="width:10%"><col style="width:10%"><col style="width:8%"><col style="width:8%"><col style="width:8%"></colgroup>
-      <tr><th style="${th}">日付</th><th style="${th}">お客様名</th><th style="${th}">商品名</th><th style="${th}">数量</th><th style="${th}">販売単価</th><th style="${th}">金額</th><th style="${thCost}">仕入単価</th><th style="${thCost}">仕入金額</th><th style="${th}">粗利額</th></tr>
+      <colgroup><col style="width:8%"><col style="width:15%"><col style="width:20%"><col style="width:8%"><col style="width:9%"><col style="width:9%"><col style="width:7%"><col style="width:7%"><col style="width:7%"><col style="width:7%"></colgroup>
+      <tr><th style="${th}">日付</th><th style="${th}">お客様名</th><th style="${th}">商品名</th><th style="${th}">数量</th><th style="${th}">販売単価</th><th style="${th}">金額</th><th style="${thCost}">仕入単価</th><th style="${thCost}">仕入金額</th><th style="${th}">粗利額</th><th style="${th}">利益率</th></tr>
       ${body}
     </table>
 
@@ -1624,7 +1634,7 @@ function CalcPad() {
   const numBtn = "h-11 rounded-lg text-sm font-bold bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 active:scale-95 transition tabular-nums";
   const opBtn = "h-11 rounded-lg text-sm font-bold bg-sky-50 text-sky-600 hover:bg-sky-100 active:scale-95 transition";
   return (
-    <Card className="p-3 sticky top-20">
+    <Card className="p-3 sticky top-20 min-w-0 max-w-full lg:max-w-[280px]">
       <div className="flex items-center gap-1.5 mb-2.5 text-xs font-bold text-slate-600">
         <Calculator size={14} className="text-slate-400" /> 電卓
       </div>
@@ -2252,17 +2262,19 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
         </div>
 
         <Card className="px-5 py-4">
-          <div className="flex items-center gap-3 flex-wrap">
-            <span className="inline-flex items-center justify-center w-11 h-11 rounded-2xl bg-sky-50 text-sky-500 shrink-0"><Building2 size={20} /></span>
-            <div className="flex-1 min-w-0">
-              <div className="font-extrabold text-slate-800 text-lg leading-tight">{f.name}</div>
-              <div className="text-[11px] text-slate-600 mt-0.5">
-                担当: {f.repName}
-                {f.direct && <span className="ml-2 inline-flex items-center gap-0.5 bg-violet-50 text-violet-600 text-[10px] font-bold px-1.5 py-0.5 rounded-md"><Truck size={10} />直送</span>}
-                <span className="ml-2">対象期間: {idxLabel(data.win[0])} 〜 {idxLabel(data.win[11])}</span>
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="inline-flex items-center justify-center w-11 h-11 rounded-2xl bg-sky-50 text-sky-500 shrink-0"><Building2 size={20} /></span>
+              <div className="min-w-0">
+                <div className="font-extrabold text-slate-800 text-lg leading-tight break-words">{f.name}</div>
+                <div className="text-[11px] text-slate-600 mt-0.5">
+                  担当: {f.repName}
+                  {f.direct && <span className="ml-2 inline-flex items-center gap-0.5 bg-violet-50 text-violet-600 text-[10px] font-bold px-1.5 py-0.5 rounded-md"><Truck size={10} />直送</span>}
+                  <span className="ml-2">対象期間: {idxLabel(data.win[0])} 〜 {idxLabel(data.win[11])}</span>
+                </div>
               </div>
             </div>
-            <div className="flex gap-2 flex-wrap">
+            <div className="flex gap-2 flex-wrap shrink-0">
               <button onClick={() => handleProdCsv(f)}
                 className="bg-white border border-teal-200 hover:border-teal-300 active:scale-[.98] text-teal-700 px-3.5 py-2 rounded-xl shadow-sm text-xs font-bold transition inline-flex items-center gap-1.5">
                 <FileSpreadsheet size={13} /> 商品別CSV
@@ -3713,6 +3725,7 @@ const newDocDraft = (type, facility) => ({
   items: [],
   showPrices: false,   // 発注書・見積書とも初期状態は金額なし
   showTotal: false,    // 見積書の合計金額欄。デフォルト非表示（見積明細の表示切替ボタンで切り替え）
+  showCaseSize: true,  // 入数列の表示/非表示
   taxIncluded: false,   // 見積書はデフォルト税抜表記。チェックで税込に切替
 });
 const isoToJa = (iso) => {
@@ -3814,7 +3827,7 @@ function PriceRevisionView({ data, masters, draft, setDraft, showToast, openPrin
         </div>
       </Card>
 
-      <div className="grid lg:grid-cols-[minmax(300px,0.8fr)_minmax(560px,2fr)_minmax(200px,0.5fr)] gap-5 items-start">
+      <div className="grid lg:grid-cols-[minmax(300px,0.8fr)_minmax(560px,2fr)_minmax(200px,0.5fr)] gap-5 items-start [&>*]:min-w-0">
         <Card>
           <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5 flex-wrap">
             <span className="font-bold text-sm text-slate-700">商品を選ぶ</span>
@@ -4177,7 +4190,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
     const common = {
       facilityName: draft.facility, facilityAddress: draft.facilityAddress || '',
       facilityTel: draft.facilityTel || '', facilityFax: draft.facilityFax || '', repName: repName || '未設定', items,
-      showPrices: draft.showPrices, issued: isoToJa(draft.issued),
+      showPrices: draft.showPrices, showCaseSize: draft.showCaseSize !== false, issued: isoToJa(draft.issued),
       note: draft.note, title: draft.title, office: masters.settings.office,
     };
     return isQuote
@@ -4381,7 +4394,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
       </Card>
 
       {(
-        <div className="grid lg:grid-cols-[minmax(340px,1fr)_minmax(420px,1.3fr)_minmax(240px,0.65fr)] gap-5 items-start">
+        <div className="grid lg:grid-cols-[minmax(340px,1fr)_minmax(420px,1.3fr)_minmax(240px,0.65fr)] gap-5 items-start [&>*]:min-w-0">
           {/* 商品マスタ */}
           <Card>
             <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5 flex-wrap">
@@ -4454,6 +4467,12 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                   {draft.showPrices ? <Eye size={13} /> : <EyeOff size={13} />}
                   金額{draft.showPrices ? '表示中' : '非表示中'}
                 </button>
+                <button onClick={() => patch({ showCaseSize: !(draft.showCaseSize !== false) })}
+                  title={draft.showCaseSize !== false ? '入数を非表示にする' : '入数を表示する'}
+                  className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-600 hover:text-slate-800 px-2 py-1 rounded-md border border-slate-200 hover:bg-slate-100 transition shrink-0">
+                  {draft.showCaseSize !== false ? <Eye size={13} /> : <EyeOff size={13} />}
+                  入数{draft.showCaseSize !== false ? '表示中' : '非表示中'}
+                </button>
                 {isQuote && (
                   <button onClick={() => patch({ showTotal: !(draft.showTotal !== false) })}
                     title={draft.showTotal !== false ? '合計金額を非表示にする' : '合計金額を表示する'}
@@ -4476,7 +4495,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                 <thead>
                   <tr className="text-xs uppercase tracking-wide text-slate-600 border-b border-slate-100">
                     <th className={"text-left font-bold px-4 py-2.5" + (isQuote ? '' : ' w-auto')}>商品名</th>
-                    <th className="text-center font-bold px-1 py-2.5 w-16">入数</th>
+                    {draft.showCaseSize !== false && <th className="text-center font-bold px-1 py-2.5 w-16">入数</th>}
                     <th className={"text-right font-bold px-1 py-2.5 " + (isQuote ? 'w-20' : 'w-14')}>数量</th>
                     <th className={"text-left font-bold px-1 py-2.5 " + (isQuote ? 'w-16' : 'w-16')}>単位</th>
                     {draft.showPrices && <th className={"text-right font-bold px-1 py-2.5 " + (isQuote ? 'w-28' : 'w-24')}>単価</th>}
@@ -4498,10 +4517,12 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                           placeholder="備考（商品名の下に印刷されます）"
                           className="mt-1 h-8 w-full px-3 rounded-lg border border-slate-100 bg-slate-50 text-xs text-slate-600 focus:border-sky-400 focus:outline-none" />
                       </td>
-                      <td className="px-1 py-2.5">
-                        <input value={it.caseSize || ''} onChange={e => setItem(i, { caseSize: e.target.value })}
-                          className="h-12 w-full px-2 rounded-lg border border-slate-200 text-sm text-slate-700 font-bold text-center placeholder:font-normal placeholder:text-slate-400 focus:border-sky-400 focus:outline-none" />
-                      </td>
+                      {draft.showCaseSize !== false && (
+                        <td className="px-1 py-2.5">
+                          <input value={it.caseSize || ''} onChange={e => setItem(i, { caseSize: e.target.value })}
+                            className="h-12 w-full px-2 rounded-lg border border-slate-200 text-sm text-slate-700 font-bold text-center placeholder:font-normal placeholder:text-slate-400 focus:border-sky-400 focus:outline-none" />
+                        </td>
+                      )}
                       <td className="px-1 py-2.5 text-right">
                         {isQuote ? (
                           <input type="number" min="0" value={it.qty}
@@ -5258,6 +5279,7 @@ function SalesSearchPanel({ rows, masters, showToast, openPrint }) {
       case 'costPrice': return +r[10] || 0;
       case 'cost': return (+r[4] || 0) * (+r[10] || 0);
       case 'gross': return +r[8] || 0;
+      case 'marginPct': return (+r[7] || 0) > 0 ? (+r[8] || 0) / (+r[7] || 0) : 0;
       default: return 0;
     }
   };
@@ -5295,10 +5317,14 @@ function SalesSearchPanel({ rows, masters, showToast, openPrint }) {
   );
 
   const handleCsv = () => {
-    const head = ['売上日', 'お客様名', '種別', '担当', '商品名', '数量', '単位', '販売単価', '金額', '仕入単価', '仕入金額', '粗利額'];
-    const lines = sorted.map(r => [
-      r[1], r[2], custType(r[2]) || '不明', repOf(r[2]), r[3], r[4], r[5], r[6], r[7], r[10], (+r[4] || 0) * (+r[10] || 0), r[8],
-    ]);
+    const head = ['売上日', 'お客様名', '種別', '担当', '商品名', '数量', '単位', '販売単価', '金額', '仕入単価', '仕入金額', '粗利額', '利益率%'];
+    const lines = sorted.map(r => {
+      const amount = +r[7] || 0, gross = +r[8] || 0;
+      return [
+        r[1], r[2], custType(r[2]) || '不明', repOf(r[2]), r[3], r[4], r[5], r[6], r[7], r[10], (+r[4] || 0) * (+r[10] || 0), r[8],
+        amount > 0 ? Math.round(gross / amount * 1000) / 10 : '',
+      ];
+    });
     downloadText('売上管理_' + q.replace(/[\\/:*?"<>|]/g, '') + '_' + todayCompact() + '.csv', buildCsv([head, ...lines]), 'text/csv');
     showToast('CSVを出力しました（Excelでそのまま開けます）');
   };
@@ -5379,11 +5405,15 @@ function SalesSearchPanel({ rows, masters, showToast, openPrint }) {
                   <Th k="amount" className="text-right font-bold px-2 py-3 pr-4">金額</Th>
                   <Th k="costPrice" className="text-right font-bold px-2 py-3 pr-4">仕入単価</Th>
                   <Th k="cost" className="text-right font-bold px-2 py-3 pr-4">仕入金額</Th>
-                  <Th k="gross" className="text-right font-bold px-5 py-3">粗利額</Th>
+                  <Th k="gross" className="text-right font-bold px-2 py-3 pr-4">粗利額</Th>
+                  <Th k="marginPct" className="text-right font-bold px-5 py-3">利益率</Th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
-                {visible.map((r, i) => (
+                {visible.map((r, i) => {
+                  const amount = +r[7] || 0, gross = +r[8] || 0;
+                  const marginPct = amount > 0 ? Math.round(gross / amount * 1000) / 10 : null;
+                  return (
                   <tr key={i} className="hover:bg-sky-50/50 transition">
                     <td className="px-5 py-2.5 text-slate-600 tabular-nums whitespace-nowrap">{r[1]}</td>
                     <td className="px-2 py-2.5 text-slate-700 font-bold">
@@ -5400,11 +5430,13 @@ function SalesSearchPanel({ rows, masters, showToast, openPrint }) {
                     <td className="px-2 py-2.5 pr-4 text-right tabular-nums font-bold text-slate-800">{yen(r[7])}</td>
                     <td className="px-2 py-2.5 pr-4 text-right tabular-nums text-slate-600">{(+r[10] || 0) > 0 ? yen(r[10]) : '—'}</td>
                     <td className="px-2 py-2.5 pr-4 text-right tabular-nums text-slate-600">{(+r[10] || 0) > 0 ? yen((+r[4] || 0) * (+r[10] || 0)) : '—'}</td>
-                    <td className="px-5 py-2.5 text-right tabular-nums font-bold text-slate-700">{yen(r[8])}</td>
+                    <td className="px-2 py-2.5 pr-4 text-right tabular-nums font-bold text-slate-700">{yen(r[8])}</td>
+                    <td className={"px-5 py-2.5 text-right tabular-nums font-bold " + (marginPct === null ? 'text-slate-400' : marginPct < 0 ? 'text-rose-600' : 'text-emerald-600')}>{marginPct === null ? '—' : marginPct + '%'}</td>
                   </tr>
-                ))}
+                  );
+                })}
                 {visible.length === 0 && (
-                  <tr><td colSpan={10} className="px-5 py-10 text-center text-sm text-slate-500">「{q}」に一致する取引はありません</td></tr>
+                  <tr><td colSpan={11} className="px-5 py-10 text-center text-sm text-slate-500">「{q}」に一致する取引はありません</td></tr>
                 )}
               </tbody>
             </table>
