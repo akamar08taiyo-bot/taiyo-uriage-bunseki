@@ -5054,6 +5054,7 @@ function App() {
   // 発注書 / 見積書 の作成中ドラフト（タブを移動しても消えない）
   const [orderDraft, setOrderDraft] = useState(() => newDocDraft('order', ''));
   const [quoteDraft, setQuoteDraft] = useState(() => newDocDraft('quote', ''));
+  const [priceRevisionDraft, setPriceRevisionDraft] = useState(() => newPriceRevisionDraft());
   const toastId = useRef(0);
 
   const showToast = useCallback((msg, type, dur) => {
@@ -5188,6 +5189,7 @@ function App() {
               {tab === 'stock' && <StockView data={data} masters={masters} setMasters={setMasters} showToast={showToast} openPrint={setPrintHtml} />}
               {tab === 'order' && <DocComposer docType="order" data={data} masters={masters} draft={orderDraft} setDraft={setOrderDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} goImport={() => setTab('import')} />}
               {tab === 'quote' && <DocComposer docType="quote" data={data} masters={masters} draft={quoteDraft} setDraft={setQuoteDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} goImport={() => setTab('import')} />}
+              {tab === 'pricerevision' && <PriceRevisionView data={data} masters={masters} draft={priceRevisionDraft} setDraft={setPriceRevisionDraft} showToast={showToast} openPrint={setPrintHtml} />}
               {tab === 'import' && <ImportView rows={rows} masters={masters} setRows={setRows} setMasters={setMasters} setMeta={setMeta} setDocs={setDocs} showToast={showToast} />}
               {tab === 'settings' && <SettingsView rows={rows} masters={masters} setRows={setRows} setMasters={setMasters} setOffice={setOffice} meta={meta} setMeta={setMeta} docs={docs} setDocs={setDocs} data={data} showToast={showToast} />}
             </>
