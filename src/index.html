@@ -3726,6 +3726,7 @@ const newDocDraft = (type, facility) => ({
   issued: todayISO(),
   note: type === 'quote' ? DEFAULT_QUOTE_NOTE : DEFAULT_ORDER_NOTE,
   items: [],
+  showNote: false,     // 備考欄はデフォルト非表示（必要なときだけ開いて編集）
   showPrices: false,   // 発注書・見積書とも初期状態は金額なし
   showTotal: false,    // 見積書の合計金額欄。デフォルト非表示（見積明細の表示切替ボタンで切り替え）
   showCaseSize: true,  // 入数列の表示/非表示
@@ -3743,6 +3744,7 @@ const isoToJa = (iso) => {
 ============================================================ */
 const newPriceRevisionDraft = () => ({
   facility: '', rep: '', title: '価格改定のご案内', issued: todayISO(), note: '', items: [],
+  showNote: false,      // 備考欄はデフォルト非表示（必要なときだけ開いて編集）
   showCaseSize: true, showRate: true, showAmounts: true,
 });
 // 利益率(%) = (価格-仕入)/価格*100。仕入・利益率から価格を逆算する式も用意。
@@ -3888,12 +3890,12 @@ function PriceRevisionView({ data, masters, draft, setDraft, showToast, openPrin
             <table className="w-full text-sm min-w-[420px]">
               <thead>
                 <tr className="text-xs uppercase tracking-wide text-slate-600 border-b border-slate-100">
-                  <th className="text-left font-bold px-4 py-2.5 min-w-[260px] w-full">商品名</th>
-                  {draft.showCaseSize && <th className="text-center font-bold px-1 py-2.5 w-12 shrink-0">入数</th>}
-                  {draft.showAmounts && <th className="text-right font-bold px-1 py-2.5 w-20 shrink-0">現状価格</th>}
-                  {draft.showAmounts && <th className="text-right font-bold px-1 py-2.5 w-20 shrink-0">改定価格</th>}
-                  {draft.showAmounts && <th className="text-right font-bold px-1 py-2.5 w-20 shrink-0">値上がり／値下がり額</th>}
-                  {draft.showAmounts && <th className="text-right font-bold px-1 py-2.5 w-14 shrink-0">変動率</th>}
+                  <th className="text-left font-bold px-4 py-2.5 min-w-[260px] whitespace-nowrap">商品名</th>
+                  {draft.showCaseSize && <th className="text-center font-bold px-1 py-2.5 w-12 whitespace-nowrap">入数</th>}
+                  {draft.showAmounts && <th className="text-right font-bold px-1 py-2.5 w-20 whitespace-nowrap">現状価格</th>}
+                  {draft.showAmounts && <th className="text-right font-bold px-1 py-2.5 w-20 whitespace-nowrap">改定価格</th>}
+                  {draft.showAmounts && <th className="text-right font-bold px-1 py-2.5 w-24 whitespace-nowrap">値上がり／値下がり額</th>}
+                  {draft.showAmounts && <th className="text-right font-bold px-1 py-2.5 w-16 whitespace-nowrap">変動率</th>}
                   <th className="w-8"></th>
                 </tr>
               </thead>
@@ -3960,9 +3962,16 @@ function PriceRevisionView({ data, masters, draft, setDraft, showToast, openPrin
             </table>
           </div>
           <div className="px-4 py-3 border-t border-slate-100">
-            <div className="text-[11px] font-bold text-slate-600 uppercase tracking-wide mb-1.5">備考（そのまま帳票に印刷されます）</div>
-            <textarea rows={3} value={draft.note} onChange={e => patch({ note: e.target.value })}
-              className="w-full rounded-xl border border-slate-200 p-3 text-xs resize-y focus:border-blue-400 focus:outline-none transition leading-relaxed" />
+            <button onClick={() => patch({ showNote: !draft.showNote })}
+              className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-600 hover:text-slate-800 transition">
+              {draft.showNote ? <EyeOff size={13} /> : <Eye size={13} />}
+              備考{draft.showNote ? 'を隠す' : 'を表示・編集する（そのまま帳票に印刷されます）'}
+              {!draft.showNote && draft.note.trim() && <span className="text-sky-600">・入力あり</span>}
+            </button>
+            {draft.showNote && (
+              <textarea rows={3} value={draft.note} onChange={e => patch({ note: e.target.value })}
+                className="mt-1.5 w-full rounded-xl border border-slate-200 p-3 text-xs resize-y focus:border-blue-400 focus:outline-none transition leading-relaxed" />
+            )}
           </div>
           <div className="px-5 py-3 bg-sky-50/70 text-[11px] text-slate-700 leading-relaxed border-t border-sky-100">
             商品を選ぶと現状価格（直近の販売価格）が自動で入ります。改定価格を入力すると増加額・増加率が自動計算されます。合計金額は表示されません。
@@ -4590,9 +4599,16 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                 className="text-xs font-bold text-sky-600 hover:text-sky-800 transition">＋ 空の行を追加（履歴にない商品を手入力）</button>
             </div>
             <div className="px-4 py-3 border-t border-slate-100">
-              <div className="text-[11px] font-bold text-slate-600 uppercase tracking-wide mb-1.5">全体の備考（そのまま帳票に印刷されます）</div>
-              <textarea rows={4} value={draft.note} onChange={e => patch({ note: e.target.value })}
-                className="w-full rounded-xl border border-slate-200 p-3 text-xs resize-y focus:border-blue-400 focus:outline-none transition leading-relaxed" />
+              <button onClick={() => patch({ showNote: !draft.showNote })}
+                className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-600 hover:text-slate-800 transition">
+                {draft.showNote ? <EyeOff size={13} /> : <Eye size={13} />}
+                備考{draft.showNote ? 'を隠す' : 'を表示・編集する（そのまま帳票に印刷されます）'}
+                {!draft.showNote && draft.note.trim() && <span className="text-sky-600">・入力あり</span>}
+              </button>
+              {draft.showNote && (
+                <textarea rows={4} value={draft.note} onChange={e => patch({ note: e.target.value })}
+                  className="mt-1.5 w-full rounded-xl border border-slate-200 p-3 text-xs resize-y focus:border-blue-400 focus:outline-none transition leading-relaxed" />
+              )}
             </div>
             <div className="px-5 py-3 bg-sky-50/70 text-[11px] text-slate-700 leading-relaxed border-t border-sky-100">
               {isQuote
