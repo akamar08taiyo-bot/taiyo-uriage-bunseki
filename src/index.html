@@ -788,8 +788,8 @@ function officeBlockHtml(office, repName) {
     <div style="font-weight:bold;">${escapeHTML(o ? o.name : '営業本部')}</div>
     ${o ? `<div style="margin-top:0.5mm;">〒${escapeHTML(o.zip)}</div>
     <div>${escapeHTML(o.addr)}</div>
-    <div style="margin-top:1mm;">TEL：${escapeHTML(o.tel)}</div>
-    <div>FAX：${escapeHTML(o.fax)}</div>` : '<div style="margin-top:1mm;">TEL：　　　　　</div><div>FAX：　　　　　</div>'}
+    <div style="margin-top:1mm;font-size:10.5pt;font-weight:bold;">TEL：${escapeHTML(o.tel)}</div>
+    <div style="font-size:10.5pt;font-weight:bold;">FAX：${escapeHTML(o.fax)}</div>` : '<div style="margin-top:1mm;font-size:10.5pt;font-weight:bold;">TEL：　　　　　</div><div style="font-size:10.5pt;font-weight:bold;">FAX：　　　　　</div>'}
     ${repName ? `<div style="margin-top:1mm;">担当：${escapeHTML(repName)}</div>` : ''}
   </div>`;
 }
@@ -1033,14 +1033,19 @@ function buildFacilityOrderHtml(m) {
   const rows = m.items.map((it, i) => `
     <tr style="background:${i % 2 === 1 ? '#f8fbff' : '#fff'}">
       <td style="${tdR}">${i + 1}</td>
-      <td style="${td}overflow-wrap:anywhere;" ${ed}>${escapeHTML(it.name)}</td>
+      <td style="${td}overflow-wrap:anywhere;">
+        ${it.cat ? `<div style="font-size:7pt;color:#2563eb;font-weight:bold;">${escapeHTML(it.cat)}</div>` : ''}
+        <div ${ed}>${escapeHTML(it.name)}</div>
+        ${it.note ? `<div style="margin-top:0.5mm;font-size:7.5pt;color:#6b7280;" ${ed}>${escapeHTML(it.note)}</div>` : ''}
+      </td>
       <td style="${tdR}background:#fffdf5;" ${ed}>${qtyCell(it.qty)}</td>
       <td style="${td}text-align:center;" ${ed}>${escapeHTML(it.unit)}</td>
+      <td style="${td}text-align:center;" ${ed}>${escapeHTML(it.caseSize || '')}</td>
       ${sp ? `<td style="${tdR}" ${ed}>${it.price > 0 ? yen(it.price) : ''}</td>` : ''}
     </tr>`).join('');
   const colgroup = sp
-    ? '<colgroup><col style="width:7%"><col style="width:53%"><col style="width:13%"><col style="width:9%"><col style="width:18%"></colgroup>'
-    : '<colgroup><col style="width:8%"><col style="width:64%"><col style="width:14%"><col style="width:14%"></colgroup>';
+    ? '<colgroup><col style="width:7%"><col style="width:47%"><col style="width:12%"><col style="width:8%"><col style="width:9%"><col style="width:17%"></colgroup>'
+    : '<colgroup><col style="width:8%"><col style="width:56%"><col style="width:12%"><col style="width:12%"><col style="width:12%"></colgroup>';
   const noteHtml = String(m.note || '').split('\n').map(l => escapeHTML(l)).join('<br>');
   return `
   <style>.editable{outline:1px dashed transparent;outline-offset:1px;cursor:text;}.editable:hover,.editable:focus{outline-color:#93c5fd;background:rgba(219,234,254,.35);}</style>
@@ -1054,10 +1059,11 @@ function buildFacilityOrderHtml(m) {
         <div style="font-size:8.5pt;color:#1f2937;font-weight:bold;">FAX：${escapeHTML(o.fax)}</div>` : ''}
       </div>
       <div style="width:70mm;font-size:8.5pt;color:#4b5563;">
-        <div style="text-align:right;" ${ed}>発注日：${escapeHTML(m.issued)}</div>
+        <div style="text-align:right;">発注日：　　　　　　　　　（ご記入ください）</div>
         <div style="margin-top:3mm;border:1px solid #93c5fd;background:#f0f7ff;padding:2.5mm;">
           <div style="font-size:7.5pt;color:#2563eb;font-weight:bold;">発注元</div>
           <div style="font-weight:bold;color:#1e3a8a;font-size:10pt;" ${ed}>${escapeHTML(m.facilityName)}</div>
+          ${m.facilityAddress ? `<div style="margin-top:1mm;font-size:8pt;" ${ed}>${escapeHTML(m.facilityAddress)}</div>` : ''}
           <div style="margin-top:1.5mm;" ${ed}>ご担当者：　　　　　　　　　</div>
         </div>
       </div>
@@ -1065,7 +1071,7 @@ function buildFacilityOrderHtml(m) {
 
     <table style="width:100%;border-collapse:collapse;margin-top:7mm;table-layout:fixed;">
       ${colgroup}
-      <tr><th style="${th}">No.</th><th style="${th}">商品名</th><th style="${th}">数量</th><th style="${th}">単位</th>${sp ? `<th style="${th}">単価（税抜）</th>` : ''}</tr>
+      <tr><th style="${th}">No.</th><th style="${th}">商品名</th><th style="${th}">数量</th><th style="${th}">単位</th><th style="${th}">入数</th>${sp ? `<th style="${th}">単価（税抜）</th>` : ''}</tr>
       ${rows}
     </table>
     ${m.items.some(it => !String(it.name).trim()) ? `<div style="margin-top:2mm;font-size:7.5pt;color:#9ca3af;">※商品名が空欄の行は、リストにない商品を手書きでご記入いただく欄です。</div>` : ''}
@@ -1147,6 +1153,56 @@ function buildQuoteHtml(m) {
     <div style="margin-top:8mm;border:1px solid #bfdbfe;background:#eff6ff;padding:3mm;font-size:8.5pt;color:#4b5563;">
       【備考】<br>
       <div ${ed}>${String(m.note || '').split('\n').map(l => escapeHTML(l)).join('<br>')}</div>
+    </div>
+  </div>`;
+}
+
+/* ============================================================
+   印刷: 売上検索結果（売上管理・商品検索タブ）
+============================================================ */
+function buildSalesSearchHtml(m) {
+  const th = 'background:#dbeafe;color:#1e3a8a;font-size:8pt;padding:1.5mm 1.8mm;border:1px solid #93c5fd;font-weight:bold;';
+  const td = 'padding:1.4mm 1.8mm;border:1px solid #bfdbfe;font-size:8.5pt;';
+  const tdR = td + 'text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;';
+  const body = m.rows.length ? m.rows.map((r, i) => `
+    <tr style="background:${i % 2 === 1 ? '#f8fbff' : '#fff'}">
+      <td style="${td}white-space:nowrap;">${escapeHTML(r.date)}</td>
+      <td style="${td}overflow-wrap:anywhere;">${escapeHTML(r.customer)}${r.custType ? '（' + escapeHTML(r.custType) + '）' : ''}</td>
+      <td style="${td}overflow-wrap:anywhere;">${escapeHTML(r.product)}</td>
+      <td style="${tdR}">${num(r.qty)}${escapeHTML(r.unit)}</td>
+      <td style="${tdR}">${yen(r.price)}</td>
+      <td style="${tdR}">${yen(r.amount)}</td>
+      <td style="${tdR}">${r.costPrice > 0 ? yen(r.costPrice) : '—'}</td>
+      <td style="${tdR}">${r.costPrice > 0 ? yen(r.qty * r.costPrice) : '—'}</td>
+      <td style="${tdR}">${yen(r.gross)}</td>
+    </tr>`).join('') : `<tr><td colspan="9" style="${td}text-align:center;color:#6b7280;">該当する取引はありません</td></tr>`;
+  return `
+  <div class="doc" style="width:210mm;min-height:297mm;padding:14mm 13mm;background:#fff;box-sizing:border-box;font-family:'BIZ UDPMincho','Yu Mincho','Hiragino Mincho ProN',serif;color:#1f2937;font-size:9.5pt;line-height:1.6;">
+    <div style="font-size:18pt;letter-spacing:0.4em;color:#1e3a8a;border-bottom:1.5px solid #3b82f6;padding-bottom:2mm;display:inline-block;">売上検索結果</div>
+    <div style="margin-top:3mm;font-size:10pt;color:#1f2937;">検索語：<b>${escapeHTML(m.query)}</b>　／　対象期間：${escapeHTML(m.periodLabel)}</div>
+
+    <table style="width:100%;border-collapse:collapse;margin-top:4mm;table-layout:fixed;">
+      <tr>
+        <th style="${th}">該当件数</th><th style="${th}">数量合計</th><th style="${th}">販売金額合計</th><th style="${th}">仕入金額合計</th><th style="${th}">粗利額（粗利率）</th>
+      </tr>
+      <tr>
+        <td style="${tdR}font-size:10.5pt;">${num(m.summary.count)}件</td>
+        <td style="${tdR}font-size:10.5pt;">${num(m.summary.qty)}</td>
+        <td style="${tdR}font-size:10.5pt;">${yen(m.summary.sales)}</td>
+        <td style="${tdR}font-size:10.5pt;">${yen(m.summary.cost)}</td>
+        <td style="${tdR}font-size:10.5pt;">${yen(m.summary.gross)}（${m.summary.rate}%）</td>
+      </tr>
+    </table>
+
+    <div style="margin-top:6mm;color:#1e3a8a;font-weight:bold;font-size:10pt;border-left:3px solid #2563eb;padding-left:2mm;">取引明細（${num(m.rows.length)}件）</div>
+    <table style="width:100%;border-collapse:collapse;margin-top:2mm;table-layout:fixed;">
+      <colgroup><col style="width:9%"><col style="width:16%"><col style="width:22%"><col style="width:9%"><col style="width:10%"><col style="width:10%"><col style="width:8%"><col style="width:8%"><col style="width:8%"></colgroup>
+      <tr><th style="${th}">日付</th><th style="${th}">お客様名</th><th style="${th}">商品名</th><th style="${th}">数量</th><th style="${th}">販売単価</th><th style="${th}">金額</th><th style="${th}">仕入単価</th><th style="${th}">仕入金額</th><th style="${th}">粗利額</th></tr>
+      ${body}
+    </table>
+
+    <div style="margin-top:8mm;border:1px solid #bfdbfe;background:#eff6ff;padding:3mm;font-size:8.5pt;color:#4b5563;">
+      ※ 施設・個人を問わず、取り込んだ全売上データから検索した結果です。金額は税抜・返品相殺後の値です。
     </div>
   </div>`;
 }
@@ -2472,8 +2528,8 @@ function RepsView({ data, goFacilities }) {
 /* ============================================================
    画面4: 商品分析
 ============================================================ */
-function ProductsView({ data, masters, setMasters }) {
-  const [sub, setSub] = useState('cat');
+function ProductsView({ data, rows, masters, setMasters, showToast, openPrint }) {
+  const [sub, setSub] = useState('search');
   const [openCat, setOpenCat] = useState(null);
   const [catSort, setCatSort] = useState('sales');
   const [pillEdit, setPillEdit] = useState(null); // 分類変更中の商品名
@@ -2489,7 +2545,9 @@ function ProductsView({ data, masters, setMasters }) {
   return (
     <div className="space-y-4">
       <Segmented value={sub} onChange={setSub}
-        options={[['cat', '分類別サマリー'], ['rank', 'ランキング'], ['trend', '売れ筋・停滞'], ['margin', '粗利率チェック']]} />
+        options={[['search', '売上検索'], ['cat', '分類別サマリー'], ['rank', 'ランキング'], ['trend', '売れ筋・停滞'], ['margin', '粗利率チェック']]} />
+
+      {sub === 'search' && <SalesSearchPanel rows={rows} masters={masters} showToast={showToast} openPrint={openPrint} />}
 
       {sub === 'rank' && (
         <div className="grid md:grid-cols-2 gap-4">
@@ -3474,9 +3532,9 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
   // 未入力（新規作成の初期状態）では候補を出さない。文字を入力し始めたときだけ
   // 部分一致でフィルタして表示する（既存施設の絞り込み）。
   const facSuggests = useMemo(() => {
-    const q = String(draft.facility || '').trim();
+    const q = normalizeSearchText(String(draft.facility || '').trim());
     if (!q) return [];
-    return facNames.filter(n => n.includes(q)).slice(0, 8);
+    return facNames.filter(n => normalizeSearchText(n).includes(q)).slice(0, 8);
   }, [facNames, draft.facility]);
   // 候補リストの外側をクリックしたら閉じる（施設別検索と同じ自作ドロップダウン方式。
   // ブラウザ標準の<datalist>は表示位置が崩れることがあるため使わない）
@@ -3522,8 +3580,8 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
       });
     }
     if (cat !== 'all') list = list.filter(x => x.cat === cat);
-    const q = search.trim();
-    if (q) list = list.filter(x => x.name.includes(q));
+    const q = normalizeSearchText(search.trim());
+    if (q) list = list.filter(x => normalizeSearchText(x.name).includes(q));
     return list;
   }, [data, fac, facPairs, source, cat, search]);
   const visibleMaster = master.slice(0, 40);
@@ -3532,9 +3590,9 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
   const patch = (p) => setDraft(prev => ({ ...prev, ...p }));
   const addItem = (m) => {
     if (inItems.has(m.name)) { showToast('「' + m.name + '」はすでに明細にあります', 'info'); return; }
-    setDraft(prev => ({ ...prev, items: [...prev.items, { name: m.name, qty: isQuote ? 1 : '', unit: m.unit || '', price: Math.round(m.price) || 0 }] }));
+    setDraft(prev => ({ ...prev, items: [...prev.items, { name: m.name, qty: isQuote ? 1 : '', unit: m.unit || '', caseSize: '', price: Math.round(m.price) || 0 }] }));
   };
-  const addBlank = () => setDraft(prev => ({ ...prev, items: [...prev.items, { name: '', qty: isQuote ? 1 : '', unit: '', price: 0 }] }));
+  const addBlank = () => setDraft(prev => ({ ...prev, items: [...prev.items, { name: '', qty: isQuote ? 1 : '', unit: '', caseSize: '', price: 0 }] }));
   const setItem = (idx, p) => setDraft(prev => ({ ...prev, items: prev.items.map((it, i) => (i === idx ? { ...it, ...p } : it)) }));
   const delItem = (idx) => setDraft(prev => ({ ...prev, items: prev.items.filter((_, i) => i !== idx) }));
   const moveItem = (idx, dir) => setDraft(prev => {
@@ -3806,6 +3864,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                     <th className={"text-left font-bold px-4 py-2.5" + (isQuote ? '' : ' w-auto')}>商品名</th>
                     <th className={"text-right font-bold px-1 py-2.5 " + (isQuote ? 'w-20' : 'w-14')}>数量</th>
                     <th className={"text-left font-bold px-1 py-2.5 " + (isQuote ? 'w-16' : 'w-16')}>単位</th>
+                    {!isQuote && <th className="text-center font-bold px-1 py-2.5 w-16">入数</th>}
                     {draft.showPrices && <th className={"text-right font-bold px-1 py-2.5 " + (isQuote ? 'w-28' : 'w-24')}>単価</th>}
                     {draft.showPrices && !isQuote ? null : draft.showPrices ? <th className="text-right font-bold px-1 py-2.5 w-28">金額</th> : null}
                     <th className="w-16"></th>
@@ -3832,6 +3891,13 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                         <input value={it.unit} onChange={e => setItem(i, { unit: e.target.value })}
                           className="h-12 w-full px-2 rounded-lg border border-slate-200 text-sm text-slate-700 font-bold focus:border-sky-400 focus:outline-none" />
                       </td>
+                      {!isQuote && (
+                        <td className="px-1 py-2.5">
+                          <input value={it.caseSize || ''} onChange={e => setItem(i, { caseSize: e.target.value })}
+                            placeholder="例: 4"
+                            className="h-12 w-full px-2 rounded-lg border border-slate-200 text-sm text-slate-700 font-bold text-center focus:border-sky-400 focus:outline-none" />
+                        </td>
+                      )}
                       {draft.showPrices && (
                         <td className="px-1 py-2.5 text-right">
                           {isQuote ? (
@@ -3854,7 +3920,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                     </tr>
                   ))}
                   {draft.items.length === 0 && (
-                    <tr><td colSpan={6} className="px-5 py-10 text-center text-xs text-slate-600">左の商品マスタから「＋追加」で明細に入れてください</td></tr>
+                    <tr><td colSpan={7} className="px-5 py-10 text-center text-xs text-slate-600">左の商品マスタから「＋追加」で明細に入れてください</td></tr>
                   )}
                 </tbody>
               </table>
@@ -3897,14 +3963,14 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                   className="h-11 pl-9 pr-3 w-full rounded-xl border border-slate-200 text-sm bg-white shadow-sm focus:border-blue-400 focus:outline-none transition" />
               </div>
               <div className="mt-3 max-h-80 overflow-y-auto divide-y divide-slate-50 border border-slate-100 rounded-xl">
-                {facNames.filter(n => n.includes(facPickerQuery.trim())).slice(0, 200).map(n => (
+                {facNames.filter(n => normalizeSearchText(n).includes(normalizeSearchText(facPickerQuery.trim()))).slice(0, 200).map(n => (
                   <button key={n} type="button"
                     onClick={() => { patch({ facility: n }); setFacPickerOpen(false); setFacPickerQuery(''); }}
                     className="w-full text-left px-4 py-2.5 hover:bg-sky-50 transition text-xs font-bold text-slate-700 truncate">
                     {n}
                   </button>
                 ))}
-                {facNames.filter(n => n.includes(facPickerQuery.trim())).length === 0 && (
+                {facNames.filter(n => normalizeSearchText(n).includes(normalizeSearchText(facPickerQuery.trim()))).length === 0 && (
                   <div className="px-4 py-8 text-center text-xs text-slate-600">該当する施設がありません</div>
                 )}
               </div>
@@ -4501,23 +4567,64 @@ function SettingsView({ rows, masters, setRows, setMasters, setOffice, meta, set
    画面: 売上管理（商品名・施設名・仕入先で全取引を横断検索）
    - 他画面は施設のみを集計対象にしているが、ここは施設・個人を問わずCSVの全行が対象
 ============================================================ */
-function SalesLookupView({ rows, masters, showToast }) {
+function SalesSearchPanel({ rows, masters, showToast, openPrint }) {
   const [q, setQ] = useState('');
+  const [fromIdx, setFromIdx] = useState('');
+  const [toIdx, setToIdx] = useState('');
+  const [sortKey, setSortKey] = useState('date');
+  const [sortDir, setSortDir] = useState(-1);
+
+  const monthsAll = useMemo(() => {
+    const s = new Set();
+    for (const r of rows) { const d = parseDateStr(r[1]); if (d) s.add(d.idx); }
+    return [...s].sort((a, b) => a - b);
+  }, [rows]);
+
+  const custType = (name) => {
+    const c = masters.customers[name];
+    if (!c) return '';
+    return c.type === 'facility' ? '施設' : '個人';
+  };
 
   const matched = useMemo(() => {
-    const query = q.trim();
+    const query = normalizeSearchText(q.trim());
     if (!query) return [];
+    const lo = fromIdx === '' ? -Infinity : +fromIdx;
+    const hi = toIdx === '' ? Infinity : +toIdx;
     const list = [];
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
-      if (r[2].includes(query) || r[3].includes(query) || (r[9] && r[9].includes(query))) list.push(r);
+      if (!(normalizeSearchText(r[2]).includes(query) || normalizeSearchText(r[3]).includes(query) || (r[9] && normalizeSearchText(r[9]).includes(query)))) continue;
+      const d = parseDateStr(r[1]);
+      if (!d || d.idx < lo || d.idx > hi) continue;
+      list.push(r);
     }
-    list.sort((a, b) => {
-      const da = parseDateStr(a[1]), db = parseDateStr(b[1]);
-      return ((db && db.sort) || 0) - ((da && da.sort) || 0);
-    });
     return list;
-  }, [rows, q]);
+  }, [rows, q, fromIdx, toIdx]);
+
+  const sortVal = (r, key) => {
+    switch (key) {
+      case 'date': return (parseDateStr(r[1]) || {}).sort || 0;
+      case 'customer': return r[2] || '';
+      case 'product': return r[3] || '';
+      case 'qty': return +r[4] || 0;
+      case 'price': return +r[6] || 0;
+      case 'amount': return +r[7] || 0;
+      case 'costPrice': return +r[10] || 0;
+      case 'cost': return (+r[4] || 0) * (+r[10] || 0);
+      case 'gross': return +r[8] || 0;
+      default: return 0;
+    }
+  };
+  const sorted = useMemo(() => {
+    const arr = matched.slice();
+    arr.sort((a, b) => {
+      const va = sortVal(a, sortKey), vb = sortVal(b, sortKey);
+      if (typeof va === 'string') return va.localeCompare(vb, 'ja') * sortDir;
+      return (va - vb) * sortDir;
+    });
+    return arr;
+  }, [matched, sortKey, sortDir]);
 
   const summary = useMemo(() => {
     let qty = 0, sales = 0, cost = 0, gross = 0;
@@ -4528,21 +4635,33 @@ function SalesLookupView({ rows, masters, showToast }) {
     return { qty, sales, cost, gross, rate: sales !== 0 ? Math.round(gross / sales * 1000) / 10 : 0, count: matched.length };
   }, [matched]);
 
-  const visible = matched.slice(0, 200);
+  const visible = sorted.slice(0, 200);
+  const periodLabel = fromIdx === '' && toIdx === '' ? '全期間'
+    : (fromIdx === '' ? '〜' + idxLabel(+toIdx) : toIdx === '' ? idxLabel(+fromIdx) + '〜' : idxLabel(+fromIdx) + '〜' + idxLabel(+toIdx));
 
-  const custType = (name) => {
-    const c = masters.customers[name];
-    if (!c) return '';
-    return c.type === 'facility' ? '施設' : '個人';
+  const toggleSort = (key) => {
+    if (sortKey === key) setSortDir(d => -d);
+    else { setSortKey(key); setSortDir(key === 'date' ? -1 : -1); }
   };
+  const Th = ({ k, children, className }) => (
+    <th className={"cursor-pointer select-none " + (className || '')} onClick={() => toggleSort(k)}>
+      <span className="inline-flex items-center gap-0.5">{children}{sortKey === k && (sortDir === 1 ? <ChevronUp size={11} /> : <ChevronDown size={11} />)}</span>
+    </th>
+  );
 
   const handleCsv = () => {
     const head = ['売上日', 'お客様名', '種別', '商品名', '数量', '単位', '販売単価', '金額', '仕入単価', '仕入金額', '粗利額'];
-    const lines = matched.map(r => [
+    const lines = sorted.map(r => [
       r[1], r[2], custType(r[2]) || '不明', r[3], r[4], r[5], r[6], r[7], r[10], (+r[4] || 0) * (+r[10] || 0), r[8],
     ]);
     downloadText('売上管理_' + q.replace(/[\\/:*?"<>|]/g, '') + '_' + todayCompact() + '.csv', buildCsv([head, ...lines]), 'text/csv');
     showToast('CSVを出力しました（Excelでそのまま開けます）');
+  };
+  const handlePrint = () => {
+    openPrint(buildSalesSearchHtml({ query: q, periodLabel, summary, rows: sorted.map(r => ({
+      date: r[1], customer: r[2], custType: custType(r[2]) || '', product: r[3], qty: +r[4] || 0, unit: r[5] || '',
+      price: +r[6] || 0, amount: +r[7] || 0, costPrice: +r[10] || 0, gross: +r[8] || 0,
+    })) }));
   };
 
   return (
@@ -4555,14 +4674,33 @@ function SalesLookupView({ rows, masters, showToast }) {
             <input value={q} onChange={e => setQ(e.target.value)} placeholder="例: リハビリパンツ／陽明会／白十字"
               className="h-11 pl-10 pr-3 rounded-xl border-2 border-sky-200 text-sm w-full bg-white shadow-sm focus:border-sky-400 focus:outline-none transition font-bold text-slate-700 placeholder:font-normal placeholder:text-slate-400" />
           </div>
+          <div className="flex items-center gap-1.5">
+            <select value={fromIdx} onChange={e => setFromIdx(e.target.value)}
+              className="h-11 px-2.5 rounded-xl border border-slate-200 bg-white text-xs shadow-sm font-bold text-slate-600">
+              <option value="">期間：全て</option>
+              {monthsAll.map(i => <option key={i} value={i}>{idxLabel(i)}〜</option>)}
+            </select>
+            <span className="text-xs text-slate-500 font-bold">〜</span>
+            <select value={toIdx} onChange={e => setToIdx(e.target.value)}
+              className="h-11 px-2.5 rounded-xl border border-slate-200 bg-white text-xs shadow-sm font-bold text-slate-600">
+              <option value="">最新まで</option>
+              {monthsAll.map(i => <option key={i} value={i}>{idxLabel(i)}</option>)}
+            </select>
+          </div>
           {q.trim() && (
-            <button onClick={handleCsv}
-              className="bg-teal-600 hover:bg-teal-700 active:scale-[.98] text-white px-4 py-2.5 rounded-xl shadow-sm shadow-teal-200 text-sm font-bold transition inline-flex items-center gap-1.5">
-              <FileSpreadsheet size={15} /> CSV出力
-            </button>
+            <>
+              <button onClick={handlePrint}
+                className="bg-white hover:bg-slate-50 active:scale-[.98] text-slate-700 border border-slate-200 px-4 py-2.5 rounded-xl shadow-sm text-sm font-bold transition inline-flex items-center gap-1.5">
+                <Printer size={15} /> 印刷
+              </button>
+              <button onClick={handleCsv}
+                className="bg-teal-600 hover:bg-teal-700 active:scale-[.98] text-white px-4 py-2.5 rounded-xl shadow-sm shadow-teal-200 text-sm font-bold transition inline-flex items-center gap-1.5">
+                <FileSpreadsheet size={15} /> CSV出力
+              </button>
+            </>
           )}
         </div>
-        <div className="text-[10px] text-slate-500 mt-2">施設・個人を問わず、取り込んだCSVの全取引が検索対象です</div>
+        <div className="text-[10px] text-slate-500 mt-2">施設・個人を問わず、取り込んだCSVの全取引が検索対象です。列見出しをクリックすると並び替えできます</div>
       </Card>
 
       {!q.trim() ? (
@@ -4587,15 +4725,15 @@ function SalesLookupView({ rows, masters, showToast }) {
             <table className="w-full text-sm min-w-[860px]">
               <thead>
                 <tr className="text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-100">
-                  <th className="text-left font-bold px-5 py-3">日付</th>
-                  <th className="text-left font-bold px-2 py-3">お客様名</th>
-                  <th className="text-left font-bold px-2 py-3">商品名</th>
-                  <th className="text-right font-bold px-2 py-3 pr-4">数量</th>
-                  <th className="text-right font-bold px-2 py-3 pr-4">販売単価</th>
-                  <th className="text-right font-bold px-2 py-3 pr-4">金額</th>
-                  <th className="text-right font-bold px-2 py-3 pr-4">仕入単価</th>
-                  <th className="text-right font-bold px-2 py-3 pr-4">仕入金額</th>
-                  <th className="text-right font-bold px-5 py-3">粗利額</th>
+                  <Th k="date" className="text-left font-bold px-5 py-3">日付</Th>
+                  <Th k="customer" className="text-left font-bold px-2 py-3">お客様名</Th>
+                  <Th k="product" className="text-left font-bold px-2 py-3">商品名</Th>
+                  <Th k="qty" className="text-right font-bold px-2 py-3 pr-4">数量</Th>
+                  <Th k="price" className="text-right font-bold px-2 py-3 pr-4">販売単価</Th>
+                  <Th k="amount" className="text-right font-bold px-2 py-3 pr-4">金額</Th>
+                  <Th k="costPrice" className="text-right font-bold px-2 py-3 pr-4">仕入単価</Th>
+                  <Th k="cost" className="text-right font-bold px-2 py-3 pr-4">仕入金額</Th>
+                  <Th k="gross" className="text-right font-bold px-5 py-3">粗利額</Th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
@@ -4624,7 +4762,7 @@ function SalesLookupView({ rows, masters, showToast }) {
               </tbody>
             </table>
             {matched.length > visible.length && (
-              <div className="px-5 py-2.5 text-[11px] text-slate-500 border-t border-slate-50">新しい順に{num(visible.length)}件を表示中（全{num(matched.length)}件）— CSV出力は全件が対象です</div>
+              <div className="px-5 py-2.5 text-[11px] text-slate-500 border-t border-slate-50">並び替え済み{num(visible.length)}件を表示中（全{num(matched.length)}件）— 印刷・CSV出力は全件が対象です</div>
             )}
           </Card>
         </>
@@ -4797,11 +4935,10 @@ function App() {
           {needData ? <EmptyState goImport={() => setTab('import')} /> : (
             <>
               {tab === 'dash' && <DashboardView data={data} rows={rows} masters={masters} jumpToFacility={jumpToFacility} openPrint={setPrintHtml} office={masters.settings.office} showToast={showToast} />}
-              {tab === 'lookup' && <SalesLookupView rows={rows} masters={masters} showToast={showToast} />}
               {tab === 'fac' && <FacilitiesView data={data} openId={openFacId} setOpenId={setOpenFacId} repFilter={repFilter} setRepFilter={setRepFilter} showToast={showToast} openPrint={setPrintHtml} startDoc={startDoc} office={masters.settings.office} />}
               {tab === 'factrend' && <FacilityTrendView data={data} jumpToFacility={jumpToFacility} showToast={showToast} />}
               {tab === 'rep' && <RepsView data={data} goFacilities={goFacilities} />}
-              {tab === 'prod' && <ProductsView data={data} masters={masters} setMasters={setMasters} />}
+              {tab === 'prod' && <ProductsView data={data} rows={rows} masters={masters} setMasters={setMasters} showToast={showToast} openPrint={setPrintHtml} />}
               {tab === 'stock' && <StockView data={data} masters={masters} setMasters={setMasters} showToast={showToast} openPrint={setPrintHtml} />}
               {tab === 'order' && <DocComposer docType="order" data={data} masters={masters} draft={orderDraft} setDraft={setOrderDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} goImport={() => setTab('import')} />}
               {tab === 'quote' && <DocComposer docType="quote" data={data} masters={masters} draft={quoteDraft} setDraft={setQuoteDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} goImport={() => setTab('import')} />}
