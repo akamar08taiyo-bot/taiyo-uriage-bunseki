@@ -1972,6 +1972,7 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
           <div className="font-bold text-sm text-slate-800">分類別売上</div>
           <div className="text-[11px] text-slate-600">{spec.short}</div>
         </div>
+        <div className="overflow-x-auto">
         <table className="w-full text-sm min-w-[560px]">
           <thead>
             <tr className="text-[11px] uppercase tracking-wide text-slate-600 border-b border-slate-100">
@@ -2002,6 +2003,7 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
             )}
           </tbody>
         </table>
+        </div>
       </Card>
 
       {/* 月別売上推移 */}
@@ -2435,6 +2437,7 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
             </span>
           )}
         </div>
+        <div className="overflow-x-auto">
         <table className="w-full text-sm min-w-[960px]">
           <thead>
             <tr className="text-[11px] uppercase tracking-wide text-slate-600 border-b border-slate-100">
@@ -2476,6 +2479,7 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
             )}
           </tbody>
         </table>
+        </div>
       </Card>
     </div>
   );
@@ -2644,7 +2648,8 @@ function FacilityTrendView({ data, jumpToFacility, showToast }) {
             <div className="text-[11px] text-slate-600">{num(filtered.length)}施設・行をクリックすると施設の詳細分析へ</div>
           </div>
         </div>
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[720px]">
           <thead>
             <tr className="text-left text-[11px] text-slate-600 border-b border-slate-100">
               <th className="px-5 py-2.5 font-bold">施設名</th>
@@ -2678,6 +2683,7 @@ function FacilityTrendView({ data, jumpToFacility, showToast }) {
             )}
           </tbody>
         </table>
+        </div>
       </Card>
     </div>
   );
@@ -2823,6 +2829,7 @@ function ProductsView({ data, rows, masters, setMasters, showToast, openPrint })
               <option value="margin">粗利率が高い順（0%は除外）</option>
             </select>
           </div>
+          <div className="overflow-x-auto">
           <table className="w-full text-sm min-w-[700px]">
             <thead>
               <tr className="text-[11px] uppercase tracking-wide text-slate-700 border-b border-slate-100">
@@ -2886,6 +2893,7 @@ function ProductsView({ data, rows, masters, setMasters, showToast, openPrint })
               )}
             </tbody>
           </table>
+          </div>
         </Card>
       )}
 
@@ -2939,6 +2947,7 @@ function ProductsView({ data, rows, masters, setMasters, showToast, openPrint })
             <div className="font-bold text-sm text-slate-800">粗利率の低い取引（15%未満）</div>
             <div className="text-[11px] text-slate-600">価格見直しの候補です（今月・施設×商品ごと）</div>
           </div>
+          <div className="overflow-x-auto">
           <table className="w-full text-sm min-w-[660px]">
             <thead>
               <tr className="text-[11px] uppercase tracking-wide text-slate-600 border-b border-slate-100">
@@ -2965,6 +2974,7 @@ function ProductsView({ data, rows, masters, setMasters, showToast, openPrint })
               )}
             </tbody>
           </table>
+          </div>
           {data.lowMarginTotal > data.lowMargin.length && (
             <div className="px-5 py-2.5 text-[11px] text-slate-600 border-t border-slate-50">他 {num(data.lowMarginTotal - data.lowMargin.length)}件（粗利率の低い順に表示）</div>
           )}
