@@ -1317,7 +1317,7 @@ function buildPriceRevisionInternalHtml(m) {
     '<col style="width:9%"><col style="width:9%"><col style="width:8%">' +
     '<col style="width:9%"><col style="width:9%"><col style="width:8%">' +
     '<col style="width:8%"><col style="width:7%"></colgroup>';
-  const headCells = ['No.', '商品名', '単位', '現状価格', '現状仕入', '現状利益率', '改定後仕入', '改定後価格', '価格差', '変動率', '改定後利益率']
+  const headCells = ['No.', '商品名', '単位', '現状<br>価格', '現状<br>仕入', '現状<br>利益率', '改定後<br>仕入', '改定後<br>価格', '価格差', '変動率', '改定後<br>利益率']
     .map((label, i) => `<th style="${i === 6 || i === 7 ? thCost : th}">${label}</th>`).join('');
   const rows = m.items.map((it, i) => {
     const oldMargin = marginPctOf(it.currentPrice, it.cost);
