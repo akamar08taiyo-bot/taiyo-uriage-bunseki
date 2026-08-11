@@ -4454,6 +4454,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
   };
   const addBlank = () => setDraft(prev => ({ ...prev, items: [...prev.items, { name: '', cat: '', note: '', qty: isQuote ? 1 : '', unit: '', caseSize: '', price: 0 }] }));
   const setItem = (idx, p) => setDraft(prev => ({ ...prev, items: prev.items.map((it, i) => (i === idx ? { ...it, ...p } : it)) }));
+  const delItem = (idx) => setDraft(prev => ({ ...prev, items: prev.items.filter((_, i) => i !== idx) }));
   const total = draft.items.reduce((s, it) => s + (Number(it.qty) || 0) * it.price, 0);
 
   const buildHtml = () => {
