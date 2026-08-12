@@ -4041,10 +4041,6 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
             </datalist>
           </label>
           <label className="inline-flex items-center gap-2 text-sm text-slate-600 font-bold">
-            表題
-            <input value={draft.title} onChange={e => patch({ title: e.target.value })} className={inputCls + ' w-56'} />
-          </label>
-          <label className="inline-flex items-center gap-2 text-sm text-slate-600 font-bold">
             発行日
             <input type="date" value={draft.issued} onChange={e => patch({ issued: e.target.value })} className={inputCls + ' tabular-nums'} />
           </label>
@@ -4053,6 +4049,12 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
             <input type="date" value={draft.effectiveDate || ''} onChange={e => setEffectiveDate(e.target.value)}
               title="選ぶと備考欄に「〇月〇日〜の改定価格となります。」を自動で入れます"
               className={inputCls + ' tabular-nums'} />
+          </label>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <label className="inline-flex items-center gap-2 text-sm text-slate-600 font-bold">
+            表題
+            <input value={draft.title} onChange={e => patch({ title: e.target.value })} className={inputCls + ' w-44'} />
           </label>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
