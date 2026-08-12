@@ -1070,7 +1070,7 @@ function buildFacilityOrderHtml(m) {
   const noteHtml = String(m.note || '').split('\n').map(l => escapeHTML(l)).join('<br>');
   return `
   <style>.editable{outline:1px dashed transparent;outline-offset:1px;cursor:text;}.editable:hover,.editable:focus{outline-color:#93c5fd;background:rgba(219,234,254,.35);}</style>
-  <div class="doc" style="width:210mm;min-height:297mm;padding:14mm 13mm;background:#fff;box-sizing:border-box;font-family:'BIZ UDPMincho','Yu Mincho','Hiragino Mincho ProN',serif;color:#1f2937;font-size:9.5pt;line-height:1.6;">
+  <div class="doc" data-fit-page="1" style="width:210mm;min-height:297mm;padding:14mm 13mm;background:#fff;box-sizing:border-box;font-family:'BIZ UDPMincho','Yu Mincho','Hiragino Mincho ProN',serif;color:#1f2937;font-size:9.5pt;line-height:1.6;">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;">
       <div style="flex:1;">
         <div style="font-size:22pt;letter-spacing:0.5em;color:#1e3a8a;border-bottom:1.5px solid #3b82f6;padding-bottom:2mm;display:inline-block;" ${ed}>${escapeHTML(m.title || '発　注　書')}</div>
@@ -6274,7 +6274,27 @@ function App() {
 
   useEffect(() => {
     const holder = document.getElementById('print-content-holder');
-    if (printHtml) holder.innerHTML = printHtml;
+    if (!printHtml) { holder.innerHTML = ''; return; }
+    holder.innerHTML = printHtml;
+    // 発注書など行数が多いと2ページにあふれることがある帳票（data-fit-page付き）は、
+    // 画面上のプレビュー（同じHTMLの可視コピー）で実際の高さを測り、A4 1ページに収まるよう
+    // 印刷用コピー（#print-content-holder側、実際の印刷にのみ使われる）を自動縮小する。
+    // プレビュー自体は等倍のまま（編集時の見た目を変えないため）。
+    const holderDoc = holder.querySelector('[data-fit-page="1"]');
+    if (holderDoc) {
+      holderDoc.style.zoom = '';
+      // プレビュー用の可視コピーはこの時点で既にDOMにコミット済みなので、
+      // rAFを待たずそのままレイアウト計測できる（holder側はdisplay:noneで測れないため）。
+      const preview = document.querySelector('.print-preview-doc [data-fit-page="1"]');
+      const measureEl = preview || holderDoc;
+      const naturalH = measureEl.getBoundingClientRect().height;
+      const pxPerMm = 96 / 25.4;
+      const pageH = 297 * pxPerMm;
+      if (naturalH - pageH > 4) {
+        // 何ページ分あっても必ず1ページに収める（下限は極端な事故防止のみ）
+        holderDoc.style.zoom = String(Math.max(0.25, pageH / naturalH));
+      }
+    }
     return () => { holder.innerHTML = ''; };
   }, [printHtml]);
 
@@ -6392,7 +6412,7 @@ function App() {
                 <X size={15} /> 閉じる
               </button>
             </div>
-            <div className="bg-white shadow-2xl rounded-sm"
+            <div className="bg-white shadow-2xl rounded-sm print-preview-doc"
               dangerouslySetInnerHTML={{ __html: printHtml }} />
           </div>
         </div>
