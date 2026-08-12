@@ -1042,15 +1042,12 @@ function buildFacilityOrderHtml(m) {
   const qtyCell = (q) => (q === '' || q === null || q === undefined ? '' : num(q));
   const ed = 'class="editable" contenteditable="true"';
   const orderColCount = 4 + (sc ? 1 : 0) + (sp ? 1 : 0);
-  let orderRowNo = 0;
   const rows = m.items.map((it, i) => {
     if (it.isSpacer) return `<tr style="height:6mm;"><td colspan="${orderColCount}" style="border:1px solid #bfdbfe;border-left:none;border-right:none;"></td></tr>`;
-    orderRowNo++;
     return `
     <tr style="background:${i % 2 === 1 ? '#f8fbff' : '#fff'}">
-      <td style="${tdR}">${orderRowNo}</td>
+      <td style="${td}font-size:8pt;color:#2563eb;font-weight:bold;" ${ed}>${escapeHTML(it.cat || '')}</td>
       <td style="${td}overflow-wrap:anywhere;">
-        ${it.cat ? `<div style="font-size:7pt;color:#2563eb;font-weight:bold;">${escapeHTML(it.cat)}</div>` : ''}
         <div ${ed}>${escapeHTML(it.name)}</div>
         ${it.note ? `<div style="margin-top:0.5mm;font-size:7.5pt;color:#6b7280;" ${ed}>${escapeHTML(it.note)}</div>` : ''}
       </td>
@@ -1061,10 +1058,10 @@ function buildFacilityOrderHtml(m) {
     </tr>`;
   }).join('');
   const colgroup = sp
-    ? (sc ? '<colgroup><col style="width:7%"><col style="width:40%"><col style="width:9%"><col style="width:12%"><col style="width:8%"><col style="width:17%"></colgroup>'
-          : '<colgroup><col style="width:7%"><col style="width:49%"><col style="width:12%"><col style="width:8%"><col style="width:17%"></colgroup>')
-    : (sc ? '<colgroup><col style="width:8%"><col style="width:48%"><col style="width:12%"><col style="width:12%"><col style="width:12%"></colgroup>'
-          : '<colgroup><col style="width:8%"><col style="width:60%"><col style="width:16%"><col style="width:16%"></colgroup>');
+    ? (sc ? '<colgroup><col style="width:16%"><col style="width:34%"><col style="width:9%"><col style="width:12%"><col style="width:8%"><col style="width:12%"></colgroup>'
+          : '<colgroup><col style="width:16%"><col style="width:42%"><col style="width:12%"><col style="width:8%"><col style="width:12%"></colgroup>')
+    : (sc ? '<colgroup><col style="width:16%"><col style="width:42%"><col style="width:12%"><col style="width:12%"><col style="width:12%"></colgroup>'
+          : '<colgroup><col style="width:16%"><col style="width:52%"><col style="width:16%"><col style="width:16%"></colgroup>');
   const noteHtml = String(m.note || '').split('\n').map(l => escapeHTML(l)).join('<br>');
   return `
   <style>.editable{outline:1px dashed transparent;outline-offset:1px;cursor:text;}.editable:hover,.editable:focus{outline-color:#93c5fd;background:rgba(219,234,254,.35);}</style>
@@ -1092,7 +1089,7 @@ function buildFacilityOrderHtml(m) {
 
     <table style="width:100%;border-collapse:collapse;margin-top:7mm;table-layout:fixed;">
       ${colgroup}
-      <thead><tr><th style="${th}">No.</th><th style="${th}">商品名</th>${sc ? `<th style="${th}">入数</th>` : ''}<th style="${th}">数量</th><th style="${th}">単位</th>${sp ? `<th style="${th}">単価（税抜）</th>` : ''}</tr></thead>
+      <thead><tr><th style="${th}">カテゴリ</th><th style="${th}">商品名</th>${sc ? `<th style="${th}">入数</th>` : ''}<th style="${th}">数量</th><th style="${th}">単位</th>${sp ? `<th style="${th}">単価（税抜）</th>` : ''}</tr></thead>
       <tbody>${rows}</tbody>
     </table>
     ${m.items.some(it => !it.isSpacer && !String(it.name).trim()) ? `<div style="margin-top:2mm;font-size:7.5pt;color:#9ca3af;">※商品名が空欄の行は、リストにない商品を手書きでご記入いただく欄です。</div>` : ''}
@@ -4950,7 +4947,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                         <td className="px-1 py-2.5 text-right tabular-nums font-extrabold text-slate-800 text-sm">{yen((Number(it.qty) || 0) * it.price)}</td>
                       )}
                       <td className="pr-3 text-right whitespace-nowrap">
-                        <button onClick={() => addSpacer(i)} title="この下に空白を追加" className="text-slate-300 hover:text-sky-600 transition pl-1"><Plus size={14} /></button>
+                        <button onClick={() => addSpacer(i)} title="この下に空白を追加" className="text-sky-500 hover:text-sky-700 transition pl-1"><Plus size={16} /></button>
                         <button onClick={() => delItem(i)} className="text-slate-400 hover:text-rose-500 transition pl-1"><X size={15} /></button>
                       </td>
                     </tr>
@@ -4966,7 +4963,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                 className="text-xs font-bold text-sky-600 hover:text-sky-800 transition">＋ 空の行を追加（履歴にない商品を手入力）</button>
               <button onClick={() => addSpacer(draft.items.length - 1)}
                 title="各行の右端の＋ボタンからも、任意の行の下に空白を挿入できます"
-                className="text-xs font-bold text-slate-500 hover:text-sky-700 transition">＋ 空白を追加（行の区切り）</button>
+                className="text-xs font-bold text-sky-600 hover:text-sky-800 transition">＋ 空白を追加（行の区切り）</button>
             </div>
             <div className="px-4 py-3 border-t border-slate-100">
               <div className="text-[11px] font-bold text-slate-600 uppercase tracking-wide mb-1.5">全体の備考（そのまま帳票に印刷されます）</div>
