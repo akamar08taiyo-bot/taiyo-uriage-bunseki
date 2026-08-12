@@ -1190,6 +1190,66 @@ function buildQuoteHtml(m) {
 }
 
 /* ============================================================
+   印刷: 発注書・見積書（社内確認用）— 仕入・利益率を含む内部資料。外部には出さない前提
+============================================================ */
+function buildDocInternalHtml(m) {
+  const th = 'background:#dbeafe;color:#1e3a8a;font-size:8pt;padding:1.4mm 2mm;border:1px solid #93c5fd;font-weight:bold;';
+  const thCost = 'background:#fef3c7;color:#92400e;font-size:8pt;padding:1.4mm 2mm;border:1px solid #fcd34d;font-weight:bold;';
+  const td = 'padding:1.5mm 2mm;border:1px solid #bfdbfe;font-size:9pt;';
+  const tdR = td + 'text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;';
+  const tdCost = 'padding:1.5mm 2mm;border:1px solid #fde68a;background:#fffbeb;font-size:9pt;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;color:#92400e;font-weight:bold;';
+  const o = officeByName(m.office);
+  const rows = m.items.filter(it => !it.isSpacer).map((it, i) => {
+    const gross = it.price - it.cost;
+    const rate = it.price > 0 ? Math.round(gross / it.price * 1000) / 10 : 0;
+    return `
+    <tr style="background:${i % 2 === 1 ? '#f8fbff' : '#fff'}">
+      <td style="${tdR}">${i + 1}</td>
+      <td style="${td}overflow-wrap:anywhere;">
+        ${it.cat ? `<div style="font-size:7pt;color:#2563eb;font-weight:bold;">${escapeHTML(it.cat)}</div>` : ''}
+        <div>${escapeHTML(it.name)}</div>
+      </td>
+      <td style="${td}text-align:center;">${escapeHTML(it.unit || '')}</td>
+      <td style="${tdR}">${m.isQuote && it.qty !== '' ? num(it.qty) : ''}</td>
+      <td style="${tdCost}">${it.cost > 0 ? yen(it.cost) : '—'}</td>
+      <td style="${tdR}font-weight:bold;">${it.price > 0 ? yen(it.price) : '—'}</td>
+      <td style="${tdR}">${it.price > 0 && it.cost > 0 ? yen(gross) + '（' + rate + '%）' : '—'}</td>
+    </tr>`;
+  }).join('');
+  return `
+  <div class="doc" style="width:210mm;min-height:297mm;padding:11mm 13mm;background:#fff;box-sizing:border-box;font-family:'BIZ UDPMincho','Yu Mincho','Hiragino Mincho ProN',serif;color:#1f2937;font-size:9pt;line-height:1.5;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+      <div style="flex:1;">
+        <div style="font-size:18pt;letter-spacing:0.4em;color:#92400e;border-bottom:1.5px solid #f59e0b;padding-bottom:1.5mm;display:inline-block;">${escapeHTML(m.title || (m.isQuote ? '御見積書' : '発注書'))}（社内確認用）</div>
+        ${m.facilityName ? `<div style="margin-top:4mm;font-size:11pt;color:#1f2937;">${escapeHTML(m.facilityName)}</div>` : ''}
+        <div style="margin-top:2.5mm;font-size:8pt;color:#4b5563;">担当：${escapeHTML(m.repName || '未設定')}</div>
+      </div>
+      <div style="width:60mm;font-size:8pt;color:#4b5563;text-align:right;">
+        <div>発行日：${escapeHTML(m.issued)}</div>
+        ${o ? `<div style="margin-top:1mm;">${escapeHTML(o.name)}</div>` : ''}
+      </div>
+    </div>
+
+    <div style="margin-top:3mm;border:1px solid #fcd34d;background:#fffbeb;padding:2mm 3mm;font-size:7.5pt;color:#92400e;font-weight:bold;">
+      ※ 社内確認用資料です。仕入価格・利益率を含みますので、施設など社外へは絶対にお渡しにならないでください。
+    </div>
+
+    <table style="width:100%;border-collapse:collapse;margin-top:4mm;table-layout:fixed;">
+      <colgroup><col style="width:5%"><col style="width:34%"><col style="width:9%"><col style="width:9%"><col style="width:13%"><col style="width:13%"><col style="width:17%"></colgroup>
+      <thead><tr>
+        <th style="${th}">No.</th><th style="${th}">商品名</th><th style="${th}">単位</th><th style="${th}">数量</th>
+        <th style="${thCost}">仕入</th><th style="${th}">単価</th><th style="${th}">粗利額（率）</th>
+      </tr></thead>
+      <tbody>${rows || `<tr><td colspan="7" style="${td}text-align:center;color:#6b7280;">商品データがありません</td></tr>`}</tbody>
+    </table>
+
+    ${m.note ? `<div style="margin-top:5mm;border:1px solid #bfdbfe;background:#eff6ff;padding:2.5mm;font-size:8pt;color:#4b5563;">
+      【備考】<br>${String(m.note).split('\n').map(l => escapeHTML(l)).join('<br>')}
+    </div>` : ''}
+  </div>`;
+}
+
+/* ============================================================
    印刷: 売上検索結果（売上管理・商品検索タブ）
 ============================================================ */
 function buildSalesSearchHtml(m) {
@@ -4568,6 +4628,13 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
     return true;
   };
   const handlePrint = () => { if (validate()) openPrint(buildHtml()); };
+  const handleInternalPrint = () => {
+    if (!validate()) return;
+    openPrint(buildDocInternalHtml({
+      isQuote, title: draft.title, facilityName: draft.facility, issued: isoToJa(draft.issued),
+      note: draft.note, items: draft.items, office: masters.settings.office, repName: repName || '未設定',
+    }));
+  };
   const handlePdf = async () => {
     if (!validate()) return;
     setBusy(true);
@@ -4726,6 +4793,10 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
           <button onClick={handlePrint}
             className="bg-sky-600 hover:bg-sky-700 active:scale-[.98] text-white px-4 py-2.5 rounded-xl shadow-sm shadow-sky-200 text-sm font-bold transition inline-flex items-center gap-1.5">
             <Printer size={15} /> 印刷
+          </button>
+          <button onClick={handleInternalPrint} title="仕入価格・利益率を含む社内確認用の資料を印刷します（社外秘）"
+            className="bg-amber-50 hover:bg-amber-100 active:scale-[.98] text-amber-800 border border-amber-300 px-4 py-2.5 rounded-xl shadow-sm text-sm font-bold transition inline-flex items-center gap-1.5">
+            <Printer size={15} /> 社内用印刷
           </button>
         </div>
 
