@@ -1039,9 +1039,14 @@ function buildFacilityOrderHtml(m) {
   // 数量は施設側が手書きで記入する欄。入力済みなら数字、未入力なら空欄のまま
   const qtyCell = (q) => (q === '' || q === null || q === undefined ? '' : num(q));
   const ed = 'class="editable" contenteditable="true"';
-  const rows = m.items.map((it, i) => `
+  const orderColCount = 4 + (sc ? 1 : 0) + (sp ? 1 : 0);
+  let orderRowNo = 0;
+  const rows = m.items.map((it, i) => {
+    if (it.isSpacer) return `<tr style="height:6mm;"><td colspan="${orderColCount}" style="border:1px solid #bfdbfe;border-left:none;border-right:none;"></td></tr>`;
+    orderRowNo++;
+    return `
     <tr style="background:${i % 2 === 1 ? '#f8fbff' : '#fff'}">
-      <td style="${tdR}">${i + 1}</td>
+      <td style="${tdR}">${orderRowNo}</td>
       <td style="${td}overflow-wrap:anywhere;">
         ${it.cat ? `<div style="font-size:7pt;color:#2563eb;font-weight:bold;">${escapeHTML(it.cat)}</div>` : ''}
         <div ${ed}>${escapeHTML(it.name)}</div>
@@ -1051,7 +1056,8 @@ function buildFacilityOrderHtml(m) {
       <td style="${tdR}background:#fffdf5;" ${ed}>${qtyCell(it.qty)}</td>
       <td style="${td}text-align:center;" ${ed}>${escapeHTML(it.unit)}</td>
       ${sp ? `<td style="${tdR}" ${ed}>${it.price > 0 ? yen(it.price) : ''}</td>` : ''}
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
   const colgroup = sp
     ? (sc ? '<colgroup><col style="width:7%"><col style="width:40%"><col style="width:9%"><col style="width:12%"><col style="width:8%"><col style="width:17%"></colgroup>'
           : '<colgroup><col style="width:7%"><col style="width:49%"><col style="width:12%"><col style="width:8%"><col style="width:17%"></colgroup>')
@@ -1087,7 +1093,7 @@ function buildFacilityOrderHtml(m) {
       <thead><tr><th style="${th}">No.</th><th style="${th}">商品名</th>${sc ? `<th style="${th}">入数</th>` : ''}<th style="${th}">数量</th><th style="${th}">単位</th>${sp ? `<th style="${th}">単価（税抜）</th>` : ''}</tr></thead>
       <tbody>${rows}</tbody>
     </table>
-    ${m.items.some(it => !String(it.name).trim()) ? `<div style="margin-top:2mm;font-size:7.5pt;color:#9ca3af;">※商品名が空欄の行は、リストにない商品を手書きでご記入いただく欄です。</div>` : ''}
+    ${m.items.some(it => !it.isSpacer && !String(it.name).trim()) ? `<div style="margin-top:2mm;font-size:7.5pt;color:#9ca3af;">※商品名が空欄の行は、リストにない商品を手書きでご記入いただく欄です。</div>` : ''}
 
     <div style="margin-top:6mm;border:1px solid #bfdbfe;background:#eff6ff;padding:3mm;font-size:8.5pt;color:#4b5563;">
       【備考】<br>
@@ -1108,7 +1114,10 @@ function buildQuoteHtml(m) {
   const st = m.showTotal !== false;   // 合計金額の表示（単価・明細金額とは独立したトグル）
   const qn = (q) => (Number(q) || 0);
   const ed = 'class="editable" contenteditable="true"';
-  const rows = m.items.map((it, i) => `
+  const quoteColCount = 3 + (sc ? 1 : 0) + (sp ? 2 : 0);
+  const rows = m.items.map((it, i) => {
+    if (it.isSpacer) return `<tr style="height:6mm;"><td colspan="${quoteColCount}" style="border:1px solid #bfdbfe;border-left:none;border-right:none;"></td></tr>`;
+    return `
     <tr style="background:${i % 2 === 1 ? '#f8fbff' : '#fff'}">
       <td style="${td}overflow-wrap:anywhere;">
         ${it.cat ? `<div style="font-size:7pt;color:#2563eb;font-weight:bold;">${escapeHTML(it.cat)}</div>` : ''}
@@ -1119,8 +1128,9 @@ function buildQuoteHtml(m) {
       <td style="${tdR}" ${ed}>${it.qty === '' ? '' : num(it.qty)}</td>
       <td style="${td}text-align:center;" ${ed}>${escapeHTML(it.unit)}</td>
       ${sp ? `<td style="${tdR}" ${ed}>${yen(it.price)}</td><td style="${tdR}" ${ed}>${yen(qn(it.qty) * it.price)}</td>` : ''}
-    </tr>`).join('');
-  const sub = m.items.reduce((s, it) => s + qn(it.qty) * it.price, 0);
+    </tr>`;
+  }).join('');
+  const sub = m.items.reduce((s, it) => it.isSpacer ? s : s + qn(it.qty) * it.price, 0);
   const tax = Math.floor(sub * 0.1);
   const total = sub + tax;
   const colgroup = sp
@@ -4528,9 +4538,15 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
     setDraft(prev => ({ ...prev, items: [...prev.items, { name: m.name, cat: m.cat || '', note: '', qty: isQuote ? 1 : '', unit: m.unit || '', caseSize: '', price: Math.round(m.price) || 0, cost: Math.round(m.cost) || 0 }] }));
   };
   const addBlank = () => setDraft(prev => ({ ...prev, items: [...prev.items, { name: '', cat: '', note: '', qty: isQuote ? 1 : '', unit: '', caseSize: '', price: 0 }] }));
+  // 行と行の間に空白（見た目の区切り）を挿入する。商品ではないので集計・印刷では番号を振らない
+  const addSpacer = (afterIdx) => setDraft(prev => {
+    const items = prev.items.slice();
+    items.splice(afterIdx + 1, 0, { isSpacer: true });
+    return { ...prev, items };
+  });
   const setItem = (idx, p) => setDraft(prev => ({ ...prev, items: prev.items.map((it, i) => (i === idx ? { ...it, ...p } : it)) }));
   const delItem = (idx) => setDraft(prev => ({ ...prev, items: prev.items.filter((_, i) => i !== idx) }));
-  const total = draft.items.reduce((s, it) => s + (Number(it.qty) || 0) * it.price, 0);
+  const total = draft.items.reduce((s, it) => it.isSpacer ? s : s + (Number(it.qty) || 0) * (it.price || 0), 0);
 
   const buildHtml = () => {
     // 商品名が空欄の行も、施設側が手書きで記入できるようそのまま印刷に含める。
@@ -4717,7 +4733,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
             <div className="text-sm font-bold text-slate-800 uppercase tracking-wide mb-2.5">保存済みの{isQuote ? '見積書' : '発注書'}（{savedList.length}件）</div>
             <div className="space-y-2.5 max-h-96 overflow-y-auto pr-0.5">
               {savedList.map(d => {
-                const dTotal = d.items.reduce((s, it) => s + (Number(it.qty) || 0) * it.price, 0);
+                const dTotal = d.items.reduce((s, it) => it.isSpacer ? s : s + (Number(it.qty) || 0) * (it.price || 0), 0);
                 return (
                 <div key={d.id} onClick={() => loadDoc(d)} role="button" tabIndex={0}
                   onKeyDown={e => { if (e.key === 'Enter') loadDoc(d); }}
@@ -4808,7 +4824,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
             <div className="px-5 py-3.5 border-b border-slate-100">
               <div className="flex items-center gap-2.5 flex-wrap">
                 <div className="flex-1 min-w-[160px]">
-                  <div className="font-bold text-sm text-slate-800">{isQuote ? '見積明細' : '発注明細'}<span className="text-slate-600 font-normal ml-1.5">{draft.items.length}品目</span></div>
+                  <div className="font-bold text-sm text-slate-800">{isQuote ? '見積明細' : '発注明細'}<span className="text-slate-600 font-normal ml-1.5">{draft.items.filter(it => !it.isSpacer).length}品目</span></div>
                   <div className="text-[11px] text-slate-600">{draft.facility} {isQuote ? '宛の御見積書' : '→ 当社宛の発注書'}</div>
                 </div>
                 {(isQuote ? draft.showTotal !== false : draft.showPrices) && <span className="text-sm font-extrabold text-slate-800 tabular-nums shrink-0">{yen(total)}<span className="text-[10px] text-slate-600 font-bold ml-1">税抜</span></span>}
@@ -4868,7 +4884,17 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
-                  {draft.items.map((it, i) => (
+                  {draft.items.map((it, i) => it.isSpacer ? (
+                    <tr key={i} className="bg-slate-50/60">
+                      <td colSpan={7} className="py-1.5 px-4">
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 border-t border-dashed border-slate-300"></div>
+                          <span className="text-[10px] text-slate-400 font-bold">空白</span>
+                          <button onClick={() => delItem(i)} title="この空白を削除" className="text-slate-400 hover:text-rose-500 transition"><X size={13} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
                     <tr key={i}>
                       <td className="px-4 py-2.5">
                         <div className="flex items-center gap-1 mb-1">
@@ -4922,6 +4948,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                         <td className="px-1 py-2.5 text-right tabular-nums font-extrabold text-slate-800 text-sm">{yen((Number(it.qty) || 0) * it.price)}</td>
                       )}
                       <td className="pr-3 text-right whitespace-nowrap">
+                        <button onClick={() => addSpacer(i)} title="この下に空白を追加" className="text-slate-300 hover:text-sky-600 transition pl-1"><Plus size={14} /></button>
                         <button onClick={() => delItem(i)} className="text-slate-400 hover:text-rose-500 transition pl-1"><X size={15} /></button>
                       </td>
                     </tr>
@@ -4932,9 +4959,12 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                 </tbody>
               </table>
             </div>
-            <div className="px-4 py-2.5 border-t border-slate-100">
+            <div className="px-4 py-2.5 border-t border-slate-100 flex items-center gap-4">
               <button onClick={addBlank}
                 className="text-xs font-bold text-sky-600 hover:text-sky-800 transition">＋ 空の行を追加（履歴にない商品を手入力）</button>
+              <button onClick={() => addSpacer(draft.items.length - 1)}
+                title="各行の右端の＋ボタンからも、任意の行の下に空白を挿入できます"
+                className="text-xs font-bold text-slate-500 hover:text-sky-700 transition">＋ 空白を追加（行の区切り）</button>
             </div>
             <div className="px-4 py-3 border-t border-slate-100">
               <div className="text-[11px] font-bold text-slate-600 uppercase tracking-wide mb-1.5">全体の備考（そのまま帳票に印刷されます）</div>
