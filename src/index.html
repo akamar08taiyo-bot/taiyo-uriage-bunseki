@@ -5973,7 +5973,7 @@ const TARGET_STATUS_STYLE = {
   '見送り': 'bg-rose-100 text-rose-700',
 };
 
-function TargetsView({ data, masters, targets, setTargets, showToast }) {
+function TargetsView({ data, masters, targets, setTargets, showToast, jumpToFacility }) {
   const reps = masters.settings.reps || [];
   // 絞り込み用の担当一覧：マスタ登録済みの担当に加え、自由入力で登録されたターゲット先の担当名も含める
   const filterReps = useMemo(() =>
@@ -5986,6 +5986,8 @@ function TargetsView({ data, masters, targets, setTargets, showToast }) {
   const [newRep, setNewRep] = useState('');
   useEffect(() => { setNewRep(prev => prev || repFilter || reps[0] || ''); }, [repFilter, reps]);
   const [facSuggestOpen, setFacSuggestOpen] = useState(false);
+  const [facPickerOpen, setFacPickerOpen] = useState(false);
+  const [facPickerQuery, setFacPickerQuery] = useState('');
   const facBoxRef = useRef(null);
   const facNames = useMemo(() =>
     data.facilities.slice().sort((a, b) => (b.sales || 0) - (a.sales || 0)).map(f => f.name), [data]);
@@ -5994,6 +5996,9 @@ function TargetsView({ data, masters, targets, setTargets, showToast }) {
     if (!q) return [];
     return facNames.filter(n => normalizeSearchText(n).includes(q)).slice(0, 8);
   }, [facNames, newFacility]);
+  const facPickerResults = useMemo(() =>
+    facNames.filter(n => normalizeSearchText(n).includes(normalizeSearchText(facPickerQuery.trim()))).slice(0, 200),
+    [facNames, facPickerQuery]);
   useEffect(() => {
     if (!facSuggestOpen) return;
     const h = (e) => { if (facBoxRef.current && !facBoxRef.current.contains(e.target)) setFacSuggestOpen(false); };
@@ -6055,12 +6060,53 @@ function TargetsView({ data, masters, targets, setTargets, showToast }) {
               </div>
             )}
           </div>
+          <button type="button" onClick={() => { setFacPickerOpen(true); setFacPickerQuery(''); }}
+            title="既存施設の一覧から選ぶ"
+            className="h-10 px-3 rounded-lg border border-slate-200 bg-white hover:bg-sky-50 hover:border-sky-300 active:scale-[.98] text-slate-600 hover:text-sky-700 text-xs font-bold shadow-sm transition inline-flex items-center gap-1.5">
+            <Search size={14} /> 一覧から選ぶ
+          </button>
           <button onClick={addTarget}
             className="h-10 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-[.98] text-white text-sm font-bold shadow-sm shadow-emerald-200 transition inline-flex items-center gap-1.5">
             <Plus size={15} /> 追加
           </button>
         </div>
       </Card>
+
+      {facPickerOpen && (
+        <div className="fixed inset-0 z-40 bg-slate-600/50 backdrop-blur-sm overflow-auto py-8 px-4 no-print"
+          onClick={() => setFacPickerOpen(false)}>
+          <div className="max-w-lg mx-auto bg-white rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-3 bg-gradient-to-r from-sky-50 to-blue-50">
+              <span className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-sky-100 text-sky-600"><Search size={17} /></span>
+              <div className="flex-1">
+                <div className="font-bold text-slate-800 text-sm">既存施設から選ぶ</div>
+                <div className="text-[11px] text-slate-600">施設名を検索して選んでください</div>
+              </div>
+              <button onClick={() => setFacPickerOpen(false)} className="text-slate-400 hover:text-slate-600 transition"><X size={18} /></button>
+            </div>
+            <div className="px-6 py-4">
+              <div className="relative">
+                <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                <input autoFocus value={facPickerQuery} onChange={e => setFacPickerQuery(e.target.value)}
+                  placeholder="施設名で検索"
+                  className="h-11 pl-9 pr-3 w-full rounded-xl border border-slate-200 text-sm bg-white shadow-sm focus:border-blue-400 focus:outline-none transition" />
+              </div>
+              <div className="mt-3 max-h-80 overflow-y-auto divide-y divide-slate-50 border border-slate-100 rounded-xl">
+                {facPickerResults.map(n => (
+                  <button key={n} type="button"
+                    onClick={() => { setNewFacility(n); setFacPickerOpen(false); setFacPickerQuery(''); }}
+                    className="w-full text-left px-4 py-2.5 hover:bg-sky-50 transition text-xs font-bold text-slate-700 truncate">
+                    {n}
+                  </button>
+                ))}
+                {facPickerResults.length === 0 && (
+                  <div className="px-4 py-8 text-center text-xs text-slate-600">該当する施設がありません</div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <Card className="px-5 py-4 space-y-3">
         <div className="flex items-center gap-3 flex-wrap">
@@ -6083,7 +6129,7 @@ function TargetsView({ data, masters, targets, setTargets, showToast }) {
 
         <div className="space-y-3">
           {visibleTargets.map(t => (
-            <TargetCard key={t.id} target={t} data={data}
+            <TargetCard key={t.id} target={t} data={data} jumpToFacility={jumpToFacility}
               onPatch={patch => patchTarget(t.id, patch)} onRemove={() => removeTarget(t.id)} />
           ))}
         </div>
@@ -6092,8 +6138,9 @@ function TargetsView({ data, masters, targets, setTargets, showToast }) {
   );
 }
 
-function TargetCard({ target, data, onPatch, onRemove }) {
+function TargetCard({ target, data, jumpToFacility, onPatch, onRemove }) {
   const [prodQuery, setProdQuery] = useState('');
+  const [prodCat, setProdCat] = useState('all');
   const [prodPickerOpen, setProdPickerOpen] = useState(false);
   const prodBoxRef = useRef(null);
   useEffect(() => {
@@ -6106,9 +6153,11 @@ function TargetCard({ target, data, onPatch, onRemove }) {
   const prodResults = useMemo(() => {
     const q = normalizeSearchText(prodQuery.trim());
     let list = data.products.filter(p => !already.has(p.name));
+    if (prodCat !== 'all') list = list.filter(p => p.cat === prodCat);
     if (q) list = list.filter(p => normalizeSearchText(p.name).includes(q));
-    return list.slice().sort((a, b) => (b.winSales || 0) - (a.winSales || 0)).slice(0, 30);
-  }, [data, prodQuery, already]);
+    return list.slice().sort((a, b) => (b.winSales || 0) - (a.winSales || 0)).slice(0, 50);
+  }, [data, prodQuery, prodCat, already]);
+  const isExistingFacility = data.facByName.has(target.facility);
 
   const addProduct = (p) => {
     onPatch({ proposedProducts: [...(target.proposedProducts || []), { name: p.name, cat: p.cat }] });
@@ -6121,7 +6170,18 @@ function TargetCard({ target, data, onPatch, onRemove }) {
     <div className="border border-slate-100 rounded-2xl p-4 bg-slate-50/50">
       <div className="flex items-start gap-3 flex-wrap">
         <div className="flex-1 min-w-[220px]">
-          <div className="font-extrabold text-base text-slate-900">{target.facility}</div>
+          {isExistingFacility ? (
+            <button type="button" onClick={() => jumpToFacility && jumpToFacility(target.facility)}
+              title="施設情報を開く"
+              className="font-extrabold text-base text-sky-700 hover:text-sky-900 hover:underline decoration-2 underline-offset-2 transition text-left">
+              {target.facility}
+            </button>
+          ) : (
+            <div className="font-extrabold text-base text-slate-900">
+              {target.facility}
+              <span className="ml-1.5 align-middle bg-emerald-100 text-emerald-700 text-[10px] font-bold px-2 py-0.5 rounded-full">新規</span>
+            </div>
+          )}
           <div className="text-xs font-bold text-slate-500 mt-0.5">担当：{target.rep || '未設定'}　登録日：{String(target.createdAt).slice(0, 10)}</div>
         </div>
         <select value={target.status} onChange={e => onPatch({ status: e.target.value })}
@@ -6146,10 +6206,15 @@ function TargetCard({ target, data, onPatch, onRemove }) {
               <Plus size={12} /> 商品を追加
             </button>
             {prodPickerOpen && (
-              <div className="absolute z-30 top-full left-0 mt-1.5 w-72 bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
-                <div className="p-2 border-b border-slate-100">
+              <div className="absolute z-30 top-full left-0 mt-1.5 w-80 bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
+                <div className="p-2 border-b border-slate-100 space-y-1.5">
                   <input autoFocus value={prodQuery} onChange={e => setProdQuery(e.target.value)} placeholder="商品名で検索"
                     className="w-full h-9 px-2.5 rounded-lg border border-slate-200 text-xs outline-none focus:border-sky-400" />
+                  <select value={prodCat} onChange={e => setProdCat(e.target.value)}
+                    className="w-full h-9 px-2 rounded-lg border border-slate-200 bg-white text-xs font-bold text-slate-600 outline-none focus:border-sky-400">
+                    <option value="all">すべての分類</option>
+                    {CATEGORY_NAMES.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
                 </div>
                 <div className="max-h-56 overflow-y-auto">
                   {prodResults.map(p => (
@@ -6390,7 +6455,7 @@ function App() {
               {tab === 'order' && <DocComposer docType="order" data={data} masters={masters} draft={orderDraft} setDraft={setOrderDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} goImport={() => setTab('import')} />}
               {tab === 'quote' && <DocComposer docType="quote" data={data} masters={masters} draft={quoteDraft} setDraft={setQuoteDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} goImport={() => setTab('import')} />}
               {tab === 'pricerevision' && <PriceRevisionView data={data} masters={masters} draft={priceRevisionDraft} setDraft={setPriceRevisionDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} />}
-              {tab === 'targets' && <TargetsView data={data} masters={masters} targets={targets} setTargets={setTargets} showToast={showToast} />}
+              {tab === 'targets' && <TargetsView data={data} masters={masters} targets={targets} setTargets={setTargets} showToast={showToast} jumpToFacility={jumpToFacility} />}
               {tab === 'import' && <ImportView rows={rows} masters={masters} setRows={setRows} setMasters={setMasters} setMeta={setMeta} setDocs={setDocs} showToast={showToast} />}
               {tab === 'settings' && <SettingsView rows={rows} masters={masters} setRows={setRows} setMasters={setMasters} setOffice={setOffice} meta={meta} setMeta={setMeta} docs={docs} setDocs={setDocs} data={data} showToast={showToast} />}
             </>
