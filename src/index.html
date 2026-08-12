@@ -5842,6 +5842,10 @@ const TARGET_STATUS_STYLE = {
 
 function TargetsView({ data, masters, targets, setTargets, showToast }) {
   const reps = masters.settings.reps || [];
+  // 絞り込み用の担当一覧：マスタ登録済みの担当に加え、自由入力で登録されたターゲット先の担当名も含める
+  const filterReps = useMemo(() =>
+    [...new Set([...reps, ...targets.map(t => t.rep).filter(Boolean)])].sort((a, b) => a.localeCompare(b, 'ja')),
+    [reps, targets]);
   const [repFilter, setRepFilter] = useState(() => loadStorage(K.LAST_TARGET_REP, ''));
   useEffect(() => { saveStorage(K.LAST_TARGET_REP, repFilter); }, [repFilter]);
 
@@ -5892,11 +5896,12 @@ function TargetsView({ data, masters, targets, setTargets, showToast }) {
         <div className="flex items-end gap-2 flex-wrap">
           <label className="flex flex-col gap-1 text-xs font-bold text-slate-600">
             担当
-            <select value={newRep} onChange={e => setNewRep(e.target.value)}
-              className="h-10 px-3 rounded-lg border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-700 focus:border-sky-400 focus:outline-none w-36">
-              <option value="">選択してください</option>
-              {reps.map(r => <option key={r} value={r}>{r}</option>)}
-            </select>
+            <input value={newRep} onChange={e => setNewRep(e.target.value)} list="target-rep-list"
+              placeholder="担当者名"
+              className="h-10 px-3 rounded-lg border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-700 focus:border-sky-400 focus:outline-none w-36" />
+            <datalist id="target-rep-list">
+              {reps.map(r => <option key={r} value={r} />)}
+            </datalist>
           </label>
           <div className="relative flex flex-col gap-1 text-xs font-bold text-slate-600" ref={facBoxRef}>
             施設名
@@ -5932,7 +5937,7 @@ function TargetsView({ data, masters, targets, setTargets, showToast }) {
             <select value={repFilter} onChange={e => setRepFilter(e.target.value)}
               className="h-9 px-3 rounded-lg border border-slate-200 bg-white text-xs font-bold text-slate-700 focus:border-sky-400 focus:outline-none">
               <option value="">すべての担当</option>
-              {reps.map(r => <option key={r} value={r}>{r}</option>)}
+              {filterReps.map(r => <option key={r} value={r}>{r}</option>)}
             </select>
           </div>
         </div>
