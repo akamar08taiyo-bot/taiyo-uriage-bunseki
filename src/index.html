@@ -49,7 +49,7 @@ import {
   Printer, X, Search, AlertTriangle, PhoneCall, ChevronDown, ChevronUp, ChevronRight,
   FileSpreadsheet, Database, Trash2, Download, Info, CheckCircle2, Truck,
   TrendingDown, TrendingUp, FileUp, ClipboardPaste, HardDrive, Sun, ArrowUpRight,
-  ArrowDownRight, JapaneseYen, Percent, Coins, ClipboardList, RotateCcw, Pencil, FilePlus, CalendarDays, Filter, Eye, EyeOff, RefreshCw, Calculator, Delete
+  ArrowDownRight, JapaneseYen, Percent, Coins, ClipboardList, RotateCcw, Pencil, FilePlus, CalendarDays, Filter, Eye, EyeOff, RefreshCw, Calculator, Delete, Target, Plus
 } from 'lucide-react';
 
 /* ============================================================
@@ -79,6 +79,8 @@ const K = {
   META: 'taiyo_uriage_meta_v1',
   DOCS: 'taiyo_uriage_docs_v1',      // 保存した発注書・見積書
   LAST_PRICE_REV_REP: 'taiyo_uriage_last_pricerevision_rep_v1', // 価格改定：前回入力した担当名
+  TARGETS: 'taiyo_uriage_targets_v1', // ターゲット先進捗確認：担当ごとのターゲット施設リスト
+  LAST_TARGET_REP: 'taiyo_uriage_last_target_rep_v1', // ターゲット先進捗確認：前回選択した担当名
 };
 const loadStorage = (key, fallback) => {
   try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; }
@@ -5823,6 +5825,231 @@ function SalesSearchPanel({ rows, masters, showToast, openPrint }) {
   );
 }
 
+/* ============================================================
+   画面: ターゲット先進捗確認
+   - 担当ごとにターゲット施設（新規開拓・深耕したい先）を登録し、
+     提案商品（既存の売上商品マスタから選択）・進捗ステータス・次のアクションを管理する
+============================================================ */
+const TARGET_STATUSES = ['未着手', 'アプローチ中', '提案済み', '商談中', '成約', '見送り'];
+const TARGET_STATUS_STYLE = {
+  '未着手': 'bg-slate-100 text-slate-600',
+  'アプローチ中': 'bg-sky-100 text-sky-700',
+  '提案済み': 'bg-amber-100 text-amber-700',
+  '商談中': 'bg-indigo-100 text-indigo-700',
+  '成約': 'bg-emerald-100 text-emerald-700',
+  '見送り': 'bg-rose-100 text-rose-700',
+};
+
+function TargetsView({ data, masters, targets, setTargets, showToast }) {
+  const reps = masters.settings.reps || [];
+  const [repFilter, setRepFilter] = useState(() => loadStorage(K.LAST_TARGET_REP, ''));
+  useEffect(() => { saveStorage(K.LAST_TARGET_REP, repFilter); }, [repFilter]);
+
+  const [newFacility, setNewFacility] = useState('');
+  const [newRep, setNewRep] = useState('');
+  useEffect(() => { setNewRep(prev => prev || repFilter || reps[0] || ''); }, [repFilter, reps]);
+  const [facSuggestOpen, setFacSuggestOpen] = useState(false);
+  const facBoxRef = useRef(null);
+  const facNames = useMemo(() =>
+    data.facilities.slice().sort((a, b) => (b.sales || 0) - (a.sales || 0)).map(f => f.name), [data]);
+  const facSuggests = useMemo(() => {
+    const q = normalizeSearchText(newFacility.trim());
+    if (!q) return [];
+    return facNames.filter(n => normalizeSearchText(n).includes(q)).slice(0, 8);
+  }, [facNames, newFacility]);
+  useEffect(() => {
+    if (!facSuggestOpen) return;
+    const h = (e) => { if (facBoxRef.current && !facBoxRef.current.contains(e.target)) setFacSuggestOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [facSuggestOpen]);
+
+  const visibleTargets = useMemo(() => {
+    let list = targets.slice();
+    if (repFilter) list = list.filter(t => t.rep === repFilter);
+    return list.sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')));
+  }, [targets, repFilter]);
+
+  const addTarget = () => {
+    const name = newFacility.trim();
+    if (!name) { showToast('施設名を入力してください', 'error'); return; }
+    if (!newRep.trim()) { showToast('担当者を選択してください', 'error'); return; }
+    if (targets.some(t => t.rep === newRep && t.facility === name)) { showToast('すでに登録されているターゲット先です', 'error'); return; }
+    const now = new Date().toISOString();
+    const rec = { id: 'target-' + Date.now(), rep: newRep, facility: name, status: '未着手', proposedProducts: [], memo: '', nextAction: '', nextActionDate: '', createdAt: now, updatedAt: now };
+    setTargets(prev => [...prev, rec]);
+    setNewFacility('');
+    setFacSuggestOpen(false);
+    showToast('「' + name + '」をターゲット先に追加しました');
+  };
+  const patchTarget = (id, patch) => setTargets(prev => prev.map(t => t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t));
+  const removeTarget = (id) => { if (!window.confirm('このターゲット先を削除しますか？')) return; setTargets(prev => prev.filter(t => t.id !== id)); showToast('削除しました'); };
+
+  return (
+    <div className="space-y-4">
+      <Card className="px-5 py-4 space-y-3">
+        <div className="text-sm font-bold text-slate-800">ターゲット先を追加</div>
+        <div className="flex items-end gap-2 flex-wrap">
+          <label className="flex flex-col gap-1 text-xs font-bold text-slate-600">
+            担当
+            <select value={newRep} onChange={e => setNewRep(e.target.value)}
+              className="h-10 px-3 rounded-lg border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-700 focus:border-sky-400 focus:outline-none w-36">
+              <option value="">選択してください</option>
+              {reps.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </label>
+          <div className="relative flex flex-col gap-1 text-xs font-bold text-slate-600" ref={facBoxRef}>
+            施設名
+            <input value={newFacility} onChange={e => { setNewFacility(e.target.value); setFacSuggestOpen(true); }}
+              onFocus={() => setFacSuggestOpen(true)}
+              onKeyDown={e => { if (e.key === 'Enter') addTarget(); if (e.key === 'Escape') setFacSuggestOpen(false); }}
+              placeholder="施設名を入力（新規施設も可）"
+              className="h-10 px-3 rounded-lg border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-700 focus:border-sky-400 focus:outline-none w-64" />
+            {facSuggestOpen && facSuggests.length > 0 && (
+              <div className="absolute z-30 top-full left-0 mt-1.5 w-64 bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
+                {facSuggests.map(n => (
+                  <button key={n} type="button" onMouseDown={e => e.preventDefault()}
+                    onClick={() => { setNewFacility(n); setFacSuggestOpen(false); }}
+                    className="w-full text-left px-4 py-2.5 hover:bg-sky-50 transition text-xs font-bold text-slate-700 truncate border-b border-slate-50 last:border-0">
+                    {n}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <button onClick={addTarget}
+            className="h-10 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-[.98] text-white text-sm font-bold shadow-sm shadow-emerald-200 transition inline-flex items-center gap-1.5">
+            <Plus size={15} /> 追加
+          </button>
+        </div>
+      </Card>
+
+      <Card className="px-5 py-4 space-y-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="text-sm font-bold text-slate-800">ターゲット先一覧（{visibleTargets.length}件）</div>
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-xs font-bold text-slate-600">担当で絞り込み</span>
+            <select value={repFilter} onChange={e => setRepFilter(e.target.value)}
+              className="h-9 px-3 rounded-lg border border-slate-200 bg-white text-xs font-bold text-slate-700 focus:border-sky-400 focus:outline-none">
+              <option value="">すべての担当</option>
+              {reps.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {visibleTargets.length === 0 && (
+          <div className="text-center text-xs text-slate-600 py-10">
+            {repFilter ? `「${repFilter}」のターゲット先はまだ登録されていません。` : '上の欄からターゲット先を追加してください。'}
+          </div>
+        )}
+
+        <div className="space-y-3">
+          {visibleTargets.map(t => (
+            <TargetCard key={t.id} target={t} data={data}
+              onPatch={patch => patchTarget(t.id, patch)} onRemove={() => removeTarget(t.id)} />
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function TargetCard({ target, data, onPatch, onRemove }) {
+  const [prodQuery, setProdQuery] = useState('');
+  const [prodPickerOpen, setProdPickerOpen] = useState(false);
+  const prodBoxRef = useRef(null);
+  useEffect(() => {
+    if (!prodPickerOpen) return;
+    const h = (e) => { if (prodBoxRef.current && !prodBoxRef.current.contains(e.target)) setProdPickerOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [prodPickerOpen]);
+  const already = useMemo(() => new Set((target.proposedProducts || []).map(p => p.name)), [target.proposedProducts]);
+  const prodResults = useMemo(() => {
+    const q = normalizeSearchText(prodQuery.trim());
+    let list = data.products.filter(p => !already.has(p.name));
+    if (q) list = list.filter(p => normalizeSearchText(p.name).includes(q));
+    return list.slice().sort((a, b) => (b.winSales || 0) - (a.winSales || 0)).slice(0, 30);
+  }, [data, prodQuery, already]);
+
+  const addProduct = (p) => {
+    onPatch({ proposedProducts: [...(target.proposedProducts || []), { name: p.name, cat: p.cat }] });
+    setProdQuery('');
+    setProdPickerOpen(false);
+  };
+  const removeProduct = (name) => onPatch({ proposedProducts: (target.proposedProducts || []).filter(p => p.name !== name) });
+
+  return (
+    <div className="border border-slate-100 rounded-2xl p-4 bg-slate-50/50">
+      <div className="flex items-start gap-3 flex-wrap">
+        <div className="flex-1 min-w-[220px]">
+          <div className="font-extrabold text-base text-slate-900">{target.facility}</div>
+          <div className="text-xs font-bold text-slate-500 mt-0.5">担当：{target.rep || '未設定'}　登録日：{String(target.createdAt).slice(0, 10)}</div>
+        </div>
+        <select value={target.status} onChange={e => onPatch({ status: e.target.value })}
+          className={`text-xs font-bold px-3 py-1.5 rounded-full border-0 outline-none ${TARGET_STATUS_STYLE[target.status] || 'bg-slate-100 text-slate-600'}`}>
+          {TARGET_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <button onClick={onRemove} className="text-slate-400 hover:text-rose-500 transition"><Trash2 size={16} /></button>
+      </div>
+
+      <div className="mt-3">
+        <div className="text-xs font-bold text-slate-600 mb-1.5">提案商品</div>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {(target.proposedProducts || []).map(p => (
+            <span key={p.name} className="inline-flex items-center gap-1.5 bg-sky-100 text-sky-700 text-xs font-bold px-2.5 py-1 rounded-full">
+              {p.name}
+              <button onClick={() => removeProduct(p.name)} className="hover:text-rose-600 transition"><X size={12} /></button>
+            </span>
+          ))}
+          <div className="relative" ref={prodBoxRef}>
+            <button type="button" onClick={() => setProdPickerOpen(o => !o)}
+              className="inline-flex items-center gap-1 text-xs font-bold text-sky-600 hover:text-sky-800 border border-dashed border-sky-300 rounded-full px-2.5 py-1 transition">
+              <Plus size={12} /> 商品を追加
+            </button>
+            {prodPickerOpen && (
+              <div className="absolute z-30 top-full left-0 mt-1.5 w-72 bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
+                <div className="p-2 border-b border-slate-100">
+                  <input autoFocus value={prodQuery} onChange={e => setProdQuery(e.target.value)} placeholder="商品名で検索"
+                    className="w-full h-9 px-2.5 rounded-lg border border-slate-200 text-xs outline-none focus:border-sky-400" />
+                </div>
+                <div className="max-h-56 overflow-y-auto">
+                  {prodResults.map(p => (
+                    <button key={p.name} type="button" onClick={() => addProduct(p)}
+                      className="w-full text-left px-3 py-2 hover:bg-sky-50 transition text-xs font-bold text-slate-700 truncate border-b border-slate-50 last:border-0">
+                      {p.name}<span className="text-slate-400 font-normal ml-1.5">{p.cat}</span>
+                    </button>
+                  ))}
+                  {prodResults.length === 0 && <div className="px-3 py-6 text-center text-xs text-slate-500">該当する商品がありません</div>}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3 grid md:grid-cols-2 gap-3">
+        <label className="flex flex-col gap-1 text-xs font-bold text-slate-600">
+          メモ
+          <textarea value={target.memo || ''} onChange={e => onPatch({ memo: e.target.value })} rows={2}
+            placeholder="商談の状況・課題など"
+            className="w-full rounded-lg border border-slate-200 p-2.5 text-xs resize-y focus:border-sky-400 focus:outline-none transition leading-relaxed bg-white" />
+        </label>
+        <div className="flex flex-col gap-1 text-xs font-bold text-slate-600">
+          次のアクション
+          <div className="flex items-center gap-2">
+            <input value={target.nextAction || ''} onChange={e => onPatch({ nextAction: e.target.value })}
+              placeholder="例：サンプル提案、再訪問"
+              className="flex-1 h-9 px-2.5 rounded-lg border border-slate-200 text-xs font-bold text-slate-700 outline-none focus:border-sky-400 bg-white" />
+            <input type="date" value={target.nextActionDate || ''} onChange={e => onPatch({ nextActionDate: e.target.value })}
+              className="h-9 px-2.5 rounded-lg border border-slate-200 text-xs font-bold text-slate-700 outline-none focus:border-sky-400 tabular-nums bg-white" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const TABS = [
   { id: 'dash', label: 'ダッシュボード', icon: LayoutDashboard, sub: '減少アラートと発注漏れを毎朝チェック' },
   { id: 'fac', label: '施設別', icon: Building2, sub: '施設ごとの売上・粗利・購入傾向' },
@@ -5833,6 +6060,7 @@ const TABS = [
   { id: 'order', label: '発注書作成', icon: ClipboardList, sub: '施設が当社へ送る発注書を代理作成（初期は金額なし）' },
   { id: 'quote', label: '見積書作成', icon: FileSpreadsheet, sub: '販売履歴の商品マスタから御見積書を作成' },
   { id: 'pricerevision', label: '価格改定', icon: RefreshCw, sub: '商品ごとに現状価格→改定価格を入力し、増加額・増加率を確認' },
+  { id: 'targets', label: 'ターゲット先進捗確認', icon: Target, sub: '担当ごとにターゲット施設を登録し、提案商品・進捗状況を管理' },
   { id: 'import', label: 'データ取込', icon: Upload, sub: '売上CSVの取り込み（蓄積型・重複自動スキップ）' },
   { id: 'settings', label: '設定', icon: Settings, sub: 'マスタ設定とデータ管理' },
 ];
@@ -5851,6 +6079,10 @@ function App() {
   const [meta, setMeta] = useState(() => loadStorage(K.META, { schema: 1 }));
   const [docs, setDocs] = useState(() => {
     const v = loadStorage(K.DOCS, []);
+    return Array.isArray(v) ? v : [];
+  });
+  const [targets, setTargets] = useState(() => {
+    const v = loadStorage(K.TARGETS, []);
     return Array.isArray(v) ? v : [];
   });
   const [baseSel, setBaseSel] = useState(null);
@@ -5876,6 +6108,7 @@ function App() {
   useEffect(() => { if (!saveStorage(K.MASTERS, masters)) showToast(QUOTA_MSG, 'error', 9000); }, [masters, showToast]);
   useEffect(() => { saveStorage(K.META, meta); }, [meta]);
   useEffect(() => { if (!saveStorage(K.DOCS, docs)) showToast(QUOTA_MSG, 'error', 9000); }, [docs, showToast]);
+  useEffect(() => { if (!saveStorage(K.TARGETS, targets)) showToast(QUOTA_MSG, 'error', 9000); }, [targets, showToast]);
 
   // 集計索引（基準月 = データ内最新月。ヘッダーで変更可）
   const data = useMemo(() => buildAnalytics(rows, masters, baseSel), [rows, masters, baseSel]);
@@ -5999,6 +6232,7 @@ function App() {
               {tab === 'order' && <DocComposer docType="order" data={data} masters={masters} draft={orderDraft} setDraft={setOrderDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} goImport={() => setTab('import')} />}
               {tab === 'quote' && <DocComposer docType="quote" data={data} masters={masters} draft={quoteDraft} setDraft={setQuoteDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} goImport={() => setTab('import')} />}
               {tab === 'pricerevision' && <PriceRevisionView data={data} masters={masters} draft={priceRevisionDraft} setDraft={setPriceRevisionDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} />}
+              {tab === 'targets' && <TargetsView data={data} masters={masters} targets={targets} setTargets={setTargets} showToast={showToast} />}
               {tab === 'import' && <ImportView rows={rows} masters={masters} setRows={setRows} setMasters={setMasters} setMeta={setMeta} setDocs={setDocs} showToast={showToast} />}
               {tab === 'settings' && <SettingsView rows={rows} masters={masters} setRows={setRows} setMasters={setMasters} setOffice={setOffice} meta={meta} setMeta={setMeta} docs={docs} setDocs={setDocs} data={data} showToast={showToast} />}
             </>
