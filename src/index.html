@@ -3152,9 +3152,10 @@ const STOCK_MONTH_PRESETS = [
   [0.25, '1/4ヶ月'], [0.5, '2/4ヶ月'], [0.75, '3/4ヶ月'],
   [1, '1ヶ月'], [1.5, '1.5ヶ月'], [2, '2ヶ月'], [3, '3ヶ月'],
 ];
-// 商品×施設の個別上書き（未設定なら受注発注として計上＝手動で在庫品に指定した施設分だけを集計）
-const facHandlingOf = (product, facility, ifh) =>
-  (ifh[product] && ifh[product][facility]) || 'order';
+// 商品×施設の個別上書き。未設定の施設は「商品全体の扱い」（在庫品/受注発注）をそのまま引き継ぐ。
+// 施設だけ例外にしたい場合（例: この施設だけ直送扱いにしたい）は、施設消費一覧のボタンで個別に変更できる。
+const facHandlingOf = (product, facility, ifh, productHandling) =>
+  (ifh[product] && ifh[product][facility]) || productHandling || 'order';
 
 function StockView({ data, masters, setMasters, showToast, openPrint }) {
   const [period, setPeriod] = useState(6);
@@ -3214,6 +3215,7 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
     const ifh = masters.itemFacilityHandling;
     const list = [];
     for (const p of data.products) {
+      const productHandling = handlingOf(p.name, masters.itemHandling);
       const monthTotals = zeros12();
       const orderSet = new Set();
       let periodQty = 0;
@@ -3221,7 +3223,7 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
       const breakdown = [];
       for (const pair of p.pairs) {
         if (pair.direct) continue;   // 施設全体が直送フラグの場合は従来通り対象外（表示もしない）
-        const resolved = facHandlingOf(p.name, pair.fac, ifh);
+        const resolved = facHandlingOf(p.name, pair.fac, ifh, productHandling);
         const included = resolved === 'stock';
         const slice = pair.qty12.slice(start);
         let t = 0; for (let i = 0; i < slice.length; i++) t += slice[i];
@@ -3242,7 +3244,7 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
       list.push({
         name: p.name, cat: p.cat, catSrc: p.catSrc, unit: p.unit || '', supplier: p.supplier || '（仕入先未設定）',
         avg, max: mx, cost, breakdown, tot: anyQty, avgPerOrder, orderCount: orderSet.size,
-        handling: handlingOf(p.name, masters.itemHandling),
+        handling: productHandling,
         classified: masters.itemHandling[p.name] !== undefined,
       });
     }
@@ -3451,6 +3453,7 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
                             className="text-slate-600 hover:text-rose-500 transition"><RotateCcw size={12} /></button>
                         )}
                         <button onClick={() => setEditQty(p.name)}
+                          title={hasOverride(p) ? '手動で上書き中の数値です（自動計算は使われていません）。クリックして編集、隣の↻で自動計算に戻せます' : hasMonthOverride(p) ? 'この商品だけ在庫回数を個別設定しています' : 'クリックして手動で上書きできます'}
                           className={"font-extrabold tabular-nums px-2.5 py-1 rounded-lg inline-flex items-center gap-1 transition " +
                             (hasOverride(p) ? 'bg-fuchsia-100 text-fuchsia-700 hover:bg-fuchsia-200'
                               : hasMonthOverride(p) ? 'bg-amber-100 text-amber-700 hover:bg-amber-200'
@@ -3503,7 +3506,7 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
                         {p.breakdown.length === 0 && <span className="text-sm font-semibold text-slate-900">非直送施設への出荷実績がありません</span>}
                       </div>
                       <div className="text-[11px] text-slate-900 font-medium mt-1.5">
-                        すべての施設は最初「{HANDLING_LABELS.order}」＝この商品の必要在庫の計算から除外された状態です。実際に在庫を置いている施設だけ、ボタンで「{HANDLING_LABELS.stock}」に変えてください（変えた施設だけ白背景で表示されます）。
+                        施設は商品全体の扱い（{HANDLING_LABELS[p.handling]}）を初期値として引き継ぎます。この施設だけ例外にしたい場合は、ボタンで個別に切り替えてください（白背景＝必要在庫の計算に含まれている施設）。
                       </div>
 
                       <div className="text-[11px] font-semibold text-slate-900 mt-3 tabular-nums flex items-center gap-1.5 flex-wrap" onClick={e => e.stopPropagation()}>
@@ -3554,10 +3557,11 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
       <div className="bg-sky-50/70 border border-sky-100 rounded-2xl px-5 py-4 text-xs text-slate-600 flex gap-3">
         <Info size={16} className="text-sky-500 shrink-0 mt-0.5" />
         <div className="leading-relaxed">
-          <b className="text-slate-700">必要在庫 = 月平均出荷 × 在庫回数（1/4ヶ月・2/4ヶ月・1ヶ月など上のプルダウンで選択）</b> — 余剰在庫を持ちすぎないよう、直近実績の平均を基準にしています。数量は非直送施設への出荷実績のみで計算しています。計算結果は右側の鉛筆アイコンから手動で上書きできます。<br />
+          <b className="text-slate-700">必要在庫 = 月平均出荷 × 在庫回数（1/4ヶ月・2/4ヶ月・1ヶ月など上のプルダウンで選択）</b> — 余剰在庫を持ちすぎないよう、直近実績の平均を基準にしています。数量は非直送施設への出荷実績のみで計算しています。<br />
           商品名をタップして開くと、<b className="text-slate-700">その商品だけ在庫回数を個別設定</b>できます（初期値1/4ヶ月）。個別設定していない商品は上のプルダウンの値がそのまま使われます。<br />
-          <b className="text-slate-700">在庫品</b>＝営業所に在庫を置く商品（この必要在庫を目安に補充）／<b className="text-slate-700">受注発注</b>＝注文が来てから仕入れる商品（初期値）。商品全体の扱いは行の「扱い」ボタン、または絞り込み後の一括変更で切り替えられます。<br />
-          商品名をタップして開くと、<b className="text-slate-700">施設ごとに個別の扱い</b>も設定できます（同じ商品でも施設Aは在庫品・施設Bは受注発注、といった使い分けが可能です）。
+          <b className="text-slate-700">在庫品</b>＝営業所に在庫を置く商品（この必要在庫を目安に補充。全施設分の出荷実績を集計します）／<b className="text-slate-700">受注発注</b>＝注文が来てから仕入れる商品（初期値。月平均出荷・最大月は0のまま計算対象外）。商品全体の扱いは行の「扱い」ボタン、または絞り込み後の一括変更で切り替えられます。<br />
+          商品名をタップして開くと、<b className="text-slate-700">施設ごとに個別の扱い</b>も設定できます（初期値は商品全体の扱いを引き継ぎ、例外にしたい施設だけ個別に切り替え可能です）。<br />
+          <b className="text-violet-700">必要在庫が紫色</b>の表示は、右の鉛筆アイコンから<b className="text-slate-700">手動で数値を上書き</b>していることを示します（自動計算の結果を使わず、入力した数値が優先されます）。隣の<b className="text-slate-700">↻ボタン</b>で自動計算に戻せます。
         </div>
       </div>
     </div>
