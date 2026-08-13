@@ -602,8 +602,11 @@ function buildAnalytics(rows, masters, baseSel) {
   // 全体の前年同月比・年度内前年比較（例: 2026年度4〜7月 と 2025年度4〜7月）
   const fyStartForKpi = fiscalStartIdx(baseIdx);
   let yoySales = 0, yoyGross = 0, fySales = 0, fyPrevSales = 0;
-  let hasFyPrevMonth = false;
-  for (let i = fyStartForKpi - 12; i <= baseIdx - 12; i++) if (monthSet.has(i)) { hasFyPrevMonth = true; break; }
+  // 前年度同期比は「前年度の同期間が丸ごと取り込まれている」ときだけ出す。
+  // 1ヶ月でもあれば true にすると、例えば13ヶ月だけ取り込んだ場合に
+  // 「今年度5ヶ月分 vs 前年度1ヶ月分」を比較して +400% のような嘘の成長率が出る。
+  // 売上ゼロの月は monthSet に入らないため、月の有無ではなく取込範囲の下限で判定する。
+  const hasFyPrevMonth = (fyStartForKpi - 12) >= monthsAll[0];
   for (const f of facilities) {
     const yoyM = f.byMonth.get(baseIdx - 12);
     if (yoyM) { yoySales += yoyM.sales; yoyGross += yoyM.gross; }
@@ -692,8 +695,8 @@ function buildAnalytics(rows, masters, baseSel) {
   const fyStart = fiscalStartIdx(baseIdx);
   const hasPrev = monthSet.has(baseIdx - 1);
   const hasYoy = monthSet.has(baseIdx - 12);
-  let hasFyPrev = false;
-  for (let i = fyStart - 12; i <= baseIdx - 12; i++) if (monthSet.has(i)) { hasFyPrev = true; break; }
+  // 全体KPIと同じ理由で、前年度同期が丸ごと取り込まれているときだけ比較する
+  const hasFyPrev = (fyStart - 12) >= monthsAll[0];
   const repAgg = new Map();
   for (const f of facilities) {
     let r = repAgg.get(f.repName);
@@ -1352,7 +1355,9 @@ function buildPriceRevisionHtml(m) {
     .filter((v) => v !== null).join('');
   const rows = m.items.map((it, i) => {
     const diff = it.newPrice - it.currentPrice;
-    const rate = it.currentPrice > 0 ? Math.round(diff / it.currentPrice * 1000) / 10 : 0;
+    // 現状価格が0(新規取扱など)のときは変動率を算出できない。0%と書くと
+    // 「価格差 +¥1,200 / 変動率 +0%」という矛盾した行が顧客向け書類に載るため null にする。
+    const rate = it.currentPrice > 0 ? Math.round(diff / it.currentPrice * 1000) / 10 : null;
     const diffSign = diff > 0 ? '+' : diff < 0 ? '−' : '';
     const diffTd = diff === 0 ? tdR : diff > 0 ? tdUp : tdDown;
     return `
@@ -1367,7 +1372,7 @@ function buildPriceRevisionHtml(m) {
       ${sa ? `<td style="${tdR}">${yen(it.currentPrice)}</td>` : ''}
       ${sa ? `<td style="${tdNew}">${yen(it.newPrice)}</td>` : ''}
       ${sa ? `<td style="${diffTd}">${diff === 0 ? '―' : diffSign + yen(Math.abs(diff))}</td>` : ''}
-      ${sr ? `<td style="${diffTd}">${diff === 0 ? '―' : diffSign + Math.abs(rate) + '%'}</td>` : ''}
+      ${sr ? `<td style="${diffTd}">${diff === 0 || rate === null ? '―' : diffSign + Math.abs(rate) + '%'}</td>` : ''}
     </tr>`;
   }).join('');
   return `
@@ -1418,7 +1423,8 @@ function buildPriceRevisionInternalHtml(m) {
     const newCostVal = (it.newCost !== '' && it.newCost != null) ? Number(it.newCost) : it.cost;
     const newMargin = marginPctOf(it.newPrice, newCostVal);
     const diff = it.newPrice - it.currentPrice;
-    const rate = it.currentPrice > 0 ? Math.round(diff / it.currentPrice * 1000) / 10 : 0;
+    // 現状価格が0のときは変動率を出せない（お客様向けと同じ理由でnull扱い）
+    const rate = it.currentPrice > 0 ? Math.round(diff / it.currentPrice * 1000) / 10 : null;
     const diffSign = diff > 0 ? '+' : diff < 0 ? '−' : '';
     return `
     <tr style="background:${i % 2 === 1 ? '#f8fbff' : '#fff'}">
@@ -1435,7 +1441,7 @@ function buildPriceRevisionInternalHtml(m) {
       <td style="${tdCost}">${yen(it.newPrice)}</td>
       <td style="${tdCost}">${newMargin}%</td>
       <td style="${tdR}font-weight:bold;">${diff === 0 ? '―' : diffSign + yen(Math.abs(diff))}</td>
-      <td style="${tdR}font-weight:bold;">${diff === 0 ? '―' : diffSign + Math.abs(rate) + '%'}</td>
+      <td style="${tdR}font-weight:bold;">${diff === 0 || rate === null ? '―' : diffSign + Math.abs(rate) + '%'}</td>
     </tr>`;
   }).join('');
   return `
@@ -4158,13 +4164,17 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
     setDraft(rec);
     showToast(draft.id ? '保存しました（上書き）' : '保存しました。次回この画面から呼び出して編集できます');
   };
-  const loadDoc = (d) => { setDraft({ ...d }); setShowSaved(false); showToast('「' + d.facility + '」を読み込みました'); };
+  // 保存済みを読み込むときは、後から追加された表示フラグ(showCat/showAmounts等)が
+  // 欠けている旧レコードを既定値で補完する。補完しないと「画面では非表示なのに
+  // 印刷には出る」といった食い違いが起きる（画面と印刷で既定値の解釈が異なるため）。
+  const normalizeDoc = (d) => ({ ...newPriceRevisionDraft(), ...d });
+  const loadDoc = (d) => { setDraft(normalizeDoc(d)); setShowSaved(false); showToast('「' + d.facility + '」を読み込みました'); };
   const delDoc = (id) => setDocs(prev => prev.filter(d => d.id !== id));
   const newDoc = () => { setDraft(newPriceRevisionDraft()); showToast('新規作成にしました'); };
   const handleCancel = () => {
     if (draft.id) {
       const saved = docs.find(d => d.id === draft.id);
-      if (saved) { setDraft({ ...saved }); showToast('保存済みの内容に戻しました'); return; }
+      if (saved) { setDraft(normalizeDoc(saved)); showToast('保存済みの内容に戻しました'); return; }
     }
     setDraft(newPriceRevisionDraft());
     showToast('入力内容を取り消しました');
@@ -4355,7 +4365,8 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
               <tbody className="divide-y divide-slate-50">
                 {draft.items.map((it, i) => {
                   const diff = it.newPrice - it.currentPrice;
-                  const rate = it.currentPrice > 0 ? Math.round(diff / it.currentPrice * 1000) / 10 : 0;
+                  // 現状価格0では変動率を出せない（印刷側と同じ扱いにして画面と食い違わせない）
+                  const rate = it.currentPrice > 0 ? Math.round(diff / it.currentPrice * 1000) / 10 : null;
                   return (
                     <tr key={i}>
                       <td className="px-4 py-2.5 max-w-0">
@@ -4413,7 +4424,7 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
                           {diff === 0 ? '―' : (diff > 0 ? '+' : '−') + num(Math.abs(diff))}
                         </td>
                       )}
-                      {draft.showAmounts && draft.showRate !== false && <td className="px-1 py-2.5 text-right tabular-nums font-extrabold text-sm text-slate-800">{diff === 0 ? '―' : (diff > 0 ? '+' : '−') + Math.abs(rate) + '%'}</td>}
+                      {draft.showAmounts && draft.showRate !== false && <td className="px-1 py-2.5 text-right tabular-nums font-extrabold text-sm text-slate-800">{diff === 0 || rate === null ? '―' : (diff > 0 ? '+' : '−') + Math.abs(rate) + '%'}</td>}
                       <td className="pr-3 text-right">
                         <button onClick={() => delItem(i)} className="text-slate-400 hover:text-rose-500 transition"><X size={15} /></button>
                       </td>
@@ -4767,14 +4778,18 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
     setDraft(rec);
     showToast(draft.id ? '保存しました（上書き）' : '保存しました。次回この画面から呼び出して編集できます');
   };
-  const loadDoc = (d) => { setDraft({ ...d }); setShowSaved(false); showToast('「' + d.facility + '」を読み込みました'); };
+  // 保存済みを読み込むときは、後から追加された表示フラグ(showCat/showTotal等)が
+  // 欠けている旧レコードを既定値で補完する。補完しないと「画面では合計表示中なのに
+  // 印刷には合計が出ない」といった食い違いが起きる（画面と印刷で既定値の解釈が異なるため）。
+  const normalizeDoc = (d) => ({ ...newDocDraft(docType, d.facility || ''), ...d });
+  const loadDoc = (d) => { setDraft(normalizeDoc(d)); setShowSaved(false); showToast('「' + d.facility + '」を読み込みました'); };
   const delDoc = (id) => setDocs(prev => prev.filter(d => d.id !== id));
   const newDoc = () => { setDraft(newDocDraft(docType, '')); showToast('新規作成にしました'); };
   // 取り消し: 未保存の編集を破棄。保存済みを編集中ならその内容に戻し、未保存なら空に戻す
   const handleCancel = () => {
     if (draft.id) {
       const saved = docs.find(d => d.id === draft.id);
-      if (saved) { setDraft({ ...saved }); showToast('保存済みの内容に戻しました'); return; }
+      if (saved) { setDraft(normalizeDoc(saved)); showToast('保存済みの内容に戻しました'); return; }
     }
     setDraft(newDocDraft(docType, ''));
     showToast('入力内容を取り消しました');
@@ -5194,7 +5209,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
 /* ============================================================
    画面7: 設定
 ============================================================ */
-function SettingsView({ rows, masters, setRows, setMasters, setOffice, meta, setMeta, docs, setDocs, data, showToast }) {
+function SettingsView({ rows, masters, setRows, setMasters, setOffice, meta, setMeta, docs, setDocs, targets, setTargets, data, showToast }) {
   const [sub, setSubRaw] = useState('rep');
   const [q, setQ] = useState('');
   const [newRep, setNewRep] = useState('');
@@ -5295,7 +5310,9 @@ function SettingsView({ rows, masters, setRows, setMasters, setOffice, meta, set
   const usagePct = Math.min(100, Math.round(usage / STORAGE_LIMIT * 100));
 
   const handleExport = () => {
-    const payload = { app: 'taiyo-uriage-bunseki', schema: 1, exportedAt: new Date().toISOString(), rows, masters, meta, docs };
+    // targets(ターゲット先進捗)も必ず含める。これが漏れているとPC移行や
+    // 復元のたびにターゲット先の登録が丸ごと消える。
+    const payload = { app: 'taiyo-uriage-bunseki', schema: 1, exportedAt: new Date().toISOString(), rows, masters, meta, docs, targets };
     downloadText('売上分析データ_' + todayISO() + '.json', JSON.stringify(payload), 'application/json');
     showToast('JSONエクスポートしました（バックアップ・PC間共有に使えます）');
   };
@@ -5311,7 +5328,8 @@ function SettingsView({ rows, masters, setRows, setMasters, setOffice, meta, set
       const valid = obj.rows.filter(r => Array.isArray(r) && r.length >= 11 && parseDateStr(r[1]));
       setJsonImp({ fileName: file.name, rows: valid, dropped: obj.rows.length - valid.length,
         masters: normalizeMasters(obj.masters), meta: (obj.meta && typeof obj.meta === 'object') ? obj.meta : { schema: 1 },
-        docs: Array.isArray(obj.docs) ? obj.docs.filter(d => d && d.id && d.type) : [] });
+        docs: Array.isArray(obj.docs) ? obj.docs.filter(d => d && d.id && d.type) : [],
+        targets: Array.isArray(obj.targets) ? obj.targets.filter(t => t && t.id) : [] });
     }).catch(() => showToast('ファイルの読み込みに失敗しました', 'error'));
   };
   const applyJson = (mode) => {
@@ -5322,6 +5340,7 @@ function SettingsView({ rows, masters, setRows, setMasters, setOffice, meta, set
       setMasters(imp.masters);
       setMeta(imp.meta);
       setDocs(imp.docs);
+      setTargets(imp.targets);
       showToast('データを置き換えました（明細 ' + num(imp.rows.length) + '行）');
     } else {
       const remaining = rowKeyCounts(rows);
@@ -5353,6 +5372,10 @@ function SettingsView({ rows, masters, setRows, setMasters, setOffice, meta, set
       setDocs(prev => {
         const seenIds = new Set(prev.map(d => d.id));
         return [...prev, ...imp.docs.filter(d => !seenIds.has(d.id))];
+      });
+      setTargets(prev => {
+        const seenIds = new Set(prev.map(t => t.id));
+        return [...prev, ...imp.targets.filter(t => !seenIds.has(t.id))];
       });
       showToast('データを統合しました（新しい明細 ' + num(add.length) + '行を追加）');
     }
@@ -6404,29 +6427,32 @@ function App() {
     setMasters(prev => ({ ...prev, settings: { ...prev.settings, office: name } }));
   }, []);
 
+  // 画面のプレビューは contenteditable で直接手直しできる。実際に印刷されるのは
+  // #print-content-holder 側の別コピーなので、印刷直前にプレビューの現在のDOMを
+  // そのまま写し取る。これをしないと手直しが黙って捨てられて元の文面が印刷される。
+  // あわせて、行数が多い帳票（data-fit-page付き）をA4 1ページに収まるよう自動縮小する。
+  const syncPrintHolder = useCallback(() => {
+    const holder = document.getElementById('print-content-holder');
+    const preview = document.querySelector('.print-preview-doc');
+    if (!holder || !preview) return;
+    holder.innerHTML = preview.innerHTML;
+    const holderDoc = holder.querySelector('[data-fit-page="1"]');
+    if (!holderDoc) return;
+    holderDoc.style.zoom = '';
+    // 高さは可視のプレビュー側で測る（holder側は display:none で測れないため）
+    const previewDoc = preview.querySelector('[data-fit-page="1"]');
+    const naturalH = (previewDoc || holderDoc).getBoundingClientRect().height;
+    const pageH = 297 * (96 / 25.4);
+    if (naturalH - pageH > 4) {
+      // 何ページ分あっても必ず1ページに収める（下限は極端な事故防止のみ）
+      holderDoc.style.zoom = String(Math.max(0.25, pageH / naturalH));
+    }
+  }, []);
+
   useEffect(() => {
     const holder = document.getElementById('print-content-holder');
     if (!printHtml) { holder.innerHTML = ''; return; }
-    holder.innerHTML = printHtml;
-    // 発注書など行数が多いと2ページにあふれることがある帳票（data-fit-page付き）は、
-    // 画面上のプレビュー（同じHTMLの可視コピー）で実際の高さを測り、A4 1ページに収まるよう
-    // 印刷用コピー（#print-content-holder側、実際の印刷にのみ使われる）を自動縮小する。
-    // プレビュー自体は等倍のまま（編集時の見た目を変えないため）。
-    const holderDoc = holder.querySelector('[data-fit-page="1"]');
-    if (holderDoc) {
-      holderDoc.style.zoom = '';
-      // プレビュー用の可視コピーはこの時点で既にDOMにコミット済みなので、
-      // rAFを待たずそのままレイアウト計測できる（holder側はdisplay:noneで測れないため）。
-      const preview = document.querySelector('.print-preview-doc [data-fit-page="1"]');
-      const measureEl = preview || holderDoc;
-      const naturalH = measureEl.getBoundingClientRect().height;
-      const pxPerMm = 96 / 25.4;
-      const pageH = 297 * pxPerMm;
-      if (naturalH - pageH > 4) {
-        // 何ページ分あっても必ず1ページに収める（下限は極端な事故防止のみ）
-        holderDoc.style.zoom = String(Math.max(0.25, pageH / naturalH));
-      }
-    }
+    holder.innerHTML = printHtml;   // 保険。実際の印刷前に syncPrintHolder で上書きされる
     return () => { holder.innerHTML = ''; };
   }, [printHtml]);
 
@@ -6524,7 +6550,7 @@ function App() {
               {tab === 'pricerevision' && <PriceRevisionView data={data} masters={masters} draft={priceRevisionDraft} setDraft={setPriceRevisionDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} />}
               {tab === 'targets' && <TargetsView data={data} masters={masters} targets={targets} setTargets={setTargets} showToast={showToast} jumpToFacility={jumpToFacility} />}
               {tab === 'import' && <ImportView rows={rows} masters={masters} setRows={setRows} setMasters={setMasters} setMeta={setMeta} setDocs={setDocs} showToast={showToast} />}
-              {tab === 'settings' && <SettingsView rows={rows} masters={masters} setRows={setRows} setMasters={setMasters} setOffice={setOffice} meta={meta} setMeta={setMeta} docs={docs} setDocs={setDocs} data={data} showToast={showToast} />}
+              {tab === 'settings' && <SettingsView rows={rows} masters={masters} setRows={setRows} setMasters={setMasters} setOffice={setOffice} meta={meta} setMeta={setMeta} docs={docs} setDocs={setDocs} targets={targets} setTargets={setTargets} data={data} showToast={showToast} />}
             </>
           )}
         </main>
@@ -6535,7 +6561,7 @@ function App() {
         <div className="fixed inset-0 z-50 bg-slate-600/50 backdrop-blur-sm overflow-auto py-8 no-print">
           <div className="mx-auto" style={{ width: '210mm' }}>
             <div className="flex justify-end gap-2 mb-3 no-print">
-              <button onClick={() => window.print()}
+              <button onClick={() => { syncPrintHolder(); window.print(); }}
                 className="bg-sky-600 hover:bg-sky-700 active:scale-[.98] text-white px-4 py-2.5 rounded-xl shadow-xl text-sm font-bold transition inline-flex items-center gap-1.5">
                 <Printer size={15} /> 印刷する
               </button>
