@@ -49,7 +49,7 @@ import {
   Printer, X, Search, AlertTriangle, PhoneCall, ChevronDown, ChevronUp, ChevronRight,
   FileSpreadsheet, Database, Trash2, Download, Info, CheckCircle2, Truck,
   TrendingDown, TrendingUp, FileUp, ClipboardPaste, HardDrive, Sun, ArrowUpRight,
-  ArrowDownRight, JapaneseYen, Percent, Coins, ClipboardList, RotateCcw, Pencil, FilePlus, CalendarDays, Filter, Eye, EyeOff, RefreshCw, Calculator, Delete, Target, Plus
+  ArrowDownRight, JapaneseYen, Percent, Coins, ClipboardList, RotateCcw, Pencil, FilePlus, CalendarDays, Filter, Eye, EyeOff, RefreshCw, Calculator, Delete, Target, Plus, Folder
 } from 'lucide-react';
 
 /* ============================================================
@@ -1750,6 +1750,86 @@ function Toggle({ on, onChange, labelOn, labelOff }) {
 
 function Card({ children, className }) {
   return <div className={"bg-white rounded-2xl border border-slate-200/70 shadow-sm " + (className || '')}>{children}</div>;
+}
+
+/* ============================================================
+   保存済みドキュメント一覧（価格改定・見積書・発注書 共通）
+   施設名でフォルダ分けして表示する。宛先（施設名）は既存の保存データにも
+   常に入っているため、過去に作成した未整理の見積・発注書も自動でフォルダに入る。
+============================================================ */
+function SavedDocFolders({ savedList, onLoad, onDelete, emptyLabel, renderExtra }) {
+  const [openFolder, setOpenFolder] = useState(null);
+  const [q, setQ] = useState('');
+  const folders = useMemo(() => {
+    const map = new Map();
+    for (const d of savedList) {
+      const key = String(d.facility || '').trim() || '（施設未設定）';
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(d);
+    }
+    const list = [...map.entries()].map(([facility, docs]) => ({
+      facility, docs,
+      latest: docs.reduce((max, d) => String(d.savedAt) > max ? String(d.savedAt) : max, ''),
+    }));
+    list.sort((a, b) => b.latest.localeCompare(a.latest));
+    return list;
+  }, [savedList]);
+  const visibleFolders = useMemo(() => {
+    const query = normalizeSearchText(q.trim());
+    if (!query) return folders;
+    return folders.filter(f => normalizeSearchText(f.facility).includes(query));
+  }, [folders, q]);
+
+  if (savedList.length === 0) return <div className="py-6 text-center text-sm font-semibold text-slate-700">{emptyLabel}はまだありません</div>;
+
+  return (
+    <div>
+      {folders.length > 1 && (
+        <div className="relative mb-2.5">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="施設名（フォルダ）で絞り込み"
+            className="h-9 pl-8 pr-2.5 w-full rounded-lg border border-slate-200 text-xs shadow-sm font-bold text-slate-700 focus:border-sky-400 focus:outline-none" />
+        </div>
+      )}
+      <div className="space-y-2">
+        {visibleFolders.map(f => {
+          const isOpen = openFolder === f.facility || visibleFolders.length === 1;
+          return (
+            <div key={f.facility} className="border border-slate-100 rounded-xl overflow-hidden">
+              <button type="button" onClick={() => setOpenFolder(isOpen ? null : f.facility)}
+                className="w-full flex items-center gap-2.5 px-4 py-3 bg-slate-50/70 hover:bg-sky-50/70 transition text-left">
+                <Folder size={16} className="text-amber-500 shrink-0" />
+                <span className="font-extrabold text-sm text-slate-900 truncate flex-1">{f.facility}</span>
+                <span className="text-xs font-bold text-slate-500 shrink-0">{f.docs.length}件</span>
+                {isOpen ? <ChevronUp size={15} className="text-slate-500 shrink-0" /> : <ChevronDown size={15} className="text-slate-500 shrink-0" />}
+              </button>
+              {isOpen && (
+                <div className="p-2 space-y-2">
+                  {f.docs.map(d => (
+                    <div key={d.id} onClick={() => onLoad(d)} role="button" tabIndex={0}
+                      onKeyDown={e => { if (e.key === 'Enter') onLoad(d); }}
+                      className="flex items-center gap-4 bg-white hover:bg-sky-50/70 border border-slate-100 rounded-xl px-4 py-3 transition cursor-pointer">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-semibold text-slate-700 tabular-nums flex items-center gap-2.5 flex-wrap">
+                          <span className="inline-flex items-center gap-1"><CalendarDays size={13} />{d.issued}</span>
+                          <span>・{d.items.length}品目</span>
+                          <span className="text-slate-500">保存 {String(d.savedAt).slice(0, 10)}</span>
+                        </div>
+                      </div>
+                      {renderExtra && renderExtra(d)}
+                      <span className="text-sky-600 text-xs font-bold px-3 py-1.5 rounded-full shrink-0 border border-sky-200 bg-white">読み込む</span>
+                      <button onClick={e => { e.stopPropagation(); onDelete(d.id); }} className="text-slate-400 hover:text-rose-500 transition shrink-0"><Trash2 size={16} /></button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {visibleFolders.length === 0 && <div className="py-6 text-center text-xs text-slate-600">該当する施設フォルダがありません</div>}
+      </div>
+    </div>
+  );
 }
 
 /* ============================================================
@@ -4179,25 +4259,9 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
 
         {showSaved && (
           <div className="border-t border-slate-100 pt-3">
-            <div className="text-sm font-bold text-slate-800 uppercase tracking-wide mb-2.5">保存済みの価格改定（{savedList.length}件）</div>
-            <div className="space-y-2.5 max-h-96 overflow-y-auto pr-0.5">
-              {savedList.map(d => (
-                <div key={d.id} onClick={() => loadDoc(d)} role="button" tabIndex={0}
-                  onKeyDown={e => { if (e.key === 'Enter') loadDoc(d); }}
-                  className="flex items-center gap-4 bg-slate-50/70 hover:bg-sky-50/70 border border-slate-100 rounded-xl px-5 py-3.5 transition cursor-pointer">
-                  <div className="flex-1 min-w-0">
-                    <div className="font-extrabold text-base text-slate-900 truncate">{d.facility}</div>
-                    <div className="text-xs font-semibold text-slate-700 tabular-nums mt-1 flex items-center gap-2.5 flex-wrap">
-                      <span className="inline-flex items-center gap-1"><CalendarDays size={13} />{d.issued}</span>
-                      <span>・{d.items.length}品目</span>
-                      <span className="text-slate-500">保存 {String(d.savedAt).slice(0, 10)}</span>
-                    </div>
-                  </div>
-                  <span className="text-sky-600 text-sm font-bold px-4 py-2 rounded-full shrink-0 border border-sky-200 bg-white">読み込む</span>
-                  <button onClick={e => { e.stopPropagation(); delDoc(d.id); }} className="text-slate-400 hover:text-rose-500 transition shrink-0"><Trash2 size={18} /></button>
-                </div>
-              ))}
-              {savedList.length === 0 && <div className="py-6 text-center text-sm font-semibold text-slate-700">保存された価格改定はまだありません</div>}
+            <div className="text-sm font-bold text-slate-800 uppercase tracking-wide mb-2.5">保存済みの価格改定（{savedList.length}件・施設フォルダ別）</div>
+            <div className="max-h-96 overflow-y-auto pr-0.5">
+              <SavedDocFolders savedList={savedList} onLoad={loadDoc} onDelete={delDoc} emptyLabel="保存された価格改定" />
             </div>
           </div>
         )}
@@ -4843,33 +4907,19 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
 
         {showSaved && (
           <div className="border-t border-slate-100 pt-3">
-            <div className="text-sm font-bold text-slate-800 uppercase tracking-wide mb-2.5">保存済みの{isQuote ? '見積書' : '発注書'}（{savedList.length}件）</div>
-            <div className="space-y-2.5 max-h-96 overflow-y-auto pr-0.5">
-              {savedList.map(d => {
-                const dTotal = d.items.reduce((s, it) => it.isSpacer ? s : s + (Number(it.qty) || 0) * (it.price || 0), 0);
-                return (
-                <div key={d.id} onClick={() => loadDoc(d)} role="button" tabIndex={0}
-                  onKeyDown={e => { if (e.key === 'Enter') loadDoc(d); }}
-                  className="flex items-center gap-4 bg-slate-50/70 hover:bg-sky-50/70 border border-slate-100 rounded-xl px-5 py-3.5 transition cursor-pointer">
-                  <div className="flex-1 min-w-0">
-                    <div className="font-extrabold text-base text-slate-900 truncate">{d.facility}</div>
-                    <div className="text-xs font-semibold text-slate-700 tabular-nums mt-1 flex items-center gap-2.5 flex-wrap">
-                      <span className="inline-flex items-center gap-1"><CalendarDays size={13} />{d.issued}</span>
-                      <span>・{d.items.length}品目</span>
-                      <span className="text-slate-500">保存 {String(d.savedAt).slice(0, 10)}</span>
+            <div className="text-sm font-bold text-slate-800 uppercase tracking-wide mb-2.5">保存済みの{isQuote ? '見積書' : '発注書'}（{savedList.length}件・施設フォルダ別）</div>
+            <div className="max-h-96 overflow-y-auto pr-0.5">
+              <SavedDocFolders savedList={savedList} onLoad={loadDoc} onDelete={delDoc} emptyLabel={'保存された' + (isQuote ? '見積書' : '発注書')}
+                renderExtra={d => {
+                  const dTotal = d.items.reduce((s, it) => it.isSpacer ? s : s + (Number(it.qty) || 0) * (it.price || 0), 0);
+                  return (
+                    <div className="text-right shrink-0 w-28">
+                      {d.showPrices && dTotal > 0
+                        ? <div className="font-extrabold text-sm text-slate-900 tabular-nums">{yen(dTotal)}</div>
+                        : <div className="text-[11px] text-slate-500 font-bold">金額なし</div>}
                     </div>
-                  </div>
-                  <div className="text-right shrink-0 w-32">
-                    {d.showPrices && dTotal > 0
-                      ? <div className="font-extrabold text-base text-slate-900 tabular-nums">{yen(dTotal)}</div>
-                      : <div className="text-xs text-slate-500 font-bold">金額なし</div>}
-                  </div>
-                  <span className="text-sky-600 text-sm font-bold px-4 py-2 rounded-full shrink-0 border border-sky-200 bg-white">読み込む</span>
-                  <button onClick={e => { e.stopPropagation(); delDoc(d.id); }} className="text-slate-400 hover:text-rose-500 transition shrink-0"><Trash2 size={18} /></button>
-                </div>
-                );
-              })}
-              {savedList.length === 0 && <div className="py-6 text-center text-sm font-semibold text-slate-700">保存された{isQuote ? '見積書' : '発注書'}はまだありません</div>}
+                  );
+                }} />
             </div>
           </div>
         )}
