@@ -1263,12 +1263,13 @@ function buildDocInternalHtml(m) {
    印刷: 売上検索結果（売上管理・商品検索タブ）
 ============================================================ */
 function buildSalesSearchHtml(m) {
-  const th = 'background:#dbeafe;color:#1e3a8a;font-size:8pt;padding:1.5mm 1.8mm;border:1px solid #93c5fd;font-weight:bold;';
-  const td = 'padding:1.4mm 1.8mm;border:1px solid #bfdbfe;font-size:8.5pt;';
+  // 10列と多いため左右パディングを詰めて内容が欠けないようにしている
+  const th = 'background:#dbeafe;color:#1e3a8a;font-size:8pt;padding:1.5mm 1.1mm;border:1px solid #93c5fd;font-weight:bold;';
+  const td = 'padding:1.4mm 1.1mm;border:1px solid #bfdbfe;font-size:8.5pt;';
   const tdR = td + 'text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;';
   // 仕入単価・仕入金額は社内限り情報のため、印刷時にひと目で分かるよう色付けする
-  const thCost = 'background:#fef3c7;color:#92400e;font-size:8pt;padding:1.5mm 1.8mm;border:1px solid #fcd34d;font-weight:bold;';
-  const tdCost = 'padding:1.4mm 1.8mm;border:1px solid #fde68a;background:#fffbeb;font-size:8.5pt;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;color:#92400e;font-weight:bold;';
+  const thCost = 'background:#fef3c7;color:#92400e;font-size:8pt;padding:1.5mm 1.1mm;border:1px solid #fcd34d;font-weight:bold;';
+  const tdCost = 'padding:1.4mm 1.1mm;border:1px solid #fde68a;background:#fffbeb;font-size:8.5pt;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;color:#92400e;font-weight:bold;';
   const body = m.rows.length ? m.rows.map((r, i) => {
     const marginPct = r.amount > 0 ? Math.round(r.gross / r.amount * 1000) / 10 : null;
     return `
@@ -1305,7 +1306,7 @@ function buildSalesSearchHtml(m) {
 
     <div style="margin-top:6mm;color:#1e3a8a;font-weight:bold;font-size:10pt;border-left:3px solid #2563eb;padding-left:2mm;">取引明細（${num(m.rows.length)}件）</div>
     <table style="width:100%;border-collapse:collapse;margin-top:2mm;table-layout:fixed;">
-      <colgroup><col style="width:8%"><col style="width:15%"><col style="width:20%"><col style="width:8%"><col style="width:9%"><col style="width:9%"><col style="width:7%"><col style="width:7%"><col style="width:7%"><col style="width:7%"></colgroup>
+      <colgroup><col style="width:12%"><col style="width:14%"><col style="width:16%"><col style="width:7%"><col style="width:9%"><col style="width:10%"><col style="width:8%"><col style="width:8%"><col style="width:8%"><col style="width:8%"></colgroup>
       <thead><tr><th style="${th}">日付</th><th style="${th}">お客様名</th><th style="${th}">商品名</th><th style="${th}">数量</th><th style="${th}">販売単価</th><th style="${th}">金額</th><th style="${thCost}">仕入単価</th><th style="${thCost}">仕入金額</th><th style="${th}">粗利額</th><th style="${th}">利益率</th></tr></thead>
       <tbody>${body}</tbody>
     </table>
@@ -1543,9 +1544,9 @@ function KpiCard({ icon: Icon, tint, label, value, delta, deltaSuffix, note, ext
         </div>
       </div>
       <div className="text-2xl font-extrabold text-slate-800 tabular-nums mt-2.5 leading-none">{value}</div>
-      <div className="text-xs text-slate-700 font-bold mt-1.5 flex items-center gap-1">
+      <div className="text-xs text-slate-700 font-bold mt-1.5 flex items-center gap-1 flex-wrap">
         {label}
-        {onClick && <span className="text-[10px] text-sky-600 font-bold">（施設別を見る）</span>}
+        {onClick && <span className="text-[11px] text-sky-600 font-bold whitespace-nowrap">（施設別を見る）</span>}
       </div>
       {extra && <div className="mt-2 pt-2 border-t border-slate-100">{extra}</div>}
     </div>
@@ -1795,7 +1796,7 @@ function CalcPad() {
   const numBtn = "h-11 rounded-lg text-sm font-bold bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 active:scale-95 transition tabular-nums";
   const opBtn = "h-11 rounded-lg text-sm font-bold bg-sky-50 text-sky-600 hover:bg-sky-100 active:scale-95 transition";
   return (
-    <Card className="p-3 sticky top-20 min-w-0 max-w-full lg:max-w-[280px]">
+    <Card className="p-3 sticky top-20 min-w-0 max-w-full xl:max-w-[280px]">
       <div className="flex items-center gap-1.5 mb-2.5 text-xs font-bold text-slate-600">
         <Calculator size={14} className="text-slate-400" /> 電卓
       </div>
@@ -2031,18 +2032,18 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
           delta={momSales === null ? undefined : momSales} note={spec.prevName ? spec.prevName + '比' : '全期間'}
           onClick={() => setDrilldown({ title: '純売上', curLabel: spec.label, prevLabel: compareLabel, curRanking: rep.ranking, prevRanking: compareRep ? compareRep.ranking : [], metric: 'sales', unit: '¥' })}
           extra={repType === 'month' && (
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] text-slate-600 font-bold">前年同月比（{yoyLabel}）</span>
-              {yoyPctSales === null ? <span className="text-[10px] text-slate-400 font-bold">—</span> : <DeltaPill v={yoyPctSales} />}
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="text-[11px] text-slate-600 font-bold whitespace-nowrap">前年同月比（{yoyLabel}）</span>
+              {yoyPctSales === null ? <span className="text-[11px] text-slate-500 font-bold">—</span> : <DeltaPill v={yoyPctSales} />}
             </div>
           )} />
         <KpiCard icon={Coins} tint="bg-emerald-50 text-emerald-600" label="粗利額" value={yen(rep.kpi.gross)}
           delta={momGross === null ? undefined : momGross} note={spec.prevName ? spec.prevName + '比' : '全期間'}
           onClick={() => setDrilldown({ title: '粗利額', curLabel: spec.label, prevLabel: compareLabel, curRanking: rep.ranking, prevRanking: compareRep ? compareRep.ranking : [], metric: 'gross', unit: '¥' })}
           extra={repType === 'month' && (
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[10px] text-slate-600 font-bold">前年同月比（{yoyLabel}）</span>
-              {yoyPctGross === null ? <span className="text-[10px] text-slate-400 font-bold">—</span> : <DeltaPill v={yoyPctGross} />}
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="text-[11px] text-slate-600 font-bold whitespace-nowrap">前年同月比（{yoyLabel}）</span>
+              {yoyPctGross === null ? <span className="text-[11px] text-slate-500 font-bold">—</span> : <DeltaPill v={yoyPctGross} />}
             </div>
           )} />
         <KpiCard icon={Percent} tint="bg-violet-50 text-violet-600" label="粗利率" value={rep.kpi.rate + '%'}
@@ -2462,9 +2463,9 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
         <div className="flex gap-3 flex-wrap">
           <KpiCard icon={JapaneseYen} tint="bg-blue-50 text-blue-600" label="今月売上" value={yen(f.monthly[11])} delta={f.pct} deltaSuffix="%" note="直近3ヶ月平均比"
             extra={(
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-slate-600 font-bold">前年同月比（{idxLabel(data.baseIdx - 12)}）</span>
-                {f.yoyPct === null ? <span className="text-[10px] text-slate-400 font-bold">—</span> : <DeltaPill v={f.yoyPct} />}
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <span className="text-[11px] text-slate-600 font-bold whitespace-nowrap">前年同月比（{idxLabel(data.baseIdx - 12)}）</span>
+                {f.yoyPct === null ? <span className="text-[11px] text-slate-500 font-bold">—</span> : <DeltaPill v={f.yoyPct} />}
               </div>
             )} />
           <KpiCard icon={Coins} tint="bg-emerald-50 text-emerald-600" label="月平均" value={yen(f.avg)} note="12ヶ月" />
@@ -2808,17 +2809,17 @@ function FacilityTrendView({ data, jumpToFacility, showToast }) {
           </div>
         </div>
         <div className="overflow-x-auto">
-        <table className="w-full text-sm min-w-[720px]">
+        <table className="w-full text-sm min-w-[960px]">
           <thead>
             <tr className="text-left text-[11px] text-slate-600 border-b border-slate-100">
-              <th className="px-5 py-2.5 font-bold">施設名</th>
-              <th className="px-3 py-2.5 font-bold">担当</th>
-              <th className="px-3 py-2.5 font-bold">直近12ヶ月推移</th>
-              <th className="px-3 py-2.5 font-bold text-right">{fyLabel}平均/月</th>
-              <th className="px-3 py-2.5 font-bold text-right">{fyPrevLabel}平均/月</th>
-              <th className="px-3 py-2.5 font-bold text-right">増減率</th>
-              <th className="px-3 py-2.5 font-bold text-right">今月</th>
-              <th className="px-5 py-2.5 font-bold text-right">前月比</th>
+              <th className="px-5 py-2.5 font-bold whitespace-nowrap">施設名</th>
+              <th className="px-3 py-2.5 font-bold whitespace-nowrap">担当</th>
+              <th className="px-3 py-2.5 font-bold whitespace-nowrap">直近12ヶ月推移</th>
+              <th className="px-3 py-2.5 font-bold text-right whitespace-nowrap">{fyLabel}平均/月</th>
+              <th className="px-3 py-2.5 font-bold text-right whitespace-nowrap">{fyPrevLabel}平均/月</th>
+              <th className="px-3 py-2.5 font-bold text-right whitespace-nowrap">増減率</th>
+              <th className="px-3 py-2.5 font-bold text-right whitespace-nowrap">今月</th>
+              <th className="px-5 py-2.5 font-bold text-right whitespace-nowrap">前月比</th>
               <th className="pr-4"></th>
             </tr>
           </thead>
@@ -3388,15 +3389,15 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
       )}
 
       <Card className="overflow-x-auto">
-        <table className="w-full text-sm min-w-[860px]">
+        <table className="w-full text-sm min-w-[960px]">
           <thead>
             <tr className="text-[11px] uppercase tracking-wide text-slate-700 border-b border-slate-100">
-              <th className="text-left font-bold px-5 py-3">商品名</th>
-              <th className="text-left font-bold px-2 py-3 w-[190px]">扱い</th>
-              <th className="text-right font-bold px-2 py-3 pr-4">{qtyView === 'stock' ? monthLabel(qtyViewMonths) + '分' : '月平均出荷'}</th>
-              <th className="text-right font-bold px-2 py-3 pr-4">{qtyView === 'stock' ? '最大月換算' : '最大月'}</th>
-              <th className="text-right font-bold px-2 py-3 pr-4">必要在庫</th>
-              <th className="text-right font-bold px-2 py-3 pr-4">仕入単価</th>
+              <th className="text-left font-bold px-5 py-3 whitespace-nowrap">商品名</th>
+              <th className="text-left font-bold px-2 py-3 w-[190px] whitespace-nowrap">扱い</th>
+              <th className="text-right font-bold px-2 py-3 pr-4 whitespace-nowrap">{qtyView === 'stock' ? monthLabel(qtyViewMonths) + '分' : '月平均出荷'}</th>
+              <th className="text-right font-bold px-2 py-3 pr-4 whitespace-nowrap">{qtyView === 'stock' ? '最大月換算' : '最大月'}</th>
+              <th className="text-right font-bold px-2 py-3 pr-4 whitespace-nowrap">必要在庫</th>
+              <th className="text-right font-bold px-2 py-3 pr-4 whitespace-nowrap">仕入単価</th>
               <th className="w-10"></th>
             </tr>
           </thead>
@@ -4186,7 +4187,7 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
         )}
       </Card>
 
-      <div className="grid lg:grid-cols-[minmax(280px,0.75fr)_minmax(440px,1.6fr)_minmax(180px,0.5fr)] gap-5 items-start [&>*]:min-w-0">
+      <div className="grid xl:grid-cols-[minmax(260px,0.75fr)_minmax(420px,1.6fr)_minmax(170px,0.5fr)] gap-5 items-start [&>*]:min-w-0">
         <Card>
           <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5 flex-wrap">
             <span className="font-bold text-sm text-slate-700">商品を選ぶ</span>
@@ -4457,7 +4458,7 @@ function PriceCheckListPanel({ data, showToast, openPrint }) {
   );
 
   return (
-    <div className="grid lg:grid-cols-[minmax(340px,1fr)_minmax(420px,1.3fr)] gap-5 items-start">
+    <div className="grid lg:grid-cols-[minmax(300px,1fr)_minmax(380px,1.3fr)] gap-5 items-start [&>*]:min-w-0">
       <Card>
         <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5 flex-wrap">
           <span className="font-bold text-sm text-slate-700">商品を選ぶ</span>
@@ -4859,7 +4860,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
       </Card>
 
       {(
-        <div className="grid lg:grid-cols-[minmax(280px,0.75fr)_minmax(440px,1.6fr)_minmax(180px,0.5fr)] gap-5 items-start [&>*]:min-w-0">
+        <div className="grid xl:grid-cols-[minmax(260px,0.75fr)_minmax(420px,1.6fr)_minmax(170px,0.5fr)] gap-5 items-start [&>*]:min-w-0">
           {/* 商品マスタ */}
           <Card>
             <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5 flex-wrap">
