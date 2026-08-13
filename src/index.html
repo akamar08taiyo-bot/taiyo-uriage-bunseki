@@ -1041,6 +1041,7 @@ function buildFacilityOrderHtml(m) {
   const sp = m.showPrices;
   const sc = m.showCaseSize !== false;
   const scat = m.showCat !== false;   // カテゴリ列の表示（デフォルトON）
+  const sin = !!m.showItemNote;       // 商品ごとの備考（画面のトグルに従う。既定は非表示）
   const o = officeByName(m.office);
   // 数量は施設側が手書きで記入する欄。入力済みなら数字、未入力なら空欄のまま
   const qtyCell = (q) => (q === '' || q === null || q === undefined ? '' : num(q));
@@ -1053,7 +1054,7 @@ function buildFacilityOrderHtml(m) {
       ${scat ? `<td style="${td}font-size:8pt;color:#2563eb;font-weight:bold;" ${ed}>${escapeHTML(it.cat || '')}</td>` : ''}
       <td style="${td}overflow-wrap:anywhere;">
         <div ${ed}>${escapeHTML(it.name)}</div>
-        ${it.note ? `<div style="margin-top:0.5mm;font-size:7.5pt;color:#6b7280;" ${ed}>${escapeHTML(it.note)}</div>` : ''}
+        ${sin && it.note ? `<div style="margin-top:0.5mm;font-size:7.5pt;color:#6b7280;" ${ed}>${escapeHTML(it.note)}</div>` : ''}
       </td>
       ${sc ? `<td style="${td}text-align:center;" ${ed}>${escapeHTML(it.caseSize || '')}</td>` : ''}
       <td style="${tdR}background:#fffdf5;" ${ed}>${qtyCell(it.qty)}</td>
@@ -1087,9 +1088,9 @@ function buildFacilityOrderHtml(m) {
         <div style="margin-top:3mm;border:1px solid #93c5fd;background:#f0f7ff;padding:2.5mm;">
           <div style="font-size:7.5pt;color:#2563eb;font-weight:bold;">発注元</div>
           <div style="font-weight:bold;color:#1e3a8a;font-size:10pt;" ${ed}>${escapeHTML(m.facilityName)}</div>
-          ${m.facilityAddress ? `<div style="margin-top:1mm;font-size:8pt;" ${ed}>${escapeHTML(m.facilityAddress)}</div>` : ''}
-          ${m.facilityTel ? `<div style="margin-top:1mm;font-size:8pt;" ${ed}>TEL：${escapeHTML(m.facilityTel)}</div>` : ''}
-          ${m.facilityFax ? `<div style="margin-top:1mm;font-size:8pt;" ${ed}>FAX：${escapeHTML(m.facilityFax)}</div>` : ''}
+          ${String(m.facilityAddress || '').trim() ? `<div style="margin-top:1mm;font-size:8pt;" ${ed}>${escapeHTML(m.facilityAddress)}</div>` : ''}
+          ${String(m.facilityTel || '').trim() ? `<div style="margin-top:1mm;font-size:8pt;" ${ed}>TEL：${escapeHTML(m.facilityTel)}</div>` : ''}
+          ${String(m.facilityFax || '').trim() ? `<div style="margin-top:1mm;font-size:8pt;" ${ed}>FAX：${escapeHTML(m.facilityFax)}</div>` : ''}
           <div style="margin-top:1.5mm;" ${ed}>ご担当者：　　　　　　　　　</div>
         </div>
       </div>
@@ -1119,6 +1120,7 @@ function buildQuoteHtml(m) {
   const sp = m.showPrices;
   const sc = m.showCaseSize !== false;
   const scat = m.showCat !== false;   // カテゴリ列の表示（デフォルトON）
+  const sin = !!m.showItemNote;       // 商品ごとの備考（画面のトグルに従う。既定は非表示）
   const st = m.showTotal !== false;   // 合計金額の表示（単価・明細金額とは独立したトグル）
   const qn = (q) => (Number(q) || 0);
   const ed = 'class="editable" contenteditable="true"';
@@ -1131,7 +1133,7 @@ function buildQuoteHtml(m) {
       ${scat ? `<td style="${td}font-size:8pt;color:#2563eb;font-weight:bold;" ${ed}>${escapeHTML(it.cat || '')}</td>` : ''}
       <td style="${td}overflow-wrap:anywhere;">
         <div ${ed}>${escapeHTML(it.name)}</div>
-        ${it.note ? `<div style="margin-top:0.5mm;font-size:7.5pt;color:#6b7280;" ${ed}>${escapeHTML(it.note)}</div>` : ''}
+        ${sin && it.note ? `<div style="margin-top:0.5mm;font-size:7.5pt;color:#6b7280;" ${ed}>${escapeHTML(it.note)}</div>` : ''}
       </td>
       ${sc ? `<td style="${td}text-align:center;" ${ed}>${escapeHTML(it.caseSize || '')}</td>` : ''}
       <td style="${tdR}" ${ed}>${it.qty === '' ? '' : num(it.qty)}</td>
@@ -3675,7 +3677,7 @@ const PREVIEW_COLS = [
 ];
 const PREVIEW_ARR_IDX = { saleNo: 0, date: 1, customer: 2, product: 3, qty: 4, unit: 5, amount: 7, gross: 8 };
 
-function ImportView({ rows, masters, setRows, setMasters, setMeta, setDocs, showToast }) {
+function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs, showToast }) {
   const [dragOver, setDragOver] = useState(false);
   const [preview, setPreview] = useState(null);
   const [result, setResult] = useState(null);
@@ -3962,6 +3964,9 @@ function ImportView({ rows, masters, setRows, setMasters, setMeta, setDocs, show
             </div>
             <div className="px-6 py-4 text-sm text-slate-600 space-y-2">
               <div>売上明細 <b className="text-rose-600">{num(rows.length)}行</b>と、施設/個人の判定・担当者・在庫扱いなどの設定が<b className="text-rose-600">すべて</b>消えます。</div>
+              {docs.length > 0 && (
+                <div>保存済みの発注書・見積書・価格改定 <b className="text-rose-600">{num(docs.length)}件</b>も<b className="text-rose-600">一緒に消えます</b>。</div>
+              )}
               <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-amber-800 text-xs font-bold">
                 <AlertTriangle size={15} className="shrink-0" />
                 大事なデータは設定画面の「JSONエクスポート」で先に控えを取ることをおすすめします
@@ -4732,7 +4737,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
       facilityTel: draft.facilityTel || '', facilityFax: draft.facilityFax || '', repName: repName || '未設定', items,
       showPrices: draft.showPrices, showCaseSize: !!draft.showCaseSize, issued: isoToJa(draft.issued),
       note: draft.note, title: draft.title, office: masters.settings.office,
-      showCat: draft.showCat !== false,
+      showCat: draft.showCat !== false, showItemNote: !!draft.showItemNote,
     };
     return isQuote
       ? buildQuoteHtml({ ...common, taxIncluded: !!draft.taxIncluded, showTotal: !!draft.showTotal, quoteNo: 'M-' + String(draft.issued || '').replace(/-/g, '') + '-01' })
@@ -6096,10 +6101,12 @@ function TargetsView({ data, masters, targets, setTargets, showToast, jumpToFaci
     return () => document.removeEventListener('mousedown', h);
   }, [facSuggestOpen]);
 
+  // 並び順は登録日(createdAt)の新しい順。updatedAt順にすると、メモを1文字打つたびに
+  // updatedAtが更新されてカードが先頭へ飛び、入力欄からフォーカスが外れて続きが打てなくなる。
   const visibleTargets = useMemo(() => {
     let list = targets.slice();
     if (repFilter) list = list.filter(t => t.rep === repFilter);
-    return list.sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')));
+    return list.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
   }, [targets, repFilter]);
 
   const addTarget = () => {
@@ -6549,7 +6556,7 @@ function App() {
               {tab === 'quote' && <DocComposer docType="quote" data={data} masters={masters} draft={quoteDraft} setDraft={setQuoteDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} goImport={() => setTab('import')} />}
               {tab === 'pricerevision' && <PriceRevisionView data={data} masters={masters} draft={priceRevisionDraft} setDraft={setPriceRevisionDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} />}
               {tab === 'targets' && <TargetsView data={data} masters={masters} targets={targets} setTargets={setTargets} showToast={showToast} jumpToFacility={jumpToFacility} />}
-              {tab === 'import' && <ImportView rows={rows} masters={masters} setRows={setRows} setMasters={setMasters} setMeta={setMeta} setDocs={setDocs} showToast={showToast} />}
+              {tab === 'import' && <ImportView rows={rows} masters={masters} setRows={setRows} setMasters={setMasters} setMeta={setMeta} docs={docs} setDocs={setDocs} showToast={showToast} />}
               {tab === 'settings' && <SettingsView rows={rows} masters={masters} setRows={setRows} setMasters={setMasters} setOffice={setOffice} meta={meta} setMeta={setMeta} docs={docs} setDocs={setDocs} targets={targets} setTargets={setTargets} data={data} showToast={showToast} />}
             </>
           )}
