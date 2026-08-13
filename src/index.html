@@ -1119,7 +1119,8 @@ function buildQuoteHtml(m) {
   const st = m.showTotal !== false;   // 合計金額の表示（単価・明細金額とは独立したトグル）
   const qn = (q) => (Number(q) || 0);
   const ed = 'class="editable" contenteditable="true"';
-  const quoteColCount = 2 + (scat ? 1 : 0) + (sc ? 1 : 0) + (sp ? 2 : 0);
+  // 品目・数量・単位の3列が基本。カテゴリ/入数/(単価+金額)は表示時のみ加算する
+  const quoteColCount = 3 + (scat ? 1 : 0) + (sc ? 1 : 0) + (sp ? 2 : 0);
   const rows = m.items.map((it, i) => {
     if (it.isSpacer) return `<tr style="height:6mm;"><td colspan="${quoteColCount}" style="border:1px solid #bfdbfe;border-left:none;border-right:none;"></td></tr>`;
     return `
@@ -1324,6 +1325,11 @@ function buildPriceRevisionHtml(m) {
   const th = 'background:#dbeafe;color:#1e3a8a;font-size:8pt;padding:1.4mm 2mm;border:1px solid #93c5fd;font-weight:bold;';
   const td = 'padding:1.5mm 2mm;border:1px solid #bfdbfe;font-size:9pt;';
   const tdR = td + 'text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;';
+  // 改定後の価格・価格差・変動率は施設側が最も確認したい情報のため、ひと目で分かるよう色付けする
+  const thNew = 'background:#bfdbfe;color:#1e3a8a;font-size:8pt;padding:1.4mm 2mm;border:1px solid #60a5fa;font-weight:bold;';
+  const tdNew = 'padding:1.5mm 2mm;border:1px solid #93c5fd;background:#eff6ff;font-size:9pt;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;color:#1e3a8a;font-weight:bold;';
+  const tdUp = 'padding:1.5mm 2mm;border:1px solid #fecaca;background:#fef2f2;font-size:9pt;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;color:#b91c1c;font-weight:bold;';
+  const tdDown = 'padding:1.5mm 2mm;border:1px solid #bbf7d0;background:#f0fdf4;font-size:9pt;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;color:#15803d;font-weight:bold;';
   const sc = m.showCaseSize === true;    // 入数（デフォルト非表示）
   const sa = m.showAmounts !== false;    // 現状価格・改定価格・価格差
   const sr = sa && m.showRate !== false; // 変動率（金額表示中のみ意味を持つ）
@@ -1341,12 +1347,14 @@ function buildPriceRevisionHtml(m) {
     ...(sr ? [{ w: 9.5 }] : []), // 変動率
   ];
   const colgroup = '<colgroup>' + cols.map(c => `<col style="width:${c.w}%">`).join('') + '</colgroup>';
-  const headCells = ['No.', scat ? 'カテゴリ' : null, '商品名', sc ? '入数' : null, '単位', sa ? '現状価格（税抜）' : null, sa ? '改定価格（税抜）' : null, sa ? '価格差' : null, sr ? '変動率' : null]
-    .filter((v) => v !== null).map((label) => `<th style="${th}">${label}</th>`).join('');
+  const headCells = [`<th style="${th}">No.</th>`, scat ? `<th style="${th}">カテゴリ</th>` : null, `<th style="${th}">商品名</th>`, sc ? `<th style="${th}">入数</th>` : null, `<th style="${th}">単位</th>`,
+    sa ? `<th style="${th}">現状価格（税抜）</th>` : null, sa ? `<th style="${thNew}">改定価格（税抜）</th>` : null, sa ? `<th style="${thNew}">価格差</th>` : null, sr ? `<th style="${thNew}">変動率</th>` : null]
+    .filter((v) => v !== null).join('');
   const rows = m.items.map((it, i) => {
     const diff = it.newPrice - it.currentPrice;
     const rate = it.currentPrice > 0 ? Math.round(diff / it.currentPrice * 1000) / 10 : 0;
     const diffSign = diff > 0 ? '+' : diff < 0 ? '−' : '';
+    const diffTd = diff === 0 ? tdR : diff > 0 ? tdUp : tdDown;
     return `
     <tr style="background:${i % 2 === 1 ? '#f8fbff' : '#fff'}">
       <td style="${tdR}">${i + 1}</td>
@@ -1357,9 +1365,9 @@ function buildPriceRevisionHtml(m) {
       ${sc ? `<td style="${td}text-align:center;">${escapeHTML(it.caseSize || '')}</td>` : ''}
       <td style="${td}text-align:center;">${escapeHTML(it.unit || '')}</td>
       ${sa ? `<td style="${tdR}">${yen(it.currentPrice)}</td>` : ''}
-      ${sa ? `<td style="${tdR}font-weight:bold;">${yen(it.newPrice)}</td>` : ''}
-      ${sa ? `<td style="${tdR}font-weight:bold;">${diff === 0 ? '―' : diffSign + yen(Math.abs(diff))}</td>` : ''}
-      ${sr ? `<td style="${tdR}font-weight:bold;">${diff === 0 ? '―' : diffSign + Math.abs(rate) + '%'}</td>` : ''}
+      ${sa ? `<td style="${tdNew}">${yen(it.newPrice)}</td>` : ''}
+      ${sa ? `<td style="${diffTd}">${diff === 0 ? '―' : diffSign + yen(Math.abs(diff))}</td>` : ''}
+      ${sr ? `<td style="${diffTd}">${diff === 0 ? '―' : diffSign + Math.abs(rate) + '%'}</td>` : ''}
     </tr>`;
   }).join('');
   return `
@@ -1399,12 +1407,12 @@ function buildPriceRevisionInternalHtml(m) {
   const tdR = td + 'text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;';
   const tdCost = 'padding:1.4mm 1.6mm;border:1px solid #fde68a;background:#fffbeb;font-size:8.5pt;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;color:#92400e;font-weight:bold;';
   const o = officeByName(m.office);
-  const colgroup = '<colgroup><col style="width:4%"><col style="width:22%"><col style="width:7%">' +
+  const colgroup = '<colgroup><col style="width:4%"><col style="width:20%"><col style="width:7%">' +
     '<col style="width:9%"><col style="width:9%"><col style="width:8%">' +
     '<col style="width:9%"><col style="width:9%"><col style="width:8%">' +
-    '<col style="width:8%"><col style="width:7%"></colgroup>';
-  const headCells = ['No.', '商品名', '単位', '現状<br>価格', '現状<br>仕入', '現状<br>利益率', '改定後<br>仕入', '改定後<br>価格', '価格差', '変動率', '改定後<br>利益率']
-    .map((label, i) => `<th style="${i === 6 || i === 7 ? thCost : th}">${label}</th>`).join('');
+    '<col style="width:8%"><col style="width:9%"></colgroup>';
+  const headCells = ['No.', '商品名', '単位', '現状<br>仕入', '現状<br>単価', '現状<br>利益率', '改定後<br>仕入', '改定後<br>単価', '改定後<br>利益率', '価格差', '変動率']
+    .map((label, i) => `<th style="${i === 6 || i === 7 || i === 8 ? thCost : th}">${label}</th>`).join('');
   const rows = m.items.map((it, i) => {
     const oldMargin = marginPctOf(it.currentPrice, it.cost);
     const newCostVal = (it.newCost !== '' && it.newCost != null) ? Number(it.newCost) : it.cost;
@@ -1420,14 +1428,14 @@ function buildPriceRevisionInternalHtml(m) {
         <div>${escapeHTML(it.name)}</div>
       </td>
       <td style="${td}text-align:center;">${escapeHTML(it.unit || '')}</td>
-      <td style="${tdR}">${yen(it.currentPrice)}</td>
       <td style="${tdR}">${yen(it.cost)}</td>
+      <td style="${tdR}">${yen(it.currentPrice)}</td>
       <td style="${tdR}">${oldMargin}%</td>
       <td style="${tdCost}">${yen(newCostVal)}</td>
       <td style="${tdCost}">${yen(it.newPrice)}</td>
+      <td style="${tdCost}">${newMargin}%</td>
       <td style="${tdR}font-weight:bold;">${diff === 0 ? '―' : diffSign + yen(Math.abs(diff))}</td>
       <td style="${tdR}font-weight:bold;">${diff === 0 ? '―' : diffSign + Math.abs(rate) + '%'}</td>
-      <td style="${tdR}font-weight:bold;">${newMargin}%</td>
     </tr>`;
   }).join('');
   return `
@@ -3246,6 +3254,7 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
         avg, max: mx, cost, breakdown, tot: anyQty, avgPerOrder, orderCount: orderSet.size,
         handling: productHandling,
         classified: masters.itemHandling[p.name] !== undefined,
+        lastOrder: p.lastSale ? `${p.lastSale.y}/${p.lastSale.mo}/${p.lastSale.d}` : null,
       });
     }
     list.sort((a, b) => b.tot - a.tot);
@@ -3291,10 +3300,10 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
   };
 
   const handleCsv = () => {
-    const head = ['商品名', '分類', '扱い', '仕入先', '単位', '月平均出荷', '最大月出荷', '必要在庫', '平均発注数', '仕入単価'];
+    const head = ['商品名', '分類', '扱い', '仕入先', '単位', '月平均出荷', '最大月出荷', '必要在庫', '平均発注数', '仕入単価', '最終発注日'];
     const lines = filtered.map(p => [
       p.name, p.cat, HANDLING_LABELS[p.handling], p.supplier, p.unit,
-      fmtQty(p.avg), fmtQty(p.max), calc(p), p.avgPerOrder != null ? fmtQty(p.avgPerOrder) : '', p.cost,
+      fmtQty(p.avg), fmtQty(p.max), calc(p), p.avgPerOrder != null ? fmtQty(p.avgPerOrder) : '', p.cost, p.lastOrder || '',
     ]);
     downloadText('適正在庫_' + todayCompact() + '.csv', buildCsv([head, ...lines]), 'text/csv');
     showToast('CSVを出力しました（Excelでそのまま開けます）');
@@ -3412,7 +3421,10 @@ function StockView({ data, masters, setMasters, showToast, openPrint }) {
                 <tr onClick={() => { setOpenProd(isOpen ? null : p.name); setEditQty(null); }}
                   className={"cursor-pointer transition " + (isOpen ? 'bg-sky-50/80' : 'hover:bg-sky-50/50 hover:ring-1 hover:ring-inset hover:ring-sky-200')}>
                   <td className="px-5 py-3">
-                    <div className="font-bold text-slate-800">{p.name}</div>
+                    <div className="font-bold text-slate-800 flex items-center gap-1.5 flex-wrap">
+                      <span>{p.name}</span>
+                      {p.lastOrder && <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-md whitespace-nowrap">最終発注 {p.lastOrder}</span>}
+                    </div>
                     <div className="text-[10px] text-slate-700 flex items-center gap-1.5 flex-wrap">
                       <span className="bg-slate-100 text-slate-700 font-bold px-1.5 py-0.5 rounded-md">{p.cat}</span>
                       <span className={"font-bold " + (p.catSrc === '手動' ? 'text-fuchsia-500' : p.catSrc === '学習' ? 'text-teal-500' : 'text-slate-600')}>{p.catSrc}</span>
