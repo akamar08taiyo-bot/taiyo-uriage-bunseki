@@ -202,6 +202,13 @@ const normalizeMasters = (m) => {
 ============================================================ */
 // 年は2桁(26/07/31)・4桁(2026/7/31)どちらの表記も許容する（販売管理システムの出力形式が変わることがあるため）
 const DATE_RE = /^(\d{2,4})[\/\-年](\d{1,2})[\/\-月](\d{1,2})/;
+// 実在する日付かを、年月日を生成して往復一致するかで判定する。
+// 月1-12・日1-31の範囲確認だけでは 2026/2/31 や 2026/4/31、非うるう年の
+// 2月29日を通してしまい、月次・年度集計の期間判定と並び順が汚染される。
+const isRealDate = (y, mo, d) => {
+  const probe = new Date(Date.UTC(y, mo - 1, d));
+  return probe.getUTCFullYear() === y && probe.getUTCMonth() + 1 === mo && probe.getUTCDate() === d;
+};
 const _dateCache = new Map();
 const parseDateStr = (s) => {
   const key = String(s ?? '');
@@ -212,7 +219,7 @@ const parseDateStr = (s) => {
     let y = +m[1];
     if (m[1].length === 2) y += (y <= 68 ? 2000 : 1900);   // 2桁年: 00-68→20xx, 69-99→19xx
     const mo = +m[2], d = +m[3];
-    if (y >= 2000 && y <= 2100 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+    if (y >= 2000 && y <= 2100 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31 && isRealDate(y, mo, d)) {
       v = { y, mo, d, idx: y * 12 + mo - 1, sort: y * 10000 + mo * 100 + d };
     }
   }

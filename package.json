@@ -1,0 +1,8 @@
+{
+  "name": "taiyo-uriage-bunseki",
+  "private": true,
+  "description": "消耗品売上管理。アプリ本体のビルドは build/ 配下（cd build && npm install && npm run build）。このファイルはテスト実行のためだけに置いている。",
+  "scripts": {
+    "test": "node --test \"test/**/*.test.mjs\""
+  }
+}
