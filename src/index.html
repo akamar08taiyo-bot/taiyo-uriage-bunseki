@@ -1051,7 +1051,7 @@ function buildFacilitySalesHtml(m) {
       <tr><th style="${th}">商品名</th><th style="${th}">分類</th><th style="${th}">月平均数量</th><th style="${th}">単位</th><th style="${th}">参考単価</th><th style="${th}">月額目安</th><th style="${th}">直近購入</th></tr>
       ${body}
       <tr>
-        <td colspan="5" style="${td}text-align:right;font-weight:bold;color:#1e3a8a;background:#eff6ff;">月額合計（税抜）</td>
+        <td colspan="5" style="${td}text-align:right;font-weight:bold;color:#1e3a8a;background:#eff6ff;">月額合計（税抜・上位15品目分）</td>
         <td style="${tdR}font-weight:bold;background:#eff6ff;">${yen(monthTotal)}</td>
         <td style="${td}background:#eff6ff;"></td>
       </tr>
@@ -5171,7 +5171,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                       <td className="px-1 py-2.5 text-right">
                         {isQuote ? (
                           <input type="number" min="0" value={it.qty}
-                            onChange={e => setItem(i, { qty: e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                            onChange={e => { const v = sanitizeNumInput(e); setItem(i, { qty: v === '' ? '' : Math.max(0, parseInt(v, 10) || 0) }); }}
                             className="h-12 w-full px-2 rounded-lg border border-slate-200 text-right tabular-nums text-base font-bold focus:border-sky-400 focus:outline-none" />
                         ) : (
                           <span className="text-sm text-slate-400 font-bold">空欄</span>
@@ -5184,7 +5184,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                       {draft.showPrices && (
                         <td className="px-1 py-2.5 text-right">
                           <input type="number" min="0" value={it.price}
-                            onChange={e => setItem(i, { price: Math.max(0, parseInt(e.target.value || '0', 10)) })}
+                            onChange={e => { const v = sanitizeNumInput(e); setItem(i, { price: Math.max(0, parseInt(v || '0', 10)) }); }}
                             className="h-12 w-full px-2 rounded-lg border border-slate-200 text-right tabular-nums text-base font-bold focus:border-sky-400 focus:outline-none" />
                         </td>
                       )}
@@ -5842,8 +5842,9 @@ function SettingsView({ rows, masters, setRows, setMasters, setOffice, meta, set
                   <li>売上明細 {num(rows.length)}行</li>
                   <li>施設/個人の判定・担当者・直送フラグの設定</li>
                   <li>商品分類・在庫扱いの手直し、キーワード学習ルール</li>
-                  <li>保存した発注書・見積書 {num(docs.length)}件</li>
+                  <li>保存した発注書・見積書・価格改定 {num(docs.length)}件</li>
                 </ul>
+                <div className="text-xs text-slate-600">※ ターゲット先進捗と営業所の設定は残ります。</div>
                 <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-amber-800 text-xs font-bold">
                   <AlertTriangle size={15} className="shrink-0" />
                   削除の前に JSONエクスポート で控えを取っておくことを強くおすすめします
@@ -6479,11 +6480,20 @@ function App() {
     setTab('fac');
   }, []);
   // 施設別画面から発注書/見積書の作成へ（施設をセットして移動）
+  // 施設別画面の「発注書を作成 / 見積書を作成」から呼ばれる。
+  // 別の施設に切り替えるときは下書きを作り直すことになるが、未保存の明細が入っていたら
+  // 黙って捨てず確認する（20品目入力したあと別施設を開いて全部消える事故を防ぐ）。
   const startDoc = useCallback((type, facName) => {
+    const draft = type === 'quote' ? quoteDraft : orderDraft;
     const setter = type === 'quote' ? setQuoteDraft : setOrderDraft;
-    setter(prev => (prev.facility === facName ? prev : newDocDraft(type, facName)));
+    if (draft.facility !== facName) {
+      const n = draft.items.filter(it => !it.isSpacer).length;
+      if (!draft.id && n > 0 &&
+          !window.confirm('作成中の「' + (draft.facility || '未入力') + '」の明細 ' + n + '品目が破棄されます。よろしいですか？')) return;
+      setter(newDocDraft(type, facName));
+    }
     setTab(type);
-  }, []);
+  }, [orderDraft, quoteDraft]);
   const setOffice = useCallback((name) => {
     setMasters(prev => ({ ...prev, settings: { ...prev.settings, office: name } }));
   }, []);
