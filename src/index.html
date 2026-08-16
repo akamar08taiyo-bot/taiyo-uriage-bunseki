@@ -4108,6 +4108,11 @@ const newDocDraft = (type, facility) => ({
   showCat: true,        // カテゴリ列の表示/非表示（デフォルト表示）
   taxIncluded: false,   // 見積書はデフォルト税抜表記。チェックで税込に切替
 });
+// 明細行の識別子。Reactのkeyに使う。
+// 行番号(index)をkeyにすると、空白行を途中に挿入したときに以降の行のDOMが作り直され、
+// 入力中のIME変換やカーソル位置が別の行に引きずられる。行ごとに不変のidを持たせる。
+let _rowSeq = 0;
+const newRowId = () => 'r' + (++_rowSeq) + '-' + Date.now().toString(36);
 const isoToJa = (iso) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
   return m ? +m[1] + '年' + +m[2] + '月' + +m[3] + '日' : todayLabel();
@@ -4189,7 +4194,7 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
     if (inItems.has(m.name)) { showToast('「' + m.name + '」はすでに明細にあります', 'info'); return; }
     const cur = Math.round(m.lastPrice) || 0;
     const rememberedCost = lastNewCostByProduct.has(m.name) ? lastNewCostByProduct.get(m.name) : '';
-    setDraft(prev => ({ ...prev, items: [...prev.items, { name: m.name, cat: m.cat || '', unit: m.unit || '', caseSize: '', cost: Math.round(m.cost) || 0, currentPrice: cur, newPrice: cur, newCost: rememberedCost, newMarginPct: '' }] }));
+    setDraft(prev => ({ ...prev, items: [...prev.items, { rid: newRowId(), name: m.name, cat: m.cat || '', unit: m.unit || '', caseSize: '', cost: Math.round(m.cost) || 0, currentPrice: cur, newPrice: cur, newCost: rememberedCost, newMarginPct: '' }] }));
     if (rememberedCost !== '') showToast('前回の新仕入（' + yen(rememberedCost) + '）を自動入力しました', 'info', 2500);
   };
   // 新仕入・新利益率が両方入力されたら改定価格を自動算出（新仕入 ÷ (1 - 新利益率)）。
@@ -4479,7 +4484,8 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
                   // 現状価格0では変動率を出せない（印刷側と同じ扱いにして画面と食い違わせない）
                   const rate = it.currentPrice > 0 ? Math.round(diff / it.currentPrice * 1000) / 10 : null;
                   return (
-                    <tr key={i}>
+                    // key は行ごとに不変の rid（無い古いドラフトは index にフォールバック）
+                    <tr key={it.rid || i}>
                       <td className="px-4 py-2.5 max-w-0">
                         <div className="flex items-center gap-1 mb-0.5">
                           <input value={it.cat || ''} onChange={e => setItem(i, { cat: e.target.value })}
@@ -4822,13 +4828,13 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
   const patch = (p) => setDraft(prev => ({ ...prev, ...p }));
   const addItem = (m) => {
     if (inItems.has(m.name)) { showToast('「' + m.name + '」はすでに明細にあります', 'info'); return; }
-    setDraft(prev => ({ ...prev, items: [...prev.items, { name: m.name, cat: m.cat || '', note: '', qty: isQuote ? 1 : '', unit: m.unit || '', caseSize: '', price: Math.round(m.price) || 0, cost: Math.round(m.cost) || 0 }] }));
+    setDraft(prev => ({ ...prev, items: [...prev.items, { rid: newRowId(), name: m.name, cat: m.cat || '', note: '', qty: isQuote ? 1 : '', unit: m.unit || '', caseSize: '', price: Math.round(m.price) || 0, cost: Math.round(m.cost) || 0 }] }));
   };
-  const addBlank = () => setDraft(prev => ({ ...prev, items: [...prev.items, { name: '', cat: '', note: '', qty: isQuote ? 1 : '', unit: '', caseSize: '', price: 0 }] }));
+  const addBlank = () => setDraft(prev => ({ ...prev, items: [...prev.items, { rid: newRowId(), name: '', cat: '', note: '', qty: isQuote ? 1 : '', unit: '', caseSize: '', price: 0 }] }));
   // 行と行の間に空白（見た目の区切り）を挿入する。商品ではないので集計・印刷では番号を振らない
   const addSpacer = (afterIdx) => setDraft(prev => {
     const items = prev.items.slice();
-    items.splice(afterIdx + 1, 0, { isSpacer: true });
+    items.splice(afterIdx + 1, 0, { rid: newRowId(), isSpacer: true });
     return { ...prev, items };
   });
   const setItem = (idx, p) => setDraft(prev => ({ ...prev, items: prev.items.map((it, i) => (i === idx ? { ...it, ...p } : it)) }));
@@ -5182,8 +5188,11 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
+                  {/* key は行ごとに不変の rid を使う。index だと空白行の挿入で以降の行の
+                      DOMが作り直され、入力中のIME変換やカーソルが別の行に引きずられる。
+                      rid を持たない古いドラフトのために index へフォールバックする。 */}
                   {draft.items.map((it, i) => it.isSpacer ? (
-                    <tr key={i} className="bg-slate-50/60">
+                    <tr key={it.rid || i} className="bg-slate-50/60">
                       <td colSpan={7} className="py-1.5 px-4">
                         <div className="flex items-center gap-2">
                           <div className="flex-1 border-t border-dashed border-slate-300"></div>
@@ -5193,7 +5202,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                       </td>
                     </tr>
                   ) : (
-                    <tr key={i}>
+                    <tr key={it.rid || i}>
                       <td className="px-4 py-2.5">
                         <div className="flex items-center gap-1 mb-1">
                           <input value={it.cat || ''} onChange={e => setItem(i, { cat: e.target.value })}
@@ -6029,11 +6038,13 @@ function SalesSearchPanel({ rows, masters, showToast, openPrint }) {
   );
 
   const handleCsv = () => {
-    const head = ['売上日', 'お客様名', '種別', '担当', '商品名', '数量', '単位', '販売単価', '金額', '仕入単価', '仕入金額', '粗利額', '利益率%'];
+    // 先頭に売上番号を入れておくと、このCSVをそのまま取込画面に戻せる
+    // （取込は売上番号を必須列にしているため。他の列名も別名として認識される）
+    const head = ['売上番号', '売上日', 'お客様名', '種別', '担当', '商品名', '数量', '単位', '販売単価', '金額', '仕入単価', '仕入金額', '粗利額', '利益率%'];
     const lines = sorted.map(r => {
       const amount = +r[7] || 0, gross = +r[8] || 0;
       return [
-        r[1], r[2], custType(r[2]) || '不明', repOf(r[2]), r[3], r[4], r[5], r[6], r[7], r[10], (+r[4] || 0) * (+r[10] || 0), r[8],
+        r[0], r[1], r[2], custType(r[2]) || '不明', repOf(r[2]), r[3], r[4], r[5], r[6], r[7], r[10], (+r[4] || 0) * (+r[10] || 0), r[8],
         amount > 0 ? Math.round(gross / amount * 1000) / 10 : '',
       ];
     });
