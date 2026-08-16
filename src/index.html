@@ -681,7 +681,9 @@ function buildAnalytics(rows, masters, baseSel) {
     const s = c.sales12[11], pv = c.sales12[10], g = c.gross12[11];
     return {
       name: c.name, sales: s,
-      share: sales > 0 ? Math.round(Math.max(0, s) / sales * 100) : 0,
+      // マイナス分類(返品が売上を上回った分類)を0%に潰すと、他分類は純額で割られたままなので
+      // 構成比の合計が100%を超える。実態どおりマイナスで出す。
+      share: sales > 0 ? Math.round(s / sales * 100) : 0,
       mom: pv !== 0 ? Math.round((s - pv) / Math.abs(pv) * 100) : 0,
       margin: s !== 0 ? Math.round(g / s * 1000) / 10 : 0,
       top: c.items.slice().sort((a, b) => b.winSales - a.winSales).slice(0, 6).map(p => p.name),
@@ -812,7 +814,8 @@ function buildPeriodReport(rows, masters, fromIdx, toIdx, consumableOnly) {
     kpi: { sales, gross, rate: rate(gross, sales).toFixed(1), count: facMap.size, months: monthly.length },
     monthly,
     categories: [...catAgg.values()].sort((a, b) => (a.name === 'その他') - (b.name === 'その他') || b.sales - a.sales)
-      .map(c => ({ name: c.name, sales: c.sales, share: sales > 0 ? Math.round(Math.max(0, c.sales) / sales * 100) : 0, margin: rate(c.gross, c.sales) })),
+      // 上と同じ理由でマイナスを潰さない（潰すと印刷帳票の構成比が合計100%を超える）
+      .map(c => ({ name: c.name, sales: c.sales, share: sales > 0 ? Math.round(c.sales / sales * 100) : 0, margin: rate(c.gross, c.sales) })),
     topProducts: [...prodMap.values()].filter(p => p.sales > 0).sort((a, b) => b.sales - a.sales).slice(0, 10)
       .map(p => ({ name: p.name, cat: p.cat, qty: p.qty, unit: p.unit, sales: p.sales })),
     ranking: [...facMap.values()].sort((a, b) => b.sales - a.sales)
@@ -1000,7 +1003,7 @@ function buildReportHtml(m) {
 
     <div style="margin-top:8mm;border:1px solid #bfdbfe;background:#eff6ff;padding:3mm;font-size:8.5pt;color:#4b5563;">
       ※ 本レポートは売上分析ダッシュボードから自動生成されています。金額はすべて税抜・返品相殺後の純売上です。<br>
-      ※ 集計対象は施設のみで、個人のお客様は含みません。
+      ※ 純売上・分類別売上・商品別ランキングは施設・個人を問わず全売上を集計しています。施設別ランキングのみ施設に限定しています。
     </div>
   </div>`;
 }
@@ -1022,7 +1025,10 @@ function buildFacilitySalesHtml(m) {
       <td style="${tdR}">${yen(r.qty * r.price)}</td>
       <td style="${tdR}">${escapeHTML(r.last)}</td>
     </tr>`).join('') : `<tr><td colspan="7" style="${td}text-align:center;color:#6b7280;">対象期間の購入実績はありません</td></tr>`;
-  const monthTotal = m.rows.reduce((s, r) => s + r.qty * r.price, 0);
+  // 各行は yen() が四捨五入した金額で印刷される（数量は月平均なので小数になる）。
+  // 合計を丸め前の値で出すと、お客様が列を足し算した結果と1円ずれることがあるため、
+  // 行ごとに丸めてから合計する。
+  const monthTotal = m.rows.reduce((s, r) => s + Math.round(r.qty * r.price), 0);
   const monthHead = m.labels.map(x => `<th style="${th}font-size:7pt;padding:1mm;">${escapeHTML(x)}</th>`).join('');
   const monthCells = m.monthly.map(v => `<td style="${tdR}font-size:7.5pt;padding:1mm;">${num(v / 1000)}k</td>`).join('');
   return `
@@ -4144,8 +4150,15 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
       if ('newPrice' in p) {
         const costBasis = hasNewCost ? Number(merged.newCost) : Number(merged.cost) || 0;
         if (costBasis > 0) merged.newMarginPct = marginPctOf(merged.newPrice, costBasis);
-      } else if (hasNewCost && hasNewMargin) {
-        merged.newPrice = priceFromMargin(merged.newMarginPct, merged.newCost);
+      } else if (hasNewMargin) {
+        // 新仕入が空欄でも現行の仕入を基準に改定価格を出す。
+        // 両方揃うまで動かない作りだと、利益率だけ打った人には何も起きず、
+        // 計算されたと思い込んで古い価格のまま印刷してしまう。
+        const costBasis = hasNewCost ? Number(merged.newCost) : Number(merged.cost) || 0;
+        merged.newPrice = priceFromMargin(merged.newMarginPct, costBasis);
+        // 円単位に丸めた結果の実際の利益率を書き戻す。書き戻さないと画面は入力値
+        // (例 25%)、社内用印刷は価格から再計算した値(24.9%)となり食い違う。
+        if (costBasis > 0) merged.newMarginPct = marginPctOf(merged.newPrice, costBasis);
       }
       return merged;
     }),
@@ -4882,15 +4895,17 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
             <input type="date" value={draft.issued} onChange={e => patch({ issued: e.target.value })}
               className={inputCls + ' tabular-nums'} />
           </label>
-          {draft.facilityAddress === undefined || draft.facilityAddress === '' ? (
+          {/* 住所・TEL・FAXは発注書の「発注元」欄にしか印刷されない。
+              見積書で入力させると、入力したのに帳票に出ないという食い違いになるため出さない。 */}
+          {!isQuote && (draft.facilityAddress === undefined || draft.facilityAddress === '') ? (
             <button type="button" onClick={() => patch({ facilityAddress: ' ' })}
               className="text-xs font-bold text-sky-600 hover:text-sky-800 transition">＋住所を追加</button>
           ) : null}
-          {draft.facilityTel === undefined || draft.facilityTel === '' ? (
+          {!isQuote && (draft.facilityTel === undefined || draft.facilityTel === '') ? (
             <button type="button" onClick={() => patch({ facilityTel: ' ' })}
               className="text-xs font-bold text-sky-600 hover:text-sky-800 transition">＋電話番号を追加</button>
           ) : null}
-          {draft.facilityFax === undefined || draft.facilityFax === '' ? (
+          {!isQuote && (draft.facilityFax === undefined || draft.facilityFax === '') ? (
             <button type="button" onClick={() => patch({ facilityFax: ' ' })}
               className="text-xs font-bold text-sky-600 hover:text-sky-800 transition">＋FAX番号を追加</button>
           ) : null}
