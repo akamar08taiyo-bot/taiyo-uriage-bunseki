@@ -299,12 +299,19 @@ function decodeCsvBuffer(buf) {
 /* 列名マッピング（位置は信用しない・列名で対応付け）。
    2番目の要素は候補名の配列 — 販売管理システムの出力で列名が変わることがあるため複数許容する */
 const REQUIRED_COLS = [
-  ['saleNo', ['売上番号']], ['date', ['売上日']], ['customer', ['お客様名']],
-  ['product', ['商品名']], ['qty', ['数量']], ['amount', ['金額']],
+  ['saleNo', ['売上番号', '伝票番号']], ['date', ['売上日', '伝票日付', '出荷日']], ['customer', ['お客様名', '得意先名', '顧客名']],
+  ['product', ['商品名', '品名']], ['qty', ['数量', '出荷数量']], ['amount', ['金額', '売上金額']],
 ];
+// 任意列が見つからないと 0 が入るだけで取込は成功してしまう（例: 粗利額が拾えないと
+// 粗利率が全て0%になり、低粗利リストに全商品が並ぶ）。列名が変わっても拾えるよう
+// 実際に出力されうる別名を広めに登録しておく。
 const OPTIONAL_COLS = [
-  ['gross', ['粗利額']], ['unit', ['単位名']], ['price', ['単価']],
-  ['supplier', ['仕入先名']], ['cost', ['仕入単価']], ['rep', ['担当者', '営業担当名', '営業担当', '担当']],
+  ['gross', ['粗利額', '粗利金額', '粗利', '荒利額', '荒利金額']],
+  ['unit', ['単位名', '単位']],
+  ['price', ['単価', '販売単価', '売単価', '売上単価']],
+  ['supplier', ['仕入先名', '仕入先', '仕入先名称']],
+  ['cost', ['仕入単価', '仕入価格', '原価', '原価単価']],
+  ['rep', ['担当者', '営業担当名', '営業担当', '担当']],
 ];
 const colLabel = (names) => names[0];
 
@@ -809,7 +816,10 @@ function buildPeriodReport(rows, masters, fromIdx, toIdx, consumableOnly) {
   });
   const monthly = [...monMap.values()].sort((a, b) => a.idx - b.idx)
     .map(m => ({ idx: m.idx, label: idxLabel(m.idx), sales: m.sales, gross: m.gross, rate: rate(m.gross, m.sales), count: m.facs.size }));
-  const nMonths = Math.max(1, monthly.length);
+  // 月平均は「売上のあった月数」ではなく「対象期間の月数」で割る。
+  // 前者だと、期間内に売上ゼロの月があるとその月が分母から抜けて平均が過大になり、
+  // 見出しの期間（例: 4月〜8月の5ヶ月）と計算が食い違う。
+  const nMonths = Math.max(1, toIdx - fromIdx + 1);
   return {
     kpi: { sales, gross, rate: rate(gross, sales).toFixed(1), count: facMap.size, months: monthly.length },
     monthly,
@@ -1476,12 +1486,12 @@ function buildPriceRevisionInternalHtml(m) {
         <div>${escapeHTML(it.name)}</div>
       </td>
       <td style="${td}text-align:center;">${escapeHTML(it.unit || '')}</td>
-      <td style="${tdR}">${yen(it.cost)}</td>
+      <td style="${tdR}">${it.cost > 0 ? yen(it.cost) : '—'}</td>
       <td style="${tdR}">${yen(it.currentPrice)}</td>
-      <td style="${tdR}">${oldMargin}%</td>
-      <td style="${tdCost}">${yen(newCostVal)}</td>
+      <td style="${tdR}">${it.cost > 0 ? oldMargin + '%' : '—'}</td>
+      <td style="${tdCost}">${newCostVal > 0 ? yen(newCostVal) : '—'}</td>
       <td style="${tdCost}">${yen(it.newPrice)}</td>
-      <td style="${tdCost}">${newMargin}%</td>
+      <td style="${tdCost}">${newCostVal > 0 ? newMargin + '%' : '—'}</td>
       <td style="${tdR}font-weight:bold;">${diff === 0 ? '―' : diffSign + yen(Math.abs(diff))}</td>
       <td style="${tdR}font-weight:bold;">${diff === 0 || rate === null ? '―' : diffSign + Math.abs(rate) + '%'}</td>
     </tr>`;
@@ -3945,6 +3955,23 @@ function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs
                     </span>
                   ))}
                 </div>
+                {/* 任意列が拾えないと 0 が入るだけで取込は成功してしまい、粗利率が全て0%に
+                    なるなど数字が静かに壊れる。影響の大きい列は明示的に警告する。 */}
+                {(() => {
+                  const impact = { gross: '粗利額・粗利率がすべて0になります', price: '単価が¥0になり、発注書・見積書の初期価格が入りません', cost: '仕入単価が¥0になり、粗利と利益率が正しく出ません' };
+                  const missing = Object.keys(impact).filter(k => !preview.found[k]);
+                  if (!missing.length) return null;
+                  return (
+                    <div className="mt-2 flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-amber-800 text-xs font-bold">
+                      <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+                      <div className="space-y-0.5">
+                        <div>次の列が見つかりませんでした。取込自体はできますが、数字が正しく出ません。</div>
+                        {missing.map(k => <div key={k}>・{colLabel(OPTIONAL_COLS.find(c => c[0] === k)[1])} … {impact[k]}</div>)}
+                        <div className="font-normal">列名が変わった可能性があります。取込を中止して、CSVの見出しをご確認ください。</div>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
               <div>
                 <div className="text-[11px] font-bold text-slate-600 uppercase tracking-wide mb-2">先頭5行のプレビュー</div>
