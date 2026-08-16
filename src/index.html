@@ -81,12 +81,21 @@ const K = {
   LAST_PRICE_REV_REP: 'taiyo_uriage_last_pricerevision_rep_v1', // 価格改定：前回入力した担当名
   TARGETS: 'taiyo_uriage_targets_v1', // ターゲット先進捗確認：担当ごとのターゲット施設リスト
   LAST_TARGET_REP: 'taiyo_uriage_last_target_rep_v1', // ターゲット先進捗確認：前回選択した担当名
-};
-const loadStorage = (key, fallback) => {
-  try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; }
-  catch { return fallback; }
+  // 作成中(未保存)のドラフト。誤ってリロードしても入力が消えないよう保持する
+  DRAFT_ORDER: 'taiyo_uriage_draft_order_v1',
+  DRAFT_QUOTE: 'taiyo_uriage_draft_quote_v1',
+  DRAFT_PRICEREV: 'taiyo_uriage_draft_pricerev_v1',
 };
 const saveStorageCache = {};
+const loadStorage = (key, fallback) => {
+  try {
+    const raw = localStorage.getItem(key);
+    // 読み込んだ生文字列をキャッシュに入れておく。入れないと初回描画時に
+    // 保存effectが一斉に走り、読み込んだ内容をそのまま書き戻す（明細が数MBあると重い）。
+    if (raw != null) saveStorageCache[key] = raw;
+    return raw ? JSON.parse(raw) : fallback;
+  } catch { return fallback; }
+};
 const saveStorage = (key, data) => {
   try {
     const s = JSON.stringify(data);
@@ -107,6 +116,24 @@ const storageUsage = () => {
   } catch {}
   return bytes;
 };
+// 500ms入力が止まってから保存する。打鍵ごとの JSON.stringify + setItem を避ける。
+// アンマウント時とタブを閉じる直前には即時書き出して、待機中の変更を取りこぼさない。
+function useDebouncedSave(key, value, onQuotaError) {
+  const valRef = useRef(value);
+  valRef.current = value;
+  const cbRef = useRef(onQuotaError);
+  cbRef.current = onQuotaError;
+  const flush = useCallback(() => {
+    if (!saveStorage(key, valRef.current) && cbRef.current) cbRef.current(QUOTA_MSG, 'error', 9000);
+  }, [key]);
+  // 入力が止まってから書く。値が変わるたびタイマーを張り直すだけで、ここでは保存しない
+  useEffect(() => { const t = setTimeout(flush, 500); return () => clearTimeout(t); }, [value, flush]);
+  // タブを閉じる直前とアンマウント時は、待機中の変更を取りこぼさないよう即時書き出す
+  useEffect(() => {
+    window.addEventListener('beforeunload', flush);
+    return () => { window.removeEventListener('beforeunload', flush); flush(); };
+  }, [flush]);
+}
 const STORAGE_LIMIT = 5 * 1024 * 1024;
 const QUOTA_MSG = '保存容量が上限に達しました。設定→データ管理でJSONエクスポート（バックアップ）した後、全データ削除→最新期間のCSVだけを取り込み直してください';
 
@@ -6157,7 +6184,7 @@ function TargetsView({ data, masters, targets, setTargets, showToast, jumpToFaci
     [...new Set([...reps, ...targets.map(t => t.rep).filter(Boolean)])].sort((a, b) => a.localeCompare(b, 'ja')),
     [reps, targets]);
   const [repFilter, setRepFilter] = useState(() => loadStorage(K.LAST_TARGET_REP, ''));
-  useEffect(() => { saveStorage(K.LAST_TARGET_REP, repFilter); }, [repFilter]);
+  useDebouncedSave(K.LAST_TARGET_REP, repFilter, null);
 
   const [newFacility, setNewFacility] = useState('');
   const [newRep, setNewRep] = useState('');
@@ -6472,10 +6499,18 @@ function App() {
   const [repFilter, setRepFilter] = useState(null);
   const [toasts, setToasts] = useState([]);
   const [printHtml, setPrintHtml] = useState(null);
-  // 発注書 / 見積書 の作成中ドラフト（タブを移動しても消えない）
-  const [orderDraft, setOrderDraft] = useState(() => newDocDraft('order', ''));
-  const [quoteDraft, setQuoteDraft] = useState(() => newDocDraft('quote', ''));
-  const [priceRevisionDraft, setPriceRevisionDraft] = useState(() => newPriceRevisionDraft());
+  // 発注書 / 見積書 / 価格改定 の作成中ドラフト。
+  // タブ移動だけでなくリロードでも消えないよう localStorage に保持する
+  // （20品目入力した状態で誤ってF5を押しても失わないため）。
+  // 既定値を先に展開しているのは、後から増えた表示フラグが欠けた古いドラフトを補完するため。
+  const restoreDraft = (key, make) => {
+    const base = make();
+    const saved = loadStorage(key, null);
+    return (saved && typeof saved === 'object' && Array.isArray(saved.items)) ? { ...base, ...saved } : base;
+  };
+  const [orderDraft, setOrderDraft] = useState(() => restoreDraft(K.DRAFT_ORDER, () => newDocDraft('order', '')));
+  const [quoteDraft, setQuoteDraft] = useState(() => restoreDraft(K.DRAFT_QUOTE, () => newDocDraft('quote', '')));
+  const [priceRevisionDraft, setPriceRevisionDraft] = useState(() => restoreDraft(K.DRAFT_PRICEREV, newPriceRevisionDraft));
   const toastId = useRef(0);
 
   const showToast = useCallback((msg, type, dur) => {
@@ -6485,12 +6520,18 @@ function App() {
     setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), dur || 3500);
   }, []);
 
-  // 保存は取込・設定変更のたびに実行。失敗（容量超過）は案内を出す
-  useEffect(() => { if (!saveStorage(K.ROWS, rows)) showToast(QUOTA_MSG, 'error', 9000); }, [rows, showToast]);
-  useEffect(() => { if (!saveStorage(K.MASTERS, masters)) showToast(QUOTA_MSG, 'error', 9000); }, [masters, showToast]);
-  useEffect(() => { saveStorage(K.META, meta); }, [meta]);
-  useEffect(() => { if (!saveStorage(K.DOCS, docs)) showToast(QUOTA_MSG, 'error', 9000); }, [docs, showToast]);
-  useEffect(() => { if (!saveStorage(K.TARGETS, targets)) showToast(QUOTA_MSG, 'error', 9000); }, [targets, showToast]);
+  // 保存は500msのデバウンス付き。メモ欄などは1文字打つたびに状態が変わるので、
+  // 即時保存だと打鍵ごとに JSON.stringify + localStorage.setItem が走る（明細が数MBあると重い）。
+  // 入力が止まってからまとめて書く。失敗（容量超過）は案内を出す。
+  useDebouncedSave(K.ROWS, rows, showToast);
+  useDebouncedSave(K.MASTERS, masters, showToast);
+  useDebouncedSave(K.META, meta, null);
+  useDebouncedSave(K.DOCS, docs, showToast);
+  useDebouncedSave(K.TARGETS, targets, showToast);
+  // 作成中ドラフトも保存。容量超過の案内はここでは出さない（明細本体の保存で案内済み）
+  useDebouncedSave(K.DRAFT_ORDER, orderDraft, null);
+  useDebouncedSave(K.DRAFT_QUOTE, quoteDraft, null);
+  useDebouncedSave(K.DRAFT_PRICEREV, priceRevisionDraft, null);
 
   // 集計索引（基準月 = データ内最新月。ヘッダーで変更可）
   const data = useMemo(() => buildAnalytics(rows, masters, baseSel), [rows, masters, baseSel]);
