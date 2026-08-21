@@ -4097,6 +4097,7 @@ const DEFAULT_QUOTE_NOTE = '・納期：ご注文後、通常2〜3営業日\n・
 const newDocDraft = (type, facility) => ({
   id: null,
   facility: facility || '',
+  rep: '', // 担当（手入力）。空欄なら施設の履歴担当を印刷時のフォールバックに使う
   title: type === 'quote' ? '御　見　積　書' : '発　注　書',
   issued: todayISO(),
   note: type === 'quote' ? DEFAULT_QUOTE_NOTE : DEFAULT_ORDER_NOTE,
@@ -4752,6 +4753,8 @@ function PriceCheckListPanel({ data, showToast, openPrint }) {
 
 function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, showToast, openPrint, goImport }) {
   const isQuote = docType === 'quote';
+  // 見積書は金額を常時表示する（発注書は従来通りトグルで切替）。
+  const priceOn = isQuote ? true : draft.showPrices;
   const [source, setSource] = useState(docType === 'order' ? 'all' : 'fac');
   const [cat, setCat] = useState('all');
   const [search, setSearch] = useState('');
@@ -4781,7 +4784,8 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
     return () => document.removeEventListener('mousedown', h);
   }, [facSuggestOpen]);
   const fac = draft.facility ? data.facByName.get(draft.facility) : null;
-  const repName = fac ? fac.repName : '';
+  // 担当は手入力が優先。未入力のときだけ施設の履歴担当を表示・印刷に使う
+  const repName = (draft.rep || '').trim() || (fac ? fac.repName : '');
   const facPairs = useMemo(() => {
     const m = new Map();
     if (fac) fac.pairs.forEach(p => m.set(p.prod, p));
@@ -4847,7 +4851,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
     const common = {
       facilityName: draft.facility, facilityAddress: draft.facilityAddress || '',
       facilityTel: draft.facilityTel || '', facilityFax: draft.facilityFax || '', repName: repName || '未設定', items,
-      showPrices: draft.showPrices, showCaseSize: !!draft.showCaseSize, issued: isoToJa(draft.issued),
+      showPrices: priceOn, showCaseSize: !!draft.showCaseSize, issued: isoToJa(draft.issued),
       note: draft.note, title: draft.title, office: masters.settings.office,
       showCat: draft.showCat !== false, showItemNote: !!draft.showItemNote,
     };
@@ -4955,6 +4959,17 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
             <input type="date" value={draft.issued} onChange={e => patch({ issued: e.target.value })}
               className={inputCls + ' tabular-nums'} />
           </label>
+          <label className="inline-flex items-center gap-2 text-sm text-slate-600 font-bold">
+            担当
+            <input value={draft.rep || ''} list={'doc-rep-list-' + docType}
+              onChange={e => patch({ rep: e.target.value })}
+              placeholder={fac ? fac.repName : '担当者名'}
+              title="未入力の場合、この施設の履歴担当（あれば）を印刷に使います"
+              className={inputCls + ' w-32'} />
+            <datalist id={'doc-rep-list-' + docType}>
+              {(masters.settings.reps || []).map(r => <option key={r} value={r} />)}
+            </datalist>
+          </label>
           {/* 住所・TEL・FAXは発注書の「発注元」欄にしか印刷されない。
               見積書で入力させると、入力したのに帳票に出ないという食い違いになるため出さない。 */}
           {!isQuote && (draft.facilityAddress === undefined || draft.facilityAddress === '') ? (
@@ -5048,7 +5063,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                   const dTotal = d.items.reduce((s, it) => it.isSpacer ? s : s + (Number(it.qty) || 0) * (it.price || 0), 0);
                   return (
                     <div className="text-right shrink-0 w-28">
-                      {d.showPrices && dTotal > 0
+                      {(isQuote || d.showPrices) && dTotal > 0
                         ? <div className="font-extrabold text-sm text-slate-900 tabular-nums">{yen(dTotal)}</div>
                         : <div className="text-[11px] text-slate-500 font-bold">金額なし</div>}
                     </div>
@@ -5124,7 +5139,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                   <div className="font-bold text-sm text-slate-800">{isQuote ? '見積明細' : '発注明細'}<span className="text-slate-600 font-normal ml-1.5">{draft.items.filter(it => !it.isSpacer).length}品目</span></div>
                   <div className="text-[11px] text-slate-600">{draft.facility} {isQuote ? '宛の御見積書' : '→ 当社宛の発注書'}</div>
                 </div>
-                {(isQuote ? draft.showTotal !== false : draft.showPrices) && <span className="text-sm font-extrabold text-slate-800 tabular-nums shrink-0">{yen(total)}<span className="text-[10px] text-slate-600 font-bold ml-1">税抜</span></span>}
+                {(isQuote ? draft.showTotal !== false : priceOn) && <span className="text-sm font-extrabold text-slate-800 tabular-nums shrink-0">{yen(total)}<span className="text-[10px] text-slate-600 font-bold ml-1">税抜</span></span>}
               </div>
               <div className="flex items-center gap-2 flex-wrap mt-2.5">
                 <button onClick={() => patch({ showCat: !(draft.showCat !== false) })}
@@ -5134,13 +5149,20 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                   {draft.showCat !== false ? <Eye size={15} /> : <EyeOff size={15} />}
                   カテゴリ{draft.showCat !== false ? '表示中' : '非表示中'}
                 </button>
-                <button onClick={() => patch({ showPrices: !draft.showPrices })}
-                  title={draft.showPrices ? '金額を非表示にする' : '金額を表示する'}
-                  className={"inline-flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg border transition shrink-0 " +
-                    (draft.showPrices ? 'border-sky-300 bg-sky-50 text-sky-700' : 'border-slate-200 text-slate-600 hover:bg-slate-100')}>
-                  {draft.showPrices ? <Eye size={15} /> : <EyeOff size={15} />}
-                  金額{draft.showPrices ? '表示中' : '非表示中'}
-                </button>
+                {isQuote ? (
+                  <span title="見積書は金額を常時表示します"
+                    className="inline-flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg border border-sky-300 bg-sky-50 text-sky-700 shrink-0">
+                    <Eye size={15} /> 金額表示中
+                  </span>
+                ) : (
+                  <button onClick={() => patch({ showPrices: !draft.showPrices })}
+                    title={draft.showPrices ? '金額を非表示にする' : '金額を表示する'}
+                    className={"inline-flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg border transition shrink-0 " +
+                      (draft.showPrices ? 'border-sky-300 bg-sky-50 text-sky-700' : 'border-slate-200 text-slate-600 hover:bg-slate-100')}>
+                    {draft.showPrices ? <Eye size={15} /> : <EyeOff size={15} />}
+                    金額{draft.showPrices ? '表示中' : '非表示中'}
+                  </button>
+                )}
                 <button onClick={() => patch({ showCaseSize: !draft.showCaseSize })}
                   title={draft.showCaseSize ? '入数を非表示にする' : '入数を表示する'}
                   className={"inline-flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg border transition shrink-0 " +
@@ -5164,7 +5186,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                     合計{draft.showTotal !== false ? '表示中' : '非表示中'}
                   </button>
                 )}
-                {isQuote && draft.showPrices && (
+                {isQuote && priceOn && (
                   <label className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-600 cursor-pointer select-none shrink-0">
                     <input type="checkbox" checked={!!draft.taxIncluded} onChange={e => patch({ taxIncluded: e.target.checked })}
                       className="w-3.5 h-3.5 accent-sky-600 cursor-pointer" />
@@ -5175,15 +5197,15 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm"
-                style={{ minWidth: Math.max(440, 300 + (draft.showCaseSize ? 60 : 0) + (draft.showPrices ? (isQuote ? 200 : 100) : 0)) }}>
+                style={{ minWidth: Math.max(440, 300 + (draft.showCaseSize ? 60 : 0) + (priceOn ? (isQuote ? 200 : 100) : 0)) }}>
                 <thead>
                   <tr className="text-xs uppercase tracking-wide text-slate-600 border-b border-slate-100">
                     <th className={"text-left font-bold px-4 py-2.5" + (isQuote ? '' : ' w-auto')}>商品名</th>
                     {draft.showCaseSize && <th className="text-center font-bold px-1 py-2.5 w-16">入数</th>}
                     <th className={"text-right font-bold px-1 py-2.5 " + (isQuote ? 'w-20' : 'w-14')}>数量</th>
                     <th className={"text-left font-bold px-1 py-2.5 " + (isQuote ? 'w-16' : 'w-16')}>単位</th>
-                    {draft.showPrices && <th className={"text-right font-bold px-1 py-2.5 " + (isQuote ? 'w-28' : 'w-24')}>単価</th>}
-                    {draft.showPrices && !isQuote ? null : draft.showPrices ? <th className="text-right font-bold px-1 py-2.5 w-28">金額</th> : null}
+                    {priceOn && <th className={"text-right font-bold px-1 py-2.5 " + (isQuote ? 'w-28' : 'w-24')}>単価</th>}
+                    {priceOn && !isQuote ? null : priceOn ? <th className="text-right font-bold px-1 py-2.5 w-28">金額</th> : null}
                     <th className="w-16"></th>
                   </tr>
                 </thead>
@@ -5216,7 +5238,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                         <input value={it.name} onChange={e => setItem(i, { name: e.target.value })}
                           placeholder="商品名"
                           className="h-12 w-full px-3 rounded-lg border border-slate-200 text-sm font-bold text-slate-800 focus:border-sky-400 focus:outline-none" />
-                        {draft.showPrices && it.cost > 0 && (
+                        {priceOn && it.cost > 0 && (
                           <div className="mt-1 text-xs text-amber-700 font-bold">仕入 {yen(it.cost)}{it.price > 0 && <> ・ 粗利 {yen(it.price - it.cost)}（{Math.round((it.price - it.cost) / it.price * 1000) / 10}%）</>}</div>
                         )}
                         {draft.showItemNote && (
@@ -5244,14 +5266,14 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                         <input value={it.unit} onChange={e => setItem(i, { unit: e.target.value })}
                           className="h-12 w-full px-2 rounded-lg border border-slate-200 text-sm text-slate-700 font-bold focus:border-sky-400 focus:outline-none" />
                       </td>
-                      {draft.showPrices && (
+                      {priceOn && (
                         <td className="px-1 py-2.5 text-right">
                           <input type="number" min="0" value={it.price}
                             onChange={e => { const v = sanitizeNumInput(e); setItem(i, { price: Math.max(0, parseInt(v || '0', 10)) }); }}
                             className="h-12 w-full px-2 rounded-lg border border-slate-200 text-right tabular-nums text-base font-bold focus:border-sky-400 focus:outline-none" />
                         </td>
                       )}
-                      {draft.showPrices && isQuote && (
+                      {priceOn && isQuote && (
                         <td className="px-1 py-2.5 text-right tabular-nums font-extrabold text-slate-800 text-sm">{yen((Number(it.qty) || 0) * it.price)}</td>
                       )}
                       <td className="pr-3 text-right whitespace-nowrap">
