@@ -1413,7 +1413,8 @@ function buildPriceRevisionHtml(m) {
   const tdUp = 'padding:1.5mm 2mm;border:1px solid #fecaca;background:#fef2f2;font-size:9pt;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;color:#b91c1c;font-weight:bold;';
   const tdDown = 'padding:1.5mm 2mm;border:1px solid #bbf7d0;background:#f0fdf4;font-size:9pt;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;color:#15803d;font-weight:bold;';
   const sc = m.showCaseSize === true;    // 入数（デフォルト非表示）
-  const sa = m.showAmounts !== false;    // 現状価格・改定価格・価格差
+  const sa = m.showAmounts !== false;    // 現状価格・改定価格
+  const sd = sa && m.showDiff !== false; // 価格差（金額表示中のみ意味を持つ）
   const sr = sa && m.showRate !== false; // 変動率（金額表示中のみ意味を持つ）
   const scat = m.showCat !== false;      // カテゴリ列（デフォルトON）
   const ed = 'class="editable" contenteditable="true"';
@@ -1422,15 +1423,16 @@ function buildPriceRevisionHtml(m) {
   const cols = [
     { w: 6 }, // No.
     ...(scat ? [{ w: 12 }] : []), // カテゴリ
-    { w: (scat ? 18 : 30) + (sc ? 0 : 9) + (sa ? 0 : 40.5) + (sr ? 0 : 9.5) }, // 商品名
+    { w: (scat ? 18 : 30) + (sc ? 0 : 9) + (sa ? 0 : 27) + (sd ? 0 : 9.5) + (sr ? 0 : 9.5) }, // 商品名
     ...(sc ? [{ w: 9 }] : []), // 入数
     { w: 9 }, // 単位
-    ...(sa ? [{ w: 13 }, { w: 13 }, { w: 9.5 }] : []), // 現状/改定/価格差
+    ...(sa ? [{ w: 13 }, { w: 13 }] : []), // 現状/改定
+    ...(sd ? [{ w: 9.5 }] : []), // 価格差
     ...(sr ? [{ w: 9.5 }] : []), // 変動率
   ];
   const colgroup = '<colgroup>' + cols.map(c => `<col style="width:${c.w}%">`).join('') + '</colgroup>';
   const headCells = [`<th style="${th}">No.</th>`, scat ? `<th style="${th}">カテゴリ</th>` : null, `<th style="${th}">商品名</th>`, sc ? `<th style="${th}">入数</th>` : null, `<th style="${th}">単位</th>`,
-    sa ? `<th style="${th}">現状価格（税抜）</th>` : null, sa ? `<th style="${thNew}">改定価格（税抜）</th>` : null, sa ? `<th style="${thNew}">価格差</th>` : null, sr ? `<th style="${thNew}">変動率</th>` : null]
+    sa ? `<th style="${th}">現状価格（税抜）</th>` : null, sa ? `<th style="${thNew}">改定価格（税抜）</th>` : null, sd ? `<th style="${thNew}">価格差</th>` : null, sr ? `<th style="${thNew}">変動率</th>` : null]
     .filter((v) => v !== null).join('');
   const rows = m.items.map((it, i) => {
     const diff = it.newPrice - it.currentPrice;
@@ -1450,7 +1452,7 @@ function buildPriceRevisionHtml(m) {
       <td style="${td}text-align:center;">${escapeHTML(it.unit || '')}</td>
       ${sa ? `<td style="${tdR}">${yen(it.currentPrice)}</td>` : ''}
       ${sa ? `<td style="${tdNew}">${yen(it.newPrice)}</td>` : ''}
-      ${sa ? `<td style="${diffTd}">${diff === 0 ? '―' : diffSign + yen(Math.abs(diff))}</td>` : ''}
+      ${sd ? `<td style="${diffTd}">${diff === 0 ? '―' : diffSign + yen(Math.abs(diff))}</td>` : ''}
       ${sr ? `<td style="${diffTd}">${diff === 0 || rate === null ? '―' : diffSign + Math.abs(rate) + '%'}</td>` : ''}
     </tr>`;
   }).join('');
@@ -4133,7 +4135,7 @@ function ProductSalesModal({ data, name, onClose }) {
     .sort((a, b) => (b.lastDate ? b.lastDate.sort : -1) - (a.lastDate ? a.lastDate.sort : -1));
   return (
     <div className="fixed inset-0 z-50 bg-slate-600/50 backdrop-blur-sm flex items-center justify-center p-4 no-print" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
         <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2.5">
           <span className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-sky-50 text-sky-500 shrink-0"><Package size={16} /></span>
           <div className="flex-1 min-w-0">
@@ -4147,20 +4149,28 @@ function ProductSalesModal({ data, name, onClose }) {
             <thead>
               <tr className="text-[11px] text-slate-600 border-b border-slate-100">
                 <th className="text-left font-bold px-5 py-2">施設名</th>
-                <th className="text-right font-bold px-3 py-2">最終購入日</th>
-                <th className="text-right font-bold px-5 py-2">数量/金額</th>
+                <th className="text-right font-bold px-2 py-2 whitespace-nowrap">最終売上日</th>
+                <th className="text-right font-bold px-2 py-2 whitespace-nowrap">数量</th>
+                <th className="text-right font-bold px-2 py-2 whitespace-nowrap">仕入額</th>
+                <th className="text-right font-bold px-5 py-2 whitespace-nowrap">販売金額</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
-              {rows.map(pr => (
+              {rows.map(pr => {
+                const qty = sum12(pr.qty12), sales = sum12(pr.sales12);
+                const cost = p && p.cost > 0 ? Math.round(qty * p.cost) : null;
+                return (
                 <tr key={pr.fac}>
-                  <td className="px-5 py-2.5 font-bold text-slate-700">{pr.fac}</td>
-                  <td className="px-3 py-2.5 text-right text-slate-600 tabular-nums whitespace-nowrap">{pr.lastDate ? pr.lastDate.y + '/' + pr.lastDate.mo + '/' + pr.lastDate.d : '—'}</td>
-                  <td className="px-5 py-2.5 text-right tabular-nums font-bold text-slate-700 whitespace-nowrap">{fmtQty(sum12(pr.qty12))}{pr.unit ? pr.unit : ''} ／ {yen(sum12(pr.sales12))}</td>
+                  <td className="px-5 py-2 font-bold text-slate-700 max-w-[13rem] truncate" title={pr.fac}>{pr.fac}</td>
+                  <td className="px-2 py-2 text-right text-slate-600 tabular-nums whitespace-nowrap">{pr.lastDate ? pr.lastDate.y + '/' + pr.lastDate.mo + '/' + pr.lastDate.d : '—'}</td>
+                  <td className="px-2 py-2 text-right tabular-nums text-slate-600 whitespace-nowrap">{fmtQty(qty)}{pr.unit ? pr.unit : ''}</td>
+                  <td className="px-2 py-2 text-right tabular-nums text-amber-700 font-bold whitespace-nowrap">{cost != null ? yen(cost) : '—'}</td>
+                  <td className="px-5 py-2 text-right tabular-nums font-bold text-slate-700 whitespace-nowrap">{yen(sales)}</td>
                 </tr>
-              ))}
+                );
+              })}
               {rows.length === 0 && (
-                <tr><td colSpan={3} className="px-5 py-8 text-center text-xs text-slate-600">直近12ヶ月の購入実績はありません</td></tr>
+                <tr><td colSpan={5} className="px-5 py-8 text-center text-xs text-slate-600">直近12ヶ月の購入実績はありません</td></tr>
               )}
             </tbody>
           </table>
@@ -4181,7 +4191,7 @@ const isoToJa = (iso) => {
 ============================================================ */
 const newPriceRevisionDraft = () => ({
   facility: '', rep: loadStorage(K.LAST_PRICE_REV_REP, ''), title: '価格改定のご案内', issued: todayISO(), note: '', items: [],
-  showCaseSize: false, showRate: true, showAmounts: true, showCat: true,
+  showCaseSize: false, showRate: true, showAmounts: true, showCat: true, showDiff: true,
 });
 // 利益率(%) = (価格-仕入)/価格*100。仕入・利益率から価格を逆算する式も用意。
 const marginPctOf = (price, cost) => (price > 0 ? Math.round((price - cost) / price * 1000) / 10 : 0);
@@ -4304,7 +4314,7 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
     facilityName: draft.facility, title: draft.title, issued: isoToJa(draft.issued),
     note: draft.note, items: draft.items, office: masters.settings.office, repName: draft.rep || '未設定',
     showCaseSize: !!draft.showCaseSize, showAmounts: draft.showAmounts !== false, showRate: draft.showRate !== false,
-    showCat: draft.showCat !== false,
+    showCat: draft.showCat !== false, showDiff: draft.showDiff !== false,
   });
   const validate = () => {
     if (draft.items.length === 0) { showToast('価格改定表に商品を追加してください', 'error'); return false; }
@@ -4531,6 +4541,15 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
                 金額{draft.showAmounts ? '表示中' : '非表示中'}
               </button>
               {draft.showAmounts && (
+                <button onClick={() => patch({ showDiff: !(draft.showDiff !== false) })}
+                  title={draft.showDiff !== false ? '価格差を非表示にする' : '価格差を表示する'}
+                  className={"inline-flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg border transition shrink-0 " +
+                    (draft.showDiff !== false ? 'border-sky-300 bg-sky-50 text-sky-700' : 'border-slate-200 text-slate-600 hover:bg-slate-100')}>
+                  {draft.showDiff !== false ? <Eye size={15} /> : <EyeOff size={15} />}
+                  価格差{draft.showDiff !== false ? '表示中' : '非表示中'}
+                </button>
+              )}
+              {draft.showAmounts && (
                 <button onClick={() => patch({ showRate: !(draft.showRate !== false) })}
                   title={draft.showRate !== false ? '変動率を非表示にする' : '変動率を表示する'}
                   className={"inline-flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg border transition shrink-0 " +
@@ -4549,7 +4568,7 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
                   {draft.showCaseSize && <th className="text-center font-bold px-1 py-2.5 w-12 whitespace-nowrap">入数</th>}
                   {draft.showAmounts && <th className="text-right font-bold px-1 py-2.5 w-20 whitespace-nowrap">現状価格</th>}
                   {draft.showAmounts && <th className="text-right font-bold px-1 py-2.5 w-20 whitespace-nowrap">改定価格</th>}
-                  {draft.showAmounts && <th className="text-right font-bold px-1 py-2.5 w-24 whitespace-nowrap">価格差</th>}
+                  {draft.showAmounts && draft.showDiff !== false && <th className="text-right font-bold px-1 py-2.5 w-24 whitespace-nowrap">価格差</th>}
                   {draft.showAmounts && draft.showRate !== false && <th className="text-right font-bold px-1 py-2.5 w-16 whitespace-nowrap">変動率</th>}
                   <th className="w-16"></th>
                 </tr>
@@ -4624,7 +4643,7 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
                           </div>
                         </td>
                       )}
-                      {draft.showAmounts && (
+                      {draft.showAmounts && draft.showDiff !== false && (
                         <td className="px-1 py-2.5 text-right tabular-nums font-extrabold text-sm text-slate-800">
                           {diff === 0 ? '―' : (diff > 0 ? '+' : '−') + num(Math.abs(diff))}
                         </td>
@@ -4639,7 +4658,7 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
                   );
                 })}
                 {draft.items.length === 0 && (
-                  <tr><td colSpan={2 + (draft.showCaseSize ? 1 : 0) + (draft.showAmounts ? 3 : 0) + (draft.showAmounts && draft.showRate !== false ? 1 : 0)} className="px-5 py-10 text-center text-xs text-slate-600">左の商品一覧から「＋追加」で価格改定表に入れてください</td></tr>
+                  <tr><td colSpan={2 + (draft.showCaseSize ? 1 : 0) + (draft.showAmounts ? 2 : 0) + (draft.showAmounts && draft.showDiff !== false ? 1 : 0) + (draft.showAmounts && draft.showRate !== false ? 1 : 0)} className="px-5 py-10 text-center text-xs text-slate-600">左の商品一覧から「＋追加」で価格改定表に入れてください</td></tr>
                 )}
               </tbody>
             </table>
@@ -4707,6 +4726,8 @@ function PriceCheckListPanel({ data, showToast, openPrint }) {
   const [checked, setChecked] = useState(() => new Set());
   const [sortKey, setSortKey] = useState('name');
   const [sortDir, setSortDir] = useState(1);
+  const [salesModalProd, setSalesModalProd] = useState(null);
+  const [busy, setBusy] = useState(false);
 
   const master = useMemo(() => {
     let list = data.products.slice().sort((a, b) => b.winSales - a.winSales);
@@ -4742,12 +4763,36 @@ function PriceCheckListPanel({ data, showToast, openPrint }) {
     return list;
   }, [data.products, checked, sortKey, sortDir]);
 
+  const buildHtml = () => buildPriceCheckListHtml({
+    issued: isoToJa(todayISO()),
+    items: selected.map(p => ({ name: p.name, cat: p.cat, unit: p.unit, price: p.lastPrice, cost: p.cost })),
+  });
   const handlePrint = () => {
     if (selected.length === 0) { showToast('商品を選択してください', 'error'); return; }
-    openPrint(buildPriceCheckListHtml({
-      issued: isoToJa(todayISO()),
-      items: selected.map(p => ({ name: p.name, cat: p.cat, unit: p.unit, price: p.lastPrice, cost: p.cost })),
-    }));
+    openPrint(buildHtml());
+  };
+  const handlePdf = async () => {
+    if (selected.length === 0) { showToast('商品を選択してください', 'error'); return; }
+    setBusy(true);
+    showToast('PDFを作成しています…', 'info');
+    try {
+      await exportPdf(buildHtml(), '価格確認リスト_' + todayCompact() + '.pdf');
+      showToast('PDFを保存しました');
+    } catch (e) {
+      showToast('PDFの作成に失敗しました。印刷ダイアログの「PDFとして保存」もお試しください', 'error', 7000);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const handleCsv = () => {
+    if (selected.length === 0) { showToast('商品を選択してください', 'error'); return; }
+    const head = ['商品名', '分類', '単位', '直近販売単価', '仕入単価', '粗利額', '粗利率'];
+    const lines = selected.map(p => {
+      const gross = p.lastPrice - p.cost;
+      const rate = p.lastPrice > 0 ? Math.round(gross / p.lastPrice * 1000) / 10 : '';
+      return [p.name, p.cat || '', p.unit || '', p.lastPrice || '', p.cost || '', p.lastPrice > 0 && p.cost > 0 ? gross : '', p.lastPrice > 0 && p.cost > 0 ? rate : ''];
+    });
+    downloadText('価格確認リスト_' + todayCompact() + '.csv', buildCsv([head, ...lines]), 'text/csv');
   };
 
   const Th = ({ k, children, className }) => (
@@ -4774,6 +4819,7 @@ function PriceCheckListPanel({ data, showToast, openPrint }) {
         <div className="divide-y divide-slate-50 max-h-[32rem] overflow-y-auto">
           {visibleMaster.map(m => {
             const on = checked.has(m.name);
+            const ls = productLastSaleInfo(data, m.name);
             return (
               <label key={m.name} className={"w-full text-left px-5 py-3.5 flex items-center gap-3 transition cursor-pointer " + (on ? 'bg-sky-50/60' : 'hover:bg-sky-50/30')}>
                 <input type="checkbox" checked={on} onChange={() => toggleCheck(m.name)}
@@ -4784,6 +4830,12 @@ function PriceCheckListPanel({ data, showToast, openPrint }) {
                     {m.cat}{m.lastPrice > 0 && <> ・ 現状価格 <b className="text-slate-700">{yen(m.lastPrice)}</b></>}
                     {m.cost > 0 && <> ・ 仕入 <b className="text-amber-700">{yen(m.cost)}</b></>}
                   </div>
+                  {ls && (
+                    <div className="mt-1 text-[11px] text-sky-600 font-bold underline decoration-dotted underline-offset-2 hover:text-sky-800"
+                      onClick={e => { e.preventDefault(); e.stopPropagation(); setSalesModalProd(m.name); }}>
+                      最終売上 {ls.date}・{ls.facility}（クリックで一覧）
+                    </div>
+                  )}
                 </div>
               </label>
             );
@@ -4798,6 +4850,14 @@ function PriceCheckListPanel({ data, showToast, openPrint }) {
           <div className="flex items-center gap-2">
             <button onClick={clearAll} disabled={selected.length === 0}
               className="text-xs font-bold text-slate-500 hover:text-rose-500 disabled:opacity-40 transition">全て外す</button>
+            <button onClick={handleCsv} disabled={selected.length === 0}
+              className="bg-white hover:bg-slate-50 active:scale-[.98] text-slate-700 border border-slate-200 px-3.5 py-2 rounded-xl shadow-sm text-xs font-bold transition inline-flex items-center gap-1.5 disabled:opacity-40">
+              <FileSpreadsheet size={14} /> CSV出力
+            </button>
+            <button onClick={handlePdf} disabled={selected.length === 0 || busy}
+              className="bg-white hover:bg-slate-50 active:scale-[.98] text-slate-700 border border-slate-200 px-3.5 py-2 rounded-xl shadow-sm text-xs font-bold transition inline-flex items-center gap-1.5 disabled:opacity-40">
+              <Download size={14} /> {busy ? '作成中…' : 'PDF保存'}
+            </button>
             <button onClick={handlePrint}
               className="bg-white hover:bg-slate-50 active:scale-[.98] text-slate-700 border border-slate-200 px-3.5 py-2 rounded-xl shadow-sm text-xs font-bold transition inline-flex items-center gap-1.5">
               <Printer size={14} /> 印刷
@@ -4837,6 +4897,7 @@ function PriceCheckListPanel({ data, showToast, openPrint }) {
           チェックした商品の直近販売単価・仕入単価・粗利額を一覧にして印刷できます（改定価格の入力はありません）。列見出しをクリックすると並び替えできます。
         </div>
       </Card>
+      {salesModalProd && <ProductSalesModal data={data} name={salesModalProd} onClose={() => setSalesModalProd(null)} />}
     </div>
   );
 }
