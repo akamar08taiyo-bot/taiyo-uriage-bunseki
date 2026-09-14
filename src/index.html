@@ -21,6 +21,9 @@
       width: 210mm !important; max-width: none !important;
     }
     .no-print { display: none !important; }
+    /* 一括発注書のように帳票を複数並べたときは、1施設ごとにページを分ける */
+    #print-content-holder .doc { page-break-after: always; break-after: page; }
+    #print-content-holder .doc:last-child { page-break-after: auto; break-after: auto; }
   }
   * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   ::-webkit-scrollbar { height: 8px; width: 10px; }
@@ -49,7 +52,7 @@ import {
   Printer, X, Search, AlertTriangle, PhoneCall, ChevronDown, ChevronUp, ChevronRight,
   FileSpreadsheet, Database, Trash2, Download, Info, CheckCircle2, Truck,
   TrendingDown, TrendingUp, FileUp, ClipboardPaste, HardDrive, Sun, ArrowUpRight,
-  ArrowDownRight, JapaneseYen, Percent, Coins, ClipboardList, RotateCcw, Pencil, FilePlus, CalendarDays, Filter, Eye, EyeOff, RefreshCw, Calculator, Delete, Target, Plus, Folder
+  ArrowDownRight, JapaneseYen, Percent, Coins, ClipboardList, RotateCcw, Pencil, FilePlus, CalendarDays, Filter, Eye, EyeOff, RefreshCw, Calculator, Delete, Target, Plus, Folder, Layers
 } from 'lucide-react';
 
 /* ============================================================
@@ -85,6 +88,7 @@ const K = {
   DRAFT_ORDER: 'taiyo_uriage_draft_order_v1',
   DRAFT_QUOTE: 'taiyo_uriage_draft_quote_v1',
   DRAFT_PRICEREV: 'taiyo_uriage_draft_pricerev_v1',
+  DRAFT_BULKORDER: 'taiyo_uriage_draft_bulkorder_v1', // 一括発注書の条件・選択中の施設
 };
 const saveStorageCache = {};
 const loadStorage = (key, fallback) => {
@@ -168,10 +172,15 @@ const portalSessionOffice = () => {
   } catch { return null; }
 };
 
-const DEFAULT_SETTINGS = { redPct: -50, yellowPct: -25, bufferDays: 7, stockMonths: 1, alertMinBase: 3000, office: null, reps: [], tabLabels: {} };
+// 取込データの保持期間（年）。0 は「全期間を保持」。
+// localStorage は 5MB 前後が上限で、明細1行あたり約150バイト。5年分（2〜3万行）が実用上の上限のため、
+// 既定を5年にしてそれより古い明細は取り込まない（設定で変更できる）。
+const RETENTION_OPTIONS = [[0, '全期間を保持'], [1, '直近1年分'], [2, '直近2年分'], [3, '直近3年分'], [5, '直近5年分']];
+const RETENTION_VALUES = new Set(RETENTION_OPTIONS.map(o => o[0]));
+const DEFAULT_SETTINGS = { redPct: -50, yellowPct: -25, bufferDays: 7, stockMonths: 1, alertMinBase: 3000, office: null, reps: [], tabLabels: {}, retentionYears: 5 };
 const defaultMasters = () => ({
   customers: {}, catOverrides: {}, catRules: [], priceOverrides: {}, itemHandling: {},
-  itemFacilityHandling: {}, stockQtyOverrides: {}, stockMonthOverrides: {},
+  itemFacilityHandling: {}, stockQtyOverrides: {}, stockMonthOverrides: {}, caseSizes: {},
   settings: { ...DEFAULT_SETTINGS },
 });
 const normalizeMasters = (m) => {
@@ -206,6 +215,13 @@ const normalizeMasters = (m) => {
     for (const prod in src) { const n = Number(src[prod]); if (isFinite(n) && n > 0) out[prod] = n; }
     return out;
   };
+  // 入数（1ケースに何箱入っているか等）。売上CSVには無い情報なので、一度入力したら覚えておき
+  // 発注書・見積書・価格改定の入数欄に自動で入れる。
+  const normCaseSizes = (v) => {
+    const src = obj(v), out = {};
+    for (const prod in src) { const t = String(src[prod] ?? '').trim(); if (t) out[prod] = t.slice(0, 24); }
+    return out;
+  };
   return {
     customers: obj(m.customers),
     catOverrides: obj(m.catOverrides),
@@ -215,11 +231,14 @@ const normalizeMasters = (m) => {
     itemFacilityHandling: normFacilityHandling(m.itemFacilityHandling),
     stockQtyOverrides: normStockQtyOverrides(m.stockQtyOverrides),
     stockMonthOverrides: normStockMonthOverrides(m.stockMonthOverrides),
+    caseSizes: normCaseSizes(m.caseSizes),
     settings: {
       ...DEFAULT_SETTINGS, ...obj(m.settings),
       office: (m.settings && officeByName(m.settings.office)) ? m.settings.office : null,
       reps: Array.isArray(m.settings && m.settings.reps) ? m.settings.reps : [],
       tabLabels: obj(m.settings && m.settings.tabLabels),
+      retentionYears: RETENTION_VALUES.has(Number(m.settings && m.settings.retentionYears))
+        ? Number(m.settings.retentionYears) : DEFAULT_SETTINGS.retentionYears,
     },
   };
 };
@@ -1126,11 +1145,13 @@ function buildFacilityOrderHtml(m) {
   const sc = m.showCaseSize !== false;
   const scat = m.showCat !== false;   // カテゴリ列の表示（デフォルトON）
   const sin = !!m.showItemNote;       // 商品ごとの備考（画面のトグルに従う。既定は非表示）
+  const sl = !!m.showLast;            // 前回購入（日付・数量）の参考列。既定は非表示
   const o = officeByName(m.office);
-  // 数量は施設側が手書きで記入する欄。入力済みなら数字、未入力なら空欄のまま
-  const qtyCell = (q) => (q === '' || q === null || q === undefined ? '' : num(q));
+  // 数量は施設側が手書きで記入する欄。入力済みなら数字、未入力なら空欄のまま。
+  // 「ケース」などの単位では 0.5 ケースのような小数もありうるので四捨五入では潰さない
+  const qtyCell = (q) => (q === '' || q === null || q === undefined ? '' : fmtQty(Number(q) || 0).toLocaleString('ja-JP'));
   const ed = 'class="editable" contenteditable="true"';
-  const orderColCount = 3 + (scat ? 1 : 0) + (sc ? 1 : 0) + (sp ? 1 : 0);
+  const orderColCount = 3 + (scat ? 1 : 0) + (sc ? 1 : 0) + (sp ? 1 : 0) + (sl ? 1 : 0);
   const rows = m.items.map((it, i) => {
     if (it.isSpacer) return `<tr style="height:6mm;"><td colspan="${orderColCount}" style="border:1px solid #bfdbfe;border-left:none;border-right:none;"></td></tr>`;
     return `
@@ -1144,21 +1165,23 @@ function buildFacilityOrderHtml(m) {
       <td style="${tdR}background:#fffdf5;" ${ed}>${qtyCell(it.qty)}</td>
       <td style="${td}text-align:center;" ${ed}>${escapeHTML(it.unit)}</td>
       ${sp ? `<td style="${tdR}" ${ed}>${it.price > 0 ? yen(it.price) : ''}</td>` : ''}
+      ${sl ? `<td style="${td}text-align:center;font-size:8pt;color:#6b7280;white-space:nowrap;" ${ed}>${escapeHTML(it.lastLabel || '')}</td>` : ''}
     </tr>`;
   }).join('');
-  const colW = { cat: scat ? 15 : 0, case: sc ? 9 : 0, qty: 11, unit: 8, price: sp ? 13 : 0 };
-  const nameW = 100 - colW.cat - colW.case - colW.qty - colW.unit - colW.price;
+  const colW = { cat: scat ? 14 : 0, case: sc ? 9 : 0, qty: 10, unit: 8, price: sp ? 12 : 0, last: sl ? 17 : 0 };
+  const nameW = 100 - colW.cat - colW.case - colW.qty - colW.unit - colW.price - colW.last;
   const colgroup = '<colgroup>' +
     (scat ? `<col style="width:${colW.cat}%">` : '') +
     `<col style="width:${nameW}%">` +
     (sc ? `<col style="width:${colW.case}%">` : '') +
     `<col style="width:${colW.qty}%"><col style="width:${colW.unit}%">` +
     (sp ? `<col style="width:${colW.price}%">` : '') +
+    (sl ? `<col style="width:${colW.last}%">` : '') +
     '</colgroup>';
   const noteHtml = String(m.note || '').split('\n').map(l => escapeHTML(l)).join('<br>');
   return `
   <style>.editable{outline:1px dashed transparent;outline-offset:1px;cursor:text;}.editable:hover,.editable:focus{outline-color:#93c5fd;background:rgba(219,234,254,.35);}</style>
-  <div class="doc" data-fit-page="1" style="width:210mm;min-height:297mm;padding:14mm 13mm;background:#fff;box-sizing:border-box;font-family:'BIZ UDPMincho','Yu Mincho','Hiragino Mincho ProN',serif;color:#1f2937;font-size:9.5pt;line-height:1.6;">
+  <div class="doc" ${m.fitPage === false ? '' : 'data-fit-page="1"'} style="width:210mm;min-height:297mm;padding:14mm 13mm;background:#fff;box-sizing:border-box;font-family:'BIZ UDPMincho','Yu Mincho','Hiragino Mincho ProN',serif;color:#1f2937;font-size:9.5pt;line-height:1.6;">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;">
       <div style="flex:1;">
         <div style="font-size:22pt;letter-spacing:0.5em;color:#1e3a8a;border-bottom:1.5px solid #3b82f6;padding-bottom:2mm;display:inline-block;" ${ed}>${escapeHTML(m.title || '発　注　書')}</div>
@@ -1182,7 +1205,7 @@ function buildFacilityOrderHtml(m) {
 
     <table style="width:100%;border-collapse:collapse;margin-top:7mm;table-layout:fixed;">
       ${colgroup}
-      <thead><tr>${scat ? `<th style="${th}">カテゴリ</th>` : ''}<th style="${th}">商品名</th>${sc ? `<th style="${th}">入数</th>` : ''}<th style="${th}">数量</th><th style="${th}">単位</th>${sp ? `<th style="${th}">単価（税抜）</th>` : ''}</tr></thead>
+      <thead><tr>${scat ? `<th style="${th}">カテゴリ</th>` : ''}<th style="${th}">商品名</th>${sc ? `<th style="${th}">入数</th>` : ''}<th style="${th}">数量</th><th style="${th}">単位</th>${sp ? `<th style="${th}">単価（税抜）</th>` : ''}${sl ? `<th style="${th}">前回のご注文</th>` : ''}</tr></thead>
       <tbody>${rows}</tbody>
     </table>
     ${m.items.some(it => !it.isSpacer && !String(it.name).trim()) ? `<div style="margin-top:2mm;font-size:7.5pt;color:#9ca3af;">※商品名が空欄の行は、リストにない商品を手書きでご記入いただく欄です。</div>` : ''}
@@ -3773,7 +3796,56 @@ function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs
   const [preview, setPreview] = useState(null);
   const [result, setResult] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmPrune, setConfirmPrune] = useState(false);
   const fileRef = useRef(null);
+
+  // 取込済みデータの期間と保存容量。5年分（2〜3万行）で localStorage の上限に近づくため目安を出す
+  const stats = useMemo(() => {
+    let min = null, max = null;
+    for (let i = 0; i < rows.length; i++) {
+      const d = parseDateStr(rows[i][1]);
+      if (!d) continue;
+      if (!min || d.sort < min.sort) min = d;
+      if (!max || d.sort > max.sort) max = d;
+    }
+    const bytes = storageUsage();
+    return { min, max, bytes, pct: Math.min(100, Math.round(bytes / STORAGE_LIMIT * 100)),
+      months: (min && max) ? (max.idx - min.idx + 1) : 0 };
+  }, [rows]);
+
+  const retention = Number(masters.settings.retentionYears) || 0;
+  // 保持期間の起点は「取り込んだ中で最も新しい売上月」。今日ではなくデータ側に合わせる
+  // （年度末にまとめて取り込むときなど、暦の今日を基準にすると直近分まで落ちてしまう）
+  const cutoffIdx = (retention > 0 && stats.max) ? stats.max.idx - (retention * 12 - 1) : null;
+  const oldCount = useMemo(() => {
+    if (cutoffIdx == null) return 0;
+    let n = 0;
+    for (let i = 0; i < rows.length; i++) { const d = parseDateStr(rows[i][1]); if (d && d.idx < cutoffIdx) n++; }
+    return n;
+  }, [rows, cutoffIdx]);
+  const setRetention = (v) => setMasters(prev => ({ ...prev, settings: { ...prev.settings, retentionYears: v } }));
+  const doPrune = () => {
+    setRows(prev => prev.filter(r => { const d = parseDateStr(r[1]); return !d || d.idx >= cutoffIdx; }));
+    setConfirmPrune(false);
+    showToast(num(oldCount) + '行の古い明細を削除しました');
+  };
+  // これから取り込むCSVのうち、保持期間より古くて取り込まれない行数
+  const previewTooOld = useMemo(() => {
+    if (!preview || retention <= 0) return 0;
+    let maxIdx = stats.max ? stats.max.idx : -1;
+    for (let i = 0; i < preview.rowsParsed.length; i++) {
+      const d = parseDateStr(preview.rowsParsed[i].arr[1]);
+      if (d && d.idx > maxIdx) maxIdx = d.idx;
+    }
+    if (maxIdx < 0) return 0;
+    const cut = maxIdx - (retention * 12 - 1);
+    let n = 0;
+    for (let i = 0; i < preview.rowsParsed.length; i++) {
+      const d = parseDateStr(preview.rowsParsed[i].arr[1]);
+      if (d && d.idx < cut) n++;
+    }
+    return n;
+  }, [preview, retention, stats]);
 
   const doDeleteAll = () => {
     removeStorage([K.ROWS, K.MASTERS, K.META, K.DOCS]);
@@ -3820,11 +3892,26 @@ function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs
     if (!p) return;
     const remaining = rowKeyCounts(rows);
     const added = [];
-    let skipped = 0;
+    let skipped = 0, tooOld = 0;
     const changed = {};   // 新規・更新した顧客だけ
     const cur = masters.customers;
+    // 保持期間より古い明細は取り込まない。5年分で localStorage の上限（5MB前後）に近づくため、
+    // 何年分を手元に置くかを設定で決められるようにしている（0 = 全期間を保持）。
+    let cutoff = null;
+    if (retention > 0) {
+      let maxIdx = stats.max ? stats.max.idx : -1;
+      for (let i = 0; i < p.rowsParsed.length; i++) {
+        const d = parseDateStr(p.rowsParsed[i].arr[1]);
+        if (d && d.idx > maxIdx) maxIdx = d.idx;
+      }
+      if (maxIdx >= 0) cutoff = maxIdx - (retention * 12 - 1);
+    }
     for (let i = 0; i < p.rowsParsed.length; i++) {
       const pr = p.rowsParsed[i];
+      if (cutoff != null) {
+        const d = parseDateStr(pr.arr[1]);
+        if (d && d.idx < cutoff) { tooOld++; continue; }
+      }
       const name = pr.arr[2];
       let c = changed[name] || cur[name];
       if (!c) {
@@ -3852,7 +3939,7 @@ function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs
     setResult({
       type: 'ok', file: p.fileName, encoding: p.encoding,
       rowsTotal: p.rowsParsed.length + p.badRows.length,
-      added: added.length, skipped, bad: p.badRows, period: p.period,
+      added: added.length, skipped, tooOld, retention, bad: p.badRows, period: p.period,
       facilities: fac, persons: per, uncertain: unc, unassigned: unas,
     });
     setPreview(null);
@@ -3869,6 +3956,55 @@ function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs
           <Trash2 size={13} /> 取り込んだデータを削除
         </button>
       </div>
+
+      {/* 取込済みデータの期間と容量。5年分をためる使い方を想定した目安を出す */}
+      <Card className="px-5 py-4 space-y-3">
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <span className="inline-flex items-center justify-center w-8 h-8 rounded-xl bg-sky-100 text-sky-600 shrink-0"><HardDrive size={16} /></span>
+          <div className="flex-1 min-w-[190px]">
+            <div className="font-bold text-sm text-slate-800">取り込み済みのデータ</div>
+            <div className="text-[11px] text-slate-600 tabular-nums">
+              {stats.min
+                ? <>期間 {stats.min.y}/{stats.min.mo}/{stats.min.d} 〜 {stats.max.y}/{stats.max.mo}/{stats.max.d}（約{Math.round(stats.months / 12 * 10) / 10}年分・{num(stats.months)}ヶ月）</>
+                : 'まだデータがありません'}
+            </div>
+          </div>
+          <div className="text-right shrink-0">
+            <div className="text-[11px] text-slate-600 font-bold tabular-nums">保存容量 {Math.round(stats.bytes / 1024 / 102.4) / 10}MB / 約5MB</div>
+            <div className="mt-1 w-40 h-2 rounded-full bg-slate-100 overflow-hidden">
+              <div className={"h-full rounded-full " + (stats.pct >= 85 ? 'bg-rose-500' : stats.pct >= 60 ? 'bg-amber-400' : 'bg-emerald-500')}
+                style={{ width: stats.pct + '%' }} />
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 flex-wrap border-t border-slate-100 pt-3">
+          <label className="inline-flex items-center gap-2 text-xs text-slate-600 font-bold"
+            title="これより古い明細は取り込みません。ブラウザの保存容量には上限があるため、手元に置く期間を決めておきます">
+            手元に置く期間
+            <select value={retention} onChange={e => setRetention(Number(e.target.value))}
+              className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-700 focus:border-blue-400 focus:outline-none">
+              {RETENTION_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </label>
+          {oldCount > 0 && (
+            <button onClick={() => setConfirmPrune(true)}
+              className="px-3.5 py-2 rounded-xl border border-slate-200 bg-white text-rose-600 hover:border-rose-300 hover:bg-rose-50 shadow-sm text-xs font-bold transition inline-flex items-center gap-1.5">
+              <Trash2 size={13} /> 期間より古い {num(oldCount)}行 を削除
+            </button>
+          )}
+          <div className="text-[11px] text-slate-600 leading-relaxed flex-1 min-w-[200px]">
+            {retention > 0
+              ? <>直近{retention}年より古い明細は取り込みません（起点は取込済みの最新売上月）。5年分を入れたいときは「直近5年分」にしてください。</>
+              : <>期間の制限なしで取り込みます。容量が上限に達すると保存できなくなるため、5年を超える場合はご注意ください。</>}
+          </div>
+        </div>
+        {stats.pct >= 85 && (
+          <div className="flex items-start gap-2 bg-rose-50 border border-rose-200 rounded-xl px-4 py-2.5 text-rose-700 text-[11px] font-bold leading-relaxed">
+            <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+            保存容量が残りわずかです。手元に置く期間を短くして古い明細を削除するか、設定画面でJSONバックアップを取ってから整理してください。
+          </div>
+        )}
+      </Card>
       <div
         onDragOver={e => { e.preventDefault(); setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
@@ -3927,6 +4063,9 @@ function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs
           <div className="p-5 space-y-2.5 text-sm text-slate-600">
             <div className="tabular-nums">📄 {result.file} — <b className="text-slate-800">{num(result.rowsTotal)}行</b>を読み込みました（{result.encoding}）</div>
             <div className="tabular-nums">新規追加: <b className="text-slate-800">{num(result.added)}行</b> ／ 重複スキップ: <b className="text-slate-800">{num(result.skipped)}行</b>（売上番号＋商品名＋数量＋金額で重複判定）</div>
+            {result.tooOld > 0 && (
+              <div className="tabular-nums">保持期間（直近{result.retention}年）より古いため取り込まなかった行: <b className="text-slate-800">{num(result.tooOld)}行</b></div>
+            )}
             <div className="tabular-nums">期間: {result.period} ／ 施設: {num(result.facilities)}件 ／ 個人（集計対象外）: {num(result.persons)}件</div>
             {result.bad.length > 0 && (
               <div className="bg-rose-50 border border-rose-100 rounded-xl px-4 py-2.5 text-xs text-rose-700">
@@ -3957,6 +4096,7 @@ function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs
         <Info size={16} className="text-blue-500 shrink-0 mt-0.5" />
         <div className="leading-relaxed">
           取込は<b className="text-slate-700">蓄積型</b>です。同じCSVを二度入れても、売上番号＋商品名＋数量＋金額で重複を自動スキップするので二重計上になりません。<br />
+          <b className="text-slate-700">5年分をためたいとき</b>は、年度ごと（または半年ごと）のCSVを続けて入れてください。順番は問いません。重複は自動で除かれます。<br />
           取込前に先頭5行のプレビュー確認画面を挟みます。マイナスの行（返品・赤伝）はそのまま取り込むと自動で相殺されます。
         </div>
       </div>
@@ -3979,6 +4119,9 @@ function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs
                 <span className="bg-slate-100 text-slate-600 font-bold px-2.5 py-1 rounded-full tabular-nums">期間 {preview.period}</span>
                 {preview.badRows.length > 0 && (
                   <span className="bg-rose-50 text-rose-600 font-bold px-2.5 py-1 rounded-full tabular-nums">不正な行 {num(preview.badRows.length)}行（読み飛ばします）</span>
+                )}
+                {previewTooOld > 0 && (
+                  <span className="bg-amber-50 text-amber-700 font-bold px-2.5 py-1 rounded-full tabular-nums">保持期間（直近{retention}年）より古い {num(previewTooOld)}行（取り込みません）</span>
                 )}
               </div>
               <div>
@@ -4058,6 +4201,36 @@ function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs
         </div>
       )}
 
+      {/* 保持期間より古い明細の削除確認 */}
+      {confirmPrune && (
+        <div className="fixed inset-0 z-40 bg-slate-600/50 backdrop-blur-sm overflow-auto py-8 px-4 no-print">
+          <div className="max-w-lg mx-auto bg-white rounded-2xl shadow-2xl overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-3 bg-amber-50">
+              <span className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-amber-100 text-amber-600"><CalendarDays size={17} /></span>
+              <div className="flex-1">
+                <div className="font-extrabold text-slate-800">古い明細を削除しますか？</div>
+                <div className="text-[11px] text-slate-600">保持期間（直近{retention}年）より前の売上明細だけを消します</div>
+              </div>
+              <button onClick={() => setConfirmPrune(false)} className="text-slate-600 hover:text-slate-600 transition"><X size={20} /></button>
+            </div>
+            <div className="px-6 py-4 text-sm text-slate-600 space-y-2">
+              <div><b className="text-rose-600 tabular-nums">{num(oldCount)}行</b>（{cutoffIdx != null ? idxLabel(cutoffIdx) : ''}より前）を削除します。施設・担当・分類などの設定と、保存済みの帳票はそのまま残ります。</div>
+              <div>削除した分の売上は、ダッシュボードや施設別の過去集計から消えます。必要になったら同じCSVを入れ直せば戻せます。</div>
+              <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-amber-800 text-xs font-bold">
+                <AlertTriangle size={15} className="shrink-0" />
+                心配なときは、設定画面の「JSONエクスポート」で先に控えを取ってください
+              </div>
+            </div>
+            <div className="px-6 py-4 flex gap-2 justify-end border-t border-slate-100 flex-wrap">
+              <button onClick={doPrune}
+                className="bg-rose-600 hover:bg-rose-700 active:scale-[.98] text-white px-4 py-2.5 rounded-xl shadow-sm shadow-rose-200 text-sm font-bold transition">削除する</button>
+              <button onClick={() => setConfirmPrune(false)}
+                className="bg-slate-500 hover:bg-slate-600 active:scale-[.98] text-white px-4 py-2.5 rounded-xl shadow-sm text-sm font-bold transition">キャンセル</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 取り込んだデータの削除確認 */}
       {confirmDelete && (
         <div className="fixed inset-0 z-40 bg-slate-600/50 backdrop-blur-sm overflow-auto py-8 px-4 no-print">
@@ -4115,6 +4288,7 @@ const newDocDraft = (type, facility) => ({
   showPrices: false,   // 発注書・見積書とも初期状態は金額なし
   showTotal: false,    // 見積書の合計金額欄。デフォルト非表示（見積明細の表示切替ボタンで切り替え）
   showCaseSize: false, // 入数列の表示/非表示（デフォルト非表示）
+  showLast: false,      // 発注書の「前回のご注文」参考列（デフォルト非表示）
   showCat: true,        // カテゴリ列の表示/非表示（デフォルト表示）
   taxIncluded: false,   // 見積書はデフォルト税抜表記。チェックで税込に切替
 });
@@ -4123,6 +4297,14 @@ const newDocDraft = (type, facility) => ({
 // 入力中のIME変換やカーソル位置が別の行に引きずられる。行ごとに不変のidを持たせる。
 let _rowSeq = 0;
 const newRowId = () => 'r' + (++_rowSeq) + '-' + Date.now().toString(36);
+// 発注書の「前回のご注文」欄の文言（例: 2026/7/31 3ケース）。
+// 施設×商品の最終取引（buildAnalytics の pair、または一括発注書の集計）から作る。
+const lastOrderLabel = (src) => {
+  if (!src || !src.lastDate) return '';
+  const d = src.lastDate;
+  const q = Number(src.lastQty) || 0;
+  return d.y + '/' + d.mo + '/' + d.d + (q > 0 ? ' ' + fmtQty(q).toLocaleString('ja-JP') + (src.unit || '') : '');
+};
 // 商品ごとの最終売上（日付・施設）。施設×商品ペアのうち最新のものを採用。
 function productLastSaleInfo(data, prodName) {
   const p = data.prodByName.get(prodName);
@@ -4281,7 +4463,8 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
     if (inItems.has(m.name)) { showToast('「' + m.name + '」はすでに明細にあります', 'info'); return; }
     const cur = Math.round(m.lastPrice) || 0;
     const rememberedCost = lastNewCostByProduct.has(m.name) ? lastNewCostByProduct.get(m.name) : '';
-    setDraft(prev => ({ ...prev, items: [...prev.items, { rid: newRowId(), name: m.name, cat: m.cat || '', unit: m.unit || '', caseSize: '', cost: Math.round(m.cost) || 0, currentPrice: cur, newPrice: cur, newCost: rememberedCost, newMarginPct: '' }] }));
+    setDraft(prev => ({ ...prev, items: [...prev.items, { rid: newRowId(), name: m.name, cat: m.cat || '', unit: m.unit || '',
+      caseSize: (masters.caseSizes && masters.caseSizes[m.name]) || '', cost: Math.round(m.cost) || 0, currentPrice: cur, newPrice: cur, newCost: rememberedCost, newMarginPct: '' }] }));
     if (rememberedCost !== '') showToast('前回の新仕入（' + yen(rememberedCost) + '）を自動入力しました', 'info', 2500);
   };
   // 新仕入・新利益率が両方入力されたら改定価格を自動算出（新仕入 ÷ (1 - 新利益率)）。
@@ -4922,7 +5105,7 @@ function PriceCheckListPanel({ data, showToast, openPrint }) {
   );
 }
 
-function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, showToast, openPrint, goImport }) {
+function DocComposer({ docType, data, masters, setMasters, draft, setDraft, docs, setDocs, showToast, openPrint, goImport }) {
   const isQuote = docType === 'quote';
   // 見積書は金額を常時表示する（発注書は従来通りトグルで切替）。
   const priceOn = isQuote ? true : draft.showPrices;
@@ -5004,7 +5187,11 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
   const patch = (p) => setDraft(prev => ({ ...prev, ...p }));
   const addItem = (m) => {
     if (inItems.has(m.name)) { showToast('「' + m.name + '」はすでに明細にあります', 'info'); return; }
-    setDraft(prev => ({ ...prev, items: [...prev.items, { rid: newRowId(), name: m.name, cat: m.cat || '', note: '', qty: isQuote ? 1 : '', unit: m.unit || '', caseSize: '', price: Math.round(m.price) || 0, cost: Math.round(m.cost) || 0 }] }));
+    const pair = facPairs.get(m.name);
+    setDraft(prev => ({ ...prev, items: [...prev.items, { rid: newRowId(), name: m.name, cat: m.cat || '', note: '', qty: isQuote ? 1 : '', unit: m.unit || '',
+      // 入数は売上データに無いので、一度入力して覚えさせた値（入数マスタ）を引き当てる
+      caseSize: (masters.caseSizes && masters.caseSizes[m.name]) || '',
+      lastLabel: lastOrderLabel(pair), price: Math.round(m.price) || 0, cost: Math.round(m.cost) || 0 }] }));
   };
   const addBlank = () => setDraft(prev => ({ ...prev, items: [...prev.items, { rid: newRowId(), name: '', cat: '', note: '', qty: isQuote ? 1 : '', unit: '', caseSize: '', price: 0 }] }));
   // 行と行の間に空白（見た目の区切り）を挿入する。商品ではないので集計・印刷では番号を振らない
@@ -5024,6 +5211,17 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
     return { ...prev, items };
   });
   const total = draft.items.reduce((s, it) => it.isSpacer ? s : s + (Number(it.qty) || 0) * (it.price || 0), 0);
+  // 入数は毎回入れ直すのが手間なので、入力したら商品ごとに覚えておく（次回から自動で入る）
+  const rememberCaseSize = (name, v) => {
+    const key = String(name || '').trim();
+    if (!key) return;
+    setMasters(prev => {
+      const next = { ...(prev.caseSizes || {}) };
+      const t = String(v || '').trim();
+      if (t) next[key] = t.slice(0, 24); else delete next[key];
+      return { ...prev, caseSizes: next };
+    });
+  };
 
   const buildHtml = () => {
     // 商品名が空欄の行も、施設側が手書きで記入できるようそのまま印刷に含める。
@@ -5031,7 +5229,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
     const common = {
       facilityName: draft.facility, facilityAddress: draft.facilityAddress || '',
       facilityTel: draft.facilityTel || '', facilityFax: draft.facilityFax || '', repName: repName || '未設定', items,
-      showPrices: priceOn, showCaseSize: !!draft.showCaseSize, issued: isoToJa(draft.issued),
+      showPrices: priceOn, showCaseSize: !!draft.showCaseSize, showLast: !!draft.showLast, issued: isoToJa(draft.issued),
       note: draft.note, title: draft.title, office: masters.settings.office,
       showCat: draft.showCat !== false, showItemNote: !!draft.showItemNote,
     };
@@ -5361,6 +5559,15 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                   {draft.showCaseSize ? <Eye size={15} /> : <EyeOff size={15} />}
                   入数{draft.showCaseSize ? '表示中' : '非表示中'}
                 </button>
+                {!isQuote && (
+                  <button onClick={() => patch({ showLast: !draft.showLast })}
+                    title={draft.showLast ? '前回のご注文（日付・数量）を非表示にする' : '前回のご注文（日付・数量）を帳票に載せる'}
+                    className={"inline-flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg border transition shrink-0 " +
+                      (draft.showLast ? 'border-sky-300 bg-sky-50 text-sky-700' : 'border-slate-200 text-slate-600 hover:bg-slate-100')}>
+                    {draft.showLast ? <Eye size={15} /> : <EyeOff size={15} />}
+                    前回のご注文{draft.showLast ? '表示中' : '非表示中'}
+                  </button>
+                )}
                 <button onClick={() => patch({ showItemNote: !draft.showItemNote })}
                   title={draft.showItemNote ? '商品ごとの備考欄を非表示にする' : '商品ごとの備考欄を表示する'}
                   className={"inline-flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg border transition shrink-0 " +
@@ -5447,6 +5654,8 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
                       {draft.showCaseSize && (
                         <td className="px-1 py-2.5">
                           <input value={it.caseSize || ''} onChange={e => setItem(i, { caseSize: e.target.value })}
+                            onBlur={e => rememberCaseSize(it.name, e.target.value)}
+                            title="1ケースに何箱入っているかなど。入力すると商品ごとに記憶し、次回から自動で入ります"
                             className="h-12 w-full px-2 rounded-lg border border-slate-200 text-sm text-slate-700 font-bold text-center placeholder:font-normal placeholder:text-slate-400 focus:border-sky-400 focus:outline-none" />
                         </td>
                       )}
@@ -5546,6 +5755,586 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
         </div>
       )}
       {salesModalProd && <ProductSalesModal data={data} name={salesModalProd} onClose={() => setSalesModalProd(null)} />}
+    </div>
+  );
+}
+
+/* ============================================================
+   画面: 一括発注書
+   売上データに入っている施設の発注書を、まとめて一度に作る画面。
+   - 「直近の売上」をどこまでさかのぼるかを 半年 / 1年 / 2年 / 3年 / 5年 / 全期間 から選ぶ。
+     選んだ期間に購入実績のある商品だけが、その施設の発注書に載る。
+   - 施設は検索・一覧から複数選択。施設ごとに商品を外す（発注書に載せない）こともできる。
+   - 金額（単価）・入数・カテゴリ・前回のご注文 の各列は、全施設まとめて表示/非表示を切り替えられる。
+   - 単価は期間内の直近販売価格が入るが、価格改定などで実勢と違うことがあるため直接数字で直せる。
+     直した単価は「全施設に反映」でまとめて適用できる。
+============================================================ */
+// 直近売上をさかのぼる月数。0 は全期間
+const BULK_PERIODS = [[6, '半年'], [12, '1年'], [24, '2年'], [36, '3年'], [60, '5年'], [0, '全期間']];
+// 数量欄に何を入れて印刷するか
+const BULK_QTY_MODES = [['blank', '空欄（施設が記入）'], ['last', '前回と同じ数量'], ['avg', '1回あたりの平均']];
+const BULK_SORTS = [['sales', '売上が多い順'], ['qty', '数量が多い順'], ['cat', 'カテゴリ順'], ['name', '商品名順'], ['date', '購入が新しい順']];
+// 施設名と商品名を1つのキーにまとめる。区切りは商品名・施設名に現れない NUL を使う
+// （ハイフン等で連結すると「A-1」＋「B」と「A」＋「1-B」が同じキーになり、単価の手修正が混ざる）
+const bulkKey = (fac, prod) => fac + '\u0000' + prod;
+
+const newBulkDraft = () => ({
+  months: 12,            // 直近の売上をさかのぼる月数（BULK_PERIODS）
+  issued: todayISO(),
+  title: '発　注　書',
+  note: DEFAULT_ORDER_NOTE,
+  selected: [],          // 発注書を作る施設名の配列
+  excluded: {},          // { 施設名: [外した商品名, ...] }
+  priceEdits: {},        // { bulkKey: 単価 } 直近単価が実勢と違うときの手修正
+  qtyEdits: {},          // { bulkKey: 数量 }
+  showPrices: false,     // 単価列（初期は金額なし。発注書単体と同じ既定）
+  showCaseSize: false,   // 入数列
+  showCat: true,         // カテゴリ列
+  showLast: false,       // 前回のご注文（日付・数量）
+  qtyMode: 'blank',
+  minTimes: 1,           // 期間内の購入回数がこれ未満の商品は載せない
+  maxItems: 0,           // 1施設あたりの上限品目数（0 = 制限なし）
+  sortBy: 'sales',
+  fitPage: true,         // 1施設を必ずA4 1枚に収める
+});
+
+function BulkOrderView({ data, masters, setMasters, draft, setDraft, showToast, openPrint, sendToOrderDraft, goImport }) {
+  const [q, setQ] = useState('');
+  const [repFilter, setRepFilter] = useState('all');
+  const [openFac, setOpenFac] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const patch = (p) => setDraft(prev => ({ ...prev, ...p }));
+
+  // 期間内の購入実績を施設ごと・商品ごとに集計する。
+  // buildAnalytics の12ヶ月窓（sales12 等）は5年分をさかのぼれないので、明細を直接走査する。
+  const bulk = useMemo(() => {
+    if (data.empty) return { facs: [], fromIdx: null, toIdx: null };
+    const months = Number(draft.months) || 0;
+    const toIdx = data.baseIdx;
+    const fromIdx = months > 0 ? toIdx - months + 1 : -Infinity;
+    const minTimes = Number(draft.minTimes) || 1;
+    const facs = [];
+    for (const f of data.facilities) {
+      const m = new Map();
+      let sales = 0;
+      for (let i = 0; i < f.rows.length; i++) {
+        const r = f.rows[i];
+        const d = parseDateStr(r[1]);
+        if (!d || d.idx < fromIdx || d.idx > toIdx) continue;
+        const pname = r[3];
+        let it = m.get(pname);
+        if (!it) {
+          it = { name: pname, qty: 0, amount: 0, orderNos: new Set(), lastDate: null, lastQty: 0,
+                 lastPrice: 0, priceSort: -1, unit: '', unitSort: -1, cost: 0, costSort: -1 };
+          m.set(pname, it);
+        }
+        const qty = +r[4] || 0, amt = +r[7] || 0, price = +r[6] || 0, cost = +r[10] || 0;
+        it.qty += qty; it.amount += amt; it.orderNos.add(r[0]);
+        sales += amt;
+        // 最終取引（同じ日に複数明細があれば合算する。1回分の発注数量として見せるため）
+        if (!it.lastDate || d.sort > it.lastDate.sort) { it.lastDate = d; it.lastQty = qty; }
+        else if (d.sort === it.lastDate.sort) { it.lastQty += qty; }
+        if (price > 0 && d.sort > it.priceSort) { it.lastPrice = price; it.priceSort = d.sort; }
+        if (r[5] && d.sort > it.unitSort) { it.unit = r[5]; it.unitSort = d.sort; }
+        if (cost > 0 && d.sort > it.costSort) { it.cost = cost; it.costSort = d.sort; }
+      }
+      const items = [];
+      for (const it of m.values()) {
+        const times = it.orderNos.size;
+        // 返品だけの商品（期間内の正味数量が0以下）は発注書に載せる意味がないので外す
+        if (it.qty <= 0 || times < minTimes) continue;
+        const prod = data.prodByName.get(it.name);
+        items.push({
+          name: it.name, cat: prod ? prod.cat : 'その他', unit: it.unit || (prod ? prod.unit : ''),
+          price: Math.round(it.lastPrice > 0 ? it.lastPrice : (prod ? prod.lastPrice : 0)),
+          cost: Math.round(it.cost || (prod ? prod.cost : 0)),
+          qty: it.qty, amount: it.amount, times, lastDate: it.lastDate, lastQty: it.lastQty,
+          avgQty: it.qty / times,
+        });
+      }
+      if (!items.length) continue;
+      items.sort((a, b) =>
+        draft.sortBy === 'name' ? a.name.localeCompare(b.name, 'ja')
+        : draft.sortBy === 'qty' ? b.qty - a.qty
+        : draft.sortBy === 'date' ? ((b.lastDate ? b.lastDate.sort : 0) - (a.lastDate ? a.lastDate.sort : 0))
+        : draft.sortBy === 'cat' ? (a.cat.localeCompare(b.cat, 'ja') || b.amount - a.amount)
+        : b.amount - a.amount);
+      const cap = Number(draft.maxItems) || 0;
+      facs.push({
+        name: f.name, rep: f.repName, sales,
+        items: cap > 0 ? items.slice(0, cap) : items,
+        cut: cap > 0 ? Math.max(0, items.length - cap) : 0,
+        lastDate: items.reduce((t, x) => (x.lastDate && (!t || x.lastDate.sort > t.sort) ? x.lastDate : t), null),
+      });
+    }
+    facs.sort((a, b) => b.sales - a.sales);
+    return { facs, fromIdx: months > 0 ? fromIdx : (data.monthsAll.length ? data.monthsAll[0] : null), toIdx };
+  }, [data, draft.months, draft.minTimes, draft.maxItems, draft.sortBy]);
+
+  const periodLabel = bulk.fromIdx == null ? '—' : idxLabel(bulk.fromIdx) + ' 〜 ' + idxLabel(bulk.toIdx);
+  const facByName = useMemo(() => new Map(bulk.facs.map(f => [f.name, f])), [bulk]);
+  const reps = useMemo(() => {
+    const set = new Set(bulk.facs.map(f => f.rep || '未設定'));
+    return [...set].sort((a, b) => a.localeCompare(b, 'ja'));
+  }, [bulk]);
+  const listed = useMemo(() => {
+    const k = normalizeSearchText(q.trim());
+    return bulk.facs.filter(f =>
+      (repFilter === 'all' || (f.rep || '未設定') === repFilter) &&
+      (!k || normalizeSearchText(f.name).includes(k)));
+  }, [bulk, q, repFilter]);
+
+  // 選択中の施設。集計から消えた施設（期間を狭めた等）は静かに落とす
+  const selected = useMemo(() =>
+    draft.selected.map(n => facByName.get(n)).filter(Boolean), [draft.selected, facByName]);
+  const selectedSet = useMemo(() => new Set(draft.selected), [draft.selected]);
+
+  const toggleFac = (name) => setDraft(prev => ({
+    ...prev,
+    selected: prev.selected.includes(name) ? prev.selected.filter(n => n !== name) : [...prev.selected, name],
+  }));
+  const selectAll = () => setDraft(prev => {
+    const add = listed.map(f => f.name).filter(n => !prev.selected.includes(n));
+    return { ...prev, selected: [...prev.selected, ...add] };
+  });
+  const clearListed = () => setDraft(prev => ({ ...prev, selected: prev.selected.filter(n => !listed.some(f => f.name === n)) }));
+
+  const isExcluded = (fac, prod) => (draft.excluded[fac] || []).includes(prod);
+  const toggleItem = (fac, prod) => setDraft(prev => {
+    const cur = prev.excluded[fac] || [];
+    const next = cur.includes(prod) ? cur.filter(n => n !== prod) : [...cur, prod];
+    const ex = { ...prev.excluded };
+    if (next.length) ex[fac] = next; else delete ex[fac];
+    return { ...prev, excluded: ex };
+  });
+  const resetFacItems = (fac) => setDraft(prev => {
+    const ex = { ...prev.excluded };
+    delete ex[fac];
+    return { ...prev, excluded: ex };
+  });
+  const setPrice = (fac, prod, v) => setDraft(prev => {
+    const pe = { ...prev.priceEdits }, k = bulkKey(fac, prod);
+    if (v === '' || v === null) delete pe[k]; else pe[k] = Math.max(0, Number(v) || 0);
+    return { ...prev, priceEdits: pe };
+  });
+  const setQty = (fac, prod, v) => setDraft(prev => {
+    const qe = { ...prev.qtyEdits }, k = bulkKey(fac, prod);
+    if (v === '' || v === null) delete qe[k]; else qe[k] = Math.max(0, Number(v) || 0);
+    return { ...prev, qtyEdits: qe };
+  });
+  // 価格改定は施設ごとに入れ直すと手間なので、直した単価を選択中の全施設にまとめて適用する
+  const applyPriceToAll = (prod, price) => {
+    setDraft(prev => {
+      const pe = { ...prev.priceEdits };
+      for (const fname of prev.selected) {
+        const fe = facByName.get(fname);
+        if (fe && fe.items.some(it => it.name === prod)) pe[bulkKey(fname, prod)] = price;
+      }
+      return { ...prev, priceEdits: pe };
+    });
+    showToast('「' + prod + '」の単価を選択中の施設にまとめて反映しました');
+  };
+  const setCaseSize = (prod, v) => setMasters(prev => {
+    const next = { ...(prev.caseSizes || {}) };
+    const t = String(v || '').trim();
+    if (t) next[prod] = t.slice(0, 24); else delete next[prod];
+    return { ...prev, caseSizes: next };
+  });
+
+  // 数量欄に入れる値。施設ごとの手入力があればそれを優先する
+  const autoQtyOf = (it) => (draft.qtyMode === 'last' ? fmtQty(it.lastQty)
+    : draft.qtyMode === 'avg' ? Math.max(1, Math.round(it.avgQty)) : '');
+  const qtyOf = (fac, it) => {
+    const ov = draft.qtyEdits[bulkKey(fac, it.name)];
+    return ov != null ? ov : autoQtyOf(it);
+  };
+  const priceOf = (fac, it) => {
+    const ov = draft.priceEdits[bulkKey(fac, it.name)];
+    return ov != null ? ov : it.price;
+  };
+  // 発注書の明細1行分に変換する（除外・単価修正・数量モードをここで反映）
+  const itemsFor = (fe) => {
+    const caseSizes = masters.caseSizes || {};
+    return fe.items.filter(it => !isExcluded(fe.name, it.name)).map(it => ({
+      rid: newRowId(), name: it.name, cat: it.cat, unit: it.unit,
+      caseSize: caseSizes[it.name] || '', price: priceOf(fe.name, it), cost: it.cost,
+      qty: qtyOf(fe.name, it), note: '', lastLabel: lastOrderLabel(it),
+    }));
+  };
+  const countFor = (fe) => fe.items.filter(it => !isExcluded(fe.name, it.name)).length;
+  const htmlFor = (fe) => buildFacilityOrderHtml({
+    facilityName: fe.name, facilityAddress: '', facilityTel: '', facilityFax: '',
+    repName: fe.rep || '未設定', items: itemsFor(fe),
+    showPrices: !!draft.showPrices, showCaseSize: !!draft.showCaseSize, showCat: draft.showCat !== false,
+    showLast: !!draft.showLast, showItemNote: false, fitPage: draft.fitPage !== false,
+    issued: isoToJa(draft.issued), note: draft.note, title: draft.title, office: masters.settings.office,
+  });
+
+  const ready = selected.filter(fe => countFor(fe) > 0);
+  const totalItems = ready.reduce((s, fe) => s + countFor(fe), 0);
+
+  const handlePrintAll = () => {
+    if (!ready.length) { showToast('発注書を作る施設を選んでください', 'error'); return; }
+    openPrint(ready.map(htmlFor).join(''));
+  };
+  const handlePdfAll = async () => {
+    if (!ready.length) { showToast('発注書を作る施設を選んでください', 'error'); return; }
+    // 1施設ずつ画像化するため、件数が多いと数分かかる。始める前に知らせる
+    if (ready.length > 15 &&
+        !window.confirm(ready.length + '件の発注書をまとめてPDFにします。\n件数が多いと数分かかることがあります。よろしいですか？')) return;
+    setBusy(true);
+    showToast(ready.length + '件のPDFを作成しています…（時間がかかります）', 'info', 8000);
+    try {
+      await exportPdf(ready.map(htmlFor).join(''), '発注書_一括' + ready.length + '件_' + todayCompact() + '.pdf');
+      showToast('PDFを保存しました（' + ready.length + '件）');
+    } catch (e) {
+      showToast('PDFの作成に失敗しました。件数を減らすか、印刷ダイアログの「PDFとして保存」もお試しください', 'error', 8000);
+    } finally { setBusy(false); }
+  };
+  const handleCsv = () => {
+    if (!ready.length) { showToast('発注書を作る施設を選んでください', 'error'); return; }
+    const caseSizes = masters.caseSizes || {};
+    const lines = [['施設名', '担当', '商品名', 'カテゴリ', '入数', '単位', '発注書の単価', '直近単価（実績）',
+      '数量', '前回購入日', '前回数量', '期間内の購入回数', '期間内の数量', '期間内の売上']];
+    for (const fe of ready) {
+      for (const it of fe.items) {
+        if (isExcluded(fe.name, it.name)) continue;
+        lines.push([fe.name, fe.rep, it.name, it.cat, caseSizes[it.name] || '', it.unit,
+          priceOf(fe.name, it), it.price, qtyOf(fe.name, it),
+          it.lastDate ? it.lastDate.y + '/' + it.lastDate.mo + '/' + it.lastDate.d : '', fmtQty(it.lastQty),
+          it.times, fmtQty(it.qty), Math.round(it.amount)]);
+      }
+    }
+    downloadText('一括発注書_' + ready.length + '件_' + todayCompact() + '.csv', buildCsv(lines), 'text/csv;charset=utf-8');
+    showToast('CSVを保存しました');
+  };
+
+  const inputCls = 'h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm shadow-sm focus:border-blue-400 focus:outline-none transition';
+  const toggleBtn = (on, label, onClick, title) => (
+    <button onClick={onClick} title={title}
+      className={"inline-flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg border transition shrink-0 " +
+        (on ? 'border-sky-300 bg-sky-50 text-sky-700' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100')}>
+      {on ? <Eye size={15} /> : <EyeOff size={15} />}
+      {label}{on ? '表示中' : '非表示中'}
+    </button>
+  );
+
+  if (data.empty) return <EmptyState goImport={goImport} />;
+
+  return (
+    <div className="space-y-4">
+      {/* 1. 直近の売上をどこまでさかのぼるか */}
+      <Card className="px-5 py-4 space-y-3">
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <span className="inline-flex items-center justify-center w-8 h-8 rounded-xl bg-sky-100 text-sky-600 shrink-0"><CalendarDays size={16} /></span>
+          <div className="min-w-[150px]">
+            <div className="font-bold text-sm text-slate-800">直近の売上をさかのぼる期間</div>
+            <div className="text-[11px] text-slate-600 tabular-nums">{periodLabel}</div>
+          </div>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {BULK_PERIODS.map(([v, label]) => (
+              <button key={v} onClick={() => patch({ months: v })}
+                className={"px-3.5 py-2 rounded-xl text-xs font-bold border transition " +
+                  (Number(draft.months) === v ? 'border-sky-400 bg-sky-500 text-white shadow-sm shadow-sky-200' : 'border-slate-200 bg-white text-slate-600 hover:bg-sky-50')}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="text-[11px] text-slate-600 tabular-nums ml-auto">
+            対象になる施設 <b className="text-slate-800">{num(bulk.facs.length)}</b>件
+          </div>
+        </div>
+        <div className="flex items-center gap-3 flex-wrap border-t border-slate-100 pt-3">
+          <label className="inline-flex items-center gap-2 text-xs text-slate-600 font-bold">
+            並び順
+            <select value={draft.sortBy} onChange={e => patch({ sortBy: e.target.value })} className={inputCls + ' font-bold'}>
+              {BULK_SORTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </label>
+          <label className="inline-flex items-center gap-2 text-xs text-slate-600 font-bold"
+            title="期間内にこの回数以上買っている商品だけを載せます。一度きりのスポット購入を落としたいときに上げてください">
+            購入回数
+            <select value={draft.minTimes} onChange={e => patch({ minTimes: Number(e.target.value) })} className={inputCls + ' font-bold'}>
+              {[1, 2, 3, 5, 10].map(v => <option key={v} value={v}>{v}回以上</option>)}
+            </select>
+          </label>
+          <label className="inline-flex items-center gap-2 text-xs text-slate-600 font-bold"
+            title="1施設あたりの品目数の上限。並び順の上位から採用します">
+            品目数の上限
+            <select value={draft.maxItems} onChange={e => patch({ maxItems: Number(e.target.value) })} className={inputCls + ' font-bold'}>
+              <option value={0}>制限なし</option>
+              {[10, 15, 20, 25, 30, 40, 50].map(v => <option key={v} value={v}>{v}品目まで</option>)}
+            </select>
+          </label>
+          <label className="inline-flex items-center gap-2 text-xs text-slate-600 font-bold">
+            発注日
+            <input type="date" value={draft.issued} onChange={e => patch({ issued: e.target.value })} className={inputCls + ' tabular-nums'} />
+          </label>
+          <label className="inline-flex items-center gap-2 text-xs text-slate-600 font-bold">
+            表題
+            <input value={draft.title} onChange={e => patch({ title: e.target.value })} className={inputCls + ' w-36'} />
+          </label>
+          <button onClick={() => { setDraft(newBulkDraft()); setQ(''); setRepFilter('all'); setOpenFac(null); showToast('条件と選択を初期状態に戻しました'); }}
+            className="ml-auto bg-white border border-slate-200 hover:border-rose-300 hover:text-rose-600 text-slate-600 px-3.5 py-2 rounded-xl shadow-sm text-xs font-bold transition inline-flex items-center gap-1.5">
+            <RotateCcw size={14} /> 条件をリセット
+          </button>
+        </div>
+      </Card>
+
+      {/* 2. 全施設共通の表示設定 */}
+      <Card className={"px-5 py-4 space-y-3 transition " + (draft.showPrices ? 'bg-amber-50/70 border-amber-200' : '')}>
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <span className="text-xs font-bold text-slate-700 shrink-0">帳票に載せる項目（全施設まとめて切替）</span>
+          {toggleBtn(!!draft.showPrices, '金額', () => patch({ showPrices: !draft.showPrices }),
+            '直近の販売単価を発注書に載せるかどうか。載せない場合は単価列ごと消えます')}
+          {toggleBtn(!!draft.showCaseSize, '入数', () => patch({ showCaseSize: !draft.showCaseSize }),
+            '1ケースに何箱入っているかなどの入数列。値は下の明細で入力でき、商品ごとに記憶します')}
+          {toggleBtn(draft.showCat !== false, 'カテゴリ', () => patch({ showCat: !(draft.showCat !== false) }))}
+          {toggleBtn(!!draft.showLast, '前回のご注文', () => patch({ showLast: !draft.showLast }),
+            '前回いつ・いくつ買ったかを参考欄として載せます')}
+        </div>
+        <div className="flex items-center gap-3 flex-wrap border-t border-slate-100 pt-3">
+          <label className="inline-flex items-center gap-2 text-xs text-slate-600 font-bold"
+            title="発注書の数量欄をどうするか。空欄なら施設側が手書きで記入します">
+            数量欄
+            <select value={draft.qtyMode} onChange={e => patch({ qtyMode: e.target.value })} className={inputCls + ' font-bold'}>
+              {BULK_QTY_MODES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </label>
+          <label className="inline-flex items-center gap-2 text-xs text-slate-700 font-bold cursor-pointer">
+            <input type="checkbox" checked={draft.fitPage !== false} onChange={e => patch({ fitPage: e.target.checked })}
+              className="w-4 h-4 accent-sky-600" />
+            1施設をA4 1枚に収める
+            <span className="font-normal text-slate-600">（外すと品目が多い施設は複数ページになります）</span>
+          </label>
+        </div>
+        {draft.showPrices && (
+          <div className="flex items-start gap-2 bg-white border border-amber-200 rounded-xl px-4 py-2.5 text-amber-800 text-[11px] font-bold leading-relaxed">
+            <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+            単価は選んだ期間の直近の販売価格です。価格改定後などで実勢と違うことがあるので、
+            下の施設ごとの明細で数字を直せます（直した単価は「全施設に反映」でまとめて適用できます）。
+          </div>
+        )}
+      </Card>
+
+      {/* 3. 施設を選ぶ ／ 4. 中身を確認・調整 */}
+      <div className="grid xl:grid-cols-[minmax(320px,1fr)_minmax(420px,1.35fr)] gap-5 items-start [&>*]:min-w-0">
+        <Card>
+          <div className="px-5 py-3.5 border-b border-slate-100">
+            <div className="font-bold text-sm text-slate-800">発注書を作る施設を選ぶ</div>
+            <div className="text-[11px] text-slate-600">期間内に購入実績のある施設だけが出ます ・ 選択 {num(draft.selected.length)}件</div>
+          </div>
+          <div className="px-5 py-3 border-b border-slate-100 flex items-center gap-2.5 flex-wrap">
+            <div className="relative flex-1 min-w-[150px]">
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+              <input value={q} onChange={e => setQ(e.target.value)} placeholder="施設名で検索"
+                className="h-10 pl-9 pr-3 w-full rounded-xl border border-slate-200 text-sm bg-white shadow-sm focus:border-blue-400 focus:outline-none transition" />
+            </div>
+            <select value={repFilter} onChange={e => setRepFilter(e.target.value)}
+              className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-600">
+              <option value="all">すべての担当</option>
+              {reps.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+            <button onClick={selectAll}
+              className="h-10 px-3 rounded-xl bg-sky-600 hover:bg-sky-700 active:scale-[.98] text-white text-xs font-bold shadow-sm shadow-sky-200 transition">
+              表示中を全選択（{num(listed.length)}）
+            </button>
+            <button onClick={clearListed}
+              className="h-10 px-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 text-xs font-bold shadow-sm transition">
+              解除
+            </button>
+          </div>
+          <div className="max-h-[34rem] overflow-y-auto divide-y divide-slate-50">
+            {listed.map(f => (
+              <label key={f.name}
+                className={"flex items-center gap-3 px-5 py-3 cursor-pointer transition " +
+                  (selectedSet.has(f.name) ? 'bg-sky-50/70' : 'hover:bg-slate-50')}>
+                <input type="checkbox" checked={selectedSet.has(f.name)} onChange={() => toggleFac(f.name)}
+                  className="w-4 h-4 accent-sky-600 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="font-bold text-sm text-slate-800 truncate">{f.name}</div>
+                  <div className="text-[11px] text-slate-600 tabular-nums">
+                    {f.rep} ・ {num(f.items.length)}品目
+                    {f.lastDate && <> ・ 最終 {f.lastDate.y}/{f.lastDate.mo}/{f.lastDate.d}</>}
+                  </div>
+                </div>
+                <div className="text-right shrink-0">
+                  <div className="font-extrabold text-sm text-slate-900 tabular-nums">{yen(f.sales)}</div>
+                  <div className="text-[10px] text-slate-500 font-bold">期間内売上</div>
+                </div>
+              </label>
+            ))}
+            {listed.length === 0 && (
+              <div className="px-5 py-12 text-center text-xs text-slate-600 leading-relaxed">
+                該当する施設がありません。<br />期間を広げるか、検索条件を変えてください。
+              </div>
+            )}
+          </div>
+        </Card>
+
+        <Card>
+          <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5 flex-wrap">
+            <div className="flex-1 min-w-[160px]">
+              <div className="font-bold text-sm text-slate-800">作成する発注書（{num(ready.length)}件）</div>
+              <div className="text-[11px] text-slate-600 tabular-nums">合計 {num(totalItems)}品目 ・ 施設名をタップすると中身を調整できます</div>
+            </div>
+            {draft.selected.length > 0 && (
+              <button onClick={() => patch({ selected: [] })}
+                className="text-xs font-bold text-slate-500 hover:text-rose-600 transition">すべて外す</button>
+            )}
+          </div>
+          <div className="max-h-[34rem] overflow-y-auto divide-y divide-slate-100">
+            {selected.map(fe => {
+              const open = openFac === fe.name;
+              const n = countFor(fe);
+              return (
+                <div key={fe.name}>
+                  <div className="px-5 py-3 flex items-center gap-2.5">
+                    <button onClick={() => setOpenFac(open ? null : fe.name)} className="flex-1 min-w-0 text-left group">
+                      <div className="font-bold text-sm text-slate-800 truncate group-hover:text-sky-700 transition">{fe.name}</div>
+                      <div className="text-[11px] text-slate-600 tabular-nums">
+                        {fe.rep} ・ {num(n)}品目
+                        {n !== fe.items.length && <span className="text-rose-600 font-bold"> （{num(fe.items.length - n)}品目を除外中）</span>}
+                        {fe.cut > 0 && <span className="text-amber-600 font-bold"> （上限で{num(fe.cut)}品目を省略）</span>}
+                      </div>
+                    </button>
+                    <button onClick={() => { if (n) openPrint(htmlFor(fe)); else showToast('この施設は載せる商品がありません', 'error'); }}
+                      title="この施設だけプレビュー" className="text-slate-400 hover:text-sky-600 transition shrink-0"><Printer size={16} /></button>
+                    <button onClick={() => sendToOrderDraft(fe.name, itemsFor(fe), {
+                        title: draft.title, issued: draft.issued, note: draft.note,
+                        showPrices: !!draft.showPrices, showCaseSize: !!draft.showCaseSize,
+                        showCat: draft.showCat !== false, showLast: !!draft.showLast })}
+                      title="発注書作成タブに送って、この1件だけ細かく直す・保存する"
+                      className="text-slate-400 hover:text-emerald-600 transition shrink-0"><Pencil size={16} /></button>
+                    <button onClick={() => toggleFac(fe.name)} title="この施設を外す"
+                      className="text-slate-400 hover:text-rose-500 transition shrink-0"><X size={16} /></button>
+                    <button onClick={() => setOpenFac(open ? null : fe.name)} className="text-slate-400 shrink-0">
+                      {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                    </button>
+                  </div>
+                  {open && (
+                    <div className="px-5 pb-4 bg-slate-50/60">
+                      <div className="flex items-center gap-3 py-2 flex-wrap">
+                        <div className="text-[11px] font-bold text-slate-600">チェックを外した商品は、この施設の発注書に載りません</div>
+                        {(draft.excluded[fe.name] || []).length > 0 && (
+                          <button onClick={() => resetFacItems(fe.name)}
+                            className="text-[11px] font-bold text-sky-600 hover:text-sky-800 transition">除外をすべて戻す</button>
+                        )}
+                      </div>
+                      <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                        <table className="w-full text-xs min-w-[520px]">
+                          <thead>
+                            <tr className="text-[10px] uppercase tracking-wide text-slate-600 bg-slate-50 border-b border-slate-100">
+                              <th className="w-8 px-2 py-2"></th>
+                              <th className="text-left font-bold px-2 py-2">商品名</th>
+                              {draft.showCaseSize && <th className="text-center font-bold px-2 py-2 w-16">入数</th>}
+                              <th className="text-right font-bold px-2 py-2 w-20">数量</th>
+                              {draft.showPrices && <th className="text-right font-bold px-2 py-2 w-28">単価</th>}
+                              <th className="text-right font-bold px-2 py-2 w-28 whitespace-nowrap">期間内の実績</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-50">
+                            {fe.items.map(it => {
+                              const off = isExcluded(fe.name, it.name);
+                              const k = bulkKey(fe.name, it.name);
+                              const priceOv = draft.priceEdits[k];
+                              const qtyOv = draft.qtyEdits[k];
+                              const autoQty = autoQtyOf(it);
+                              return (
+                                <tr key={it.name} className={off ? 'opacity-40' : ''}>
+                                  <td className="px-2 py-2 align-top">
+                                    <input type="checkbox" checked={!off} onChange={() => toggleItem(fe.name, it.name)}
+                                      className="w-4 h-4 accent-sky-600 mt-1" />
+                                  </td>
+                                  <td className="px-2 py-2">
+                                    <div className="font-bold text-slate-800 leading-snug">{it.name}</div>
+                                    <div className="text-[10px] text-slate-500 tabular-nums">
+                                      {it.cat} ・ {it.unit || '—'}
+                                      {it.lastDate && <> ・ 前回 {it.lastDate.y}/{it.lastDate.mo}/{it.lastDate.d} {fmtQty(it.lastQty)}{it.unit}</>}
+                                    </div>
+                                  </td>
+                                  {draft.showCaseSize && (
+                                    <td className="px-2 py-2">
+                                      <input value={(masters.caseSizes || {})[it.name] || ''}
+                                        onChange={e => setCaseSize(it.name, e.target.value)}
+                                        placeholder="例:6"
+                                        title="1ケースに何箱入っているかなど。商品ごとに記憶され、ほかの帳票にも反映されます"
+                                        className="h-9 w-full px-2 rounded-lg border border-slate-200 text-xs text-center font-bold focus:border-sky-400 focus:outline-none" />
+                                    </td>
+                                  )}
+                                  <td className="px-2 py-2">
+                                    <input type="number" min="0" value={qtyOv != null ? qtyOv : ''}
+                                      onChange={e => setQty(fe.name, it.name, e.target.value)}
+                                      placeholder={autoQty === '' ? '空欄' : String(autoQty)}
+                                      title="空欄なら上の「数量欄」の設定どおりに印刷します"
+                                      className="h-9 w-full px-2 rounded-lg border border-slate-200 text-xs text-right tabular-nums focus:border-sky-400 focus:outline-none" />
+                                  </td>
+                                  {draft.showPrices && (
+                                    <td className="px-2 py-2">
+                                      <div className="flex items-center gap-1">
+                                        <input type="number" min="0" value={priceOv != null ? priceOv : ''}
+                                          onChange={e => setPrice(fe.name, it.name, e.target.value)}
+                                          placeholder={String(it.price)}
+                                          title="空欄なら直近の販売単価を使います。価格改定後の正しい単価を入れて上書きできます"
+                                          className={"h-9 w-full px-2 rounded-lg border text-xs text-right tabular-nums focus:outline-none " +
+                                            (priceOv != null ? 'border-fuchsia-300 bg-fuchsia-50 text-fuchsia-700 font-bold' : 'border-slate-200 focus:border-sky-400')} />
+                                        {priceOv != null && (
+                                          <button onClick={() => applyPriceToAll(it.name, priceOv)} title="この単価を選択中の全施設に反映する"
+                                            className="text-fuchsia-500 hover:text-fuchsia-700 transition shrink-0"><RefreshCw size={13} /></button>
+                                        )}
+                                      </div>
+                                    </td>
+                                  )}
+                                  <td className="px-2 py-2 text-right tabular-nums text-slate-600 whitespace-nowrap">
+                                    <div className="font-bold text-slate-700">{yen(it.amount)}</div>
+                                    <div className="text-[10px]">{fmtQty(it.qty)}{it.unit} / {it.times}回</div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {selected.length === 0 && (
+              <div className="px-5 py-16 text-center text-xs text-slate-600 leading-relaxed">
+                左の一覧から施設を選んでください。<br />
+                「表示中を全選択」を押せば、期間内に売上のある施設すべての発注書を一度に作れます。
+              </div>
+            )}
+          </div>
+          <div className="px-5 py-3.5 border-t border-slate-100 flex items-center gap-2 flex-wrap">
+            <button onClick={handlePrintAll} disabled={!ready.length}
+              className={"px-4 py-2.5 rounded-xl shadow-sm text-sm font-bold transition inline-flex items-center gap-1.5 text-white " +
+                (ready.length ? 'bg-sky-600 hover:bg-sky-700 active:scale-[.98] shadow-sky-200' : 'bg-slate-300 cursor-not-allowed')}>
+              <Printer size={15} /> まとめて印刷（{num(ready.length)}件）
+            </button>
+            <button onClick={handlePdfAll} disabled={!ready.length || busy}
+              className={"px-4 py-2.5 rounded-xl shadow-sm text-sm font-bold transition inline-flex items-center gap-1.5 text-white " +
+                (ready.length && !busy ? 'bg-indigo-600 hover:bg-indigo-700 active:scale-[.98] shadow-indigo-200' : 'bg-slate-300 cursor-not-allowed')}>
+              <Download size={15} /> {busy ? '作成中…' : 'まとめてPDF'}
+            </button>
+            <button onClick={handleCsv} disabled={!ready.length}
+              className={"px-4 py-2.5 rounded-xl border shadow-sm text-sm font-bold transition inline-flex items-center gap-1.5 " +
+                (ready.length ? 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50' : 'bg-slate-100 border-slate-100 text-slate-400 cursor-not-allowed')}>
+              <Download size={15} /> CSV
+            </button>
+          </div>
+        </Card>
+      </div>
+
+      <div className="bg-blue-50/70 border border-blue-100 rounded-2xl px-5 py-4 text-xs text-slate-600 flex gap-3">
+        <Info size={16} className="text-blue-500 shrink-0 mt-0.5" />
+        <div className="leading-relaxed">
+          発注書に載るのは、選んだ期間に<b className="text-slate-700">その施設が実際に買った商品</b>だけです。個人のお客様（一般販売）は施設ではないため、はじめから対象外です。<br />
+          単価は期間内の直近の販売価格です。価格改定などで実勢と違う場合は、施設ごとの明細で数字を直してください（「全施設に反映」でまとめて適用できます）。<br />
+          5年分をさかのぼるには、5年分のCSVを取り込んでおく必要があります（データ取込は蓄積型なので、年度ごとのCSVを続けて入れられます）。
+        </div>
+      </div>
     </div>
   );
 }
@@ -6700,6 +7489,7 @@ const TABS = [
   { id: 'prod', label: '売上管理・商品検索', icon: Package, sub: '商品名・施設名・仕入先の横断検索と、分類別の動き・粗利率チェック' },
   { id: 'stock', label: '適正在庫', icon: Warehouse, sub: '必要在庫 = 月平均 × 在庫回数。商品の扱い分類もここで' },
   { id: 'order', label: '発注書作成', icon: ClipboardList, sub: '施設が当社へ送る発注書を代理作成（初期は金額なし）' },
+  { id: 'bulkorder', label: '一括発注書', icon: Layers, sub: '売上データにある施設の発注書をまとめて作成（期間・金額・入数の表示を選べます）' },
   { id: 'quote', label: '見積書作成', icon: FileSpreadsheet, sub: '販売履歴の商品マスタから御見積書を作成' },
   { id: 'pricerevision', label: '価格改定', icon: RefreshCw, sub: '商品ごとに現状価格→改定価格を入力し、増加額・増加率を確認' },
   { id: 'targets', label: 'ターゲット先進捗確認', icon: Target, sub: '担当ごとにターゲット施設を登録し、提案商品・進捗状況を管理' },
@@ -6744,6 +7534,12 @@ function App() {
   const [orderDraft, setOrderDraft] = useState(() => restoreDraft(K.DRAFT_ORDER, () => newDocDraft('order', '')));
   const [quoteDraft, setQuoteDraft] = useState(() => restoreDraft(K.DRAFT_QUOTE, () => newDocDraft('quote', '')));
   const [priceRevisionDraft, setPriceRevisionDraft] = useState(() => restoreDraft(K.DRAFT_PRICEREV, newPriceRevisionDraft));
+  // 一括発注書は items を持たない（施設の選択と表示条件だけ）ので、restoreDraft ではなく個別に復元する
+  const [bulkDraft, setBulkDraft] = useState(() => {
+    const base = newBulkDraft();
+    const saved = loadStorage(K.DRAFT_BULKORDER, null);
+    return (saved && typeof saved === 'object' && Array.isArray(saved.selected)) ? { ...base, ...saved } : base;
+  });
   const toastId = useRef(0);
 
   const showToast = useCallback((msg, type, dur) => {
@@ -6765,6 +7561,7 @@ function App() {
   useDebouncedSave(K.DRAFT_ORDER, orderDraft, null);
   useDebouncedSave(K.DRAFT_QUOTE, quoteDraft, null);
   useDebouncedSave(K.DRAFT_PRICEREV, priceRevisionDraft, null);
+  useDebouncedSave(K.DRAFT_BULKORDER, bulkDraft, null);
 
   // 集計索引（基準月 = データ内最新月。ヘッダーで変更可）
   const data = useMemo(() => buildAnalytics(rows, masters, baseSel), [rows, masters, baseSel]);
@@ -6795,6 +7592,15 @@ function App() {
     }
     setTab(type);
   }, [orderDraft, quoteDraft]);
+  // 一括発注書から1件だけ発注書作成タブへ送る（細かい手直しと保存はそちらで行う）。
+  // startDoc と同じく、未保存の明細を黙って捨てずに確認する。
+  const sendToOrderDraft = useCallback((facName, items, opts) => {
+    const n = orderDraft.items.filter(it => !it.isSpacer).length;
+    if (!orderDraft.id && n > 0 &&
+        !window.confirm('発注書作成タブで作りかけの「' + (orderDraft.facility || '未入力') + '」の明細 ' + n + '品目が破棄されます。よろしいですか？')) return;
+    setOrderDraft({ ...newDocDraft('order', facName), ...(opts || {}), items });
+    setTab('order');
+  }, [orderDraft]);
   const setOffice = useCallback((name) => {
     setMasters(prev => ({ ...prev, settings: { ...prev.settings, office: name } }));
   }, []);
@@ -6808,16 +7614,19 @@ function App() {
     const preview = document.querySelector('.print-preview-doc');
     if (!holder || !preview) return;
     holder.innerHTML = preview.innerHTML;
-    const holderDoc = holder.querySelector('[data-fit-page="1"]');
-    if (!holderDoc) return;
-    holderDoc.style.zoom = '';
-    // 高さは可視のプレビュー側で測る（holder側は display:none で測れないため）
-    const previewDoc = preview.querySelector('[data-fit-page="1"]');
-    const naturalH = (previewDoc || holderDoc).getBoundingClientRect().height;
+    // 一括発注書では帳票が複数入る。1枚だけ縮小すると2枚目以降が用紙からはみ出すため、
+    // data-fit-page の付いた帳票すべてを1枚ずつ実寸で測って縮小する。
+    const holderDocs = holder.querySelectorAll('[data-fit-page="1"]');
+    const previewDocs = preview.querySelectorAll('[data-fit-page="1"]');
     const pageH = 297 * (96 / 25.4);
-    if (naturalH - pageH > 4) {
+    for (let i = 0; i < holderDocs.length; i++) {
+      const holderDoc = holderDocs[i];
+      holderDoc.style.zoom = '';
+      // 高さは可視のプレビュー側で測る（holder側は display:none で測れないため）
+      const previewDoc = previewDocs[i] || holderDoc;
+      const naturalH = previewDoc.getBoundingClientRect().height;
       // 何ページ分あっても必ず1ページに収める（下限は極端な事故防止のみ）
-      holderDoc.style.zoom = String(Math.max(0.25, pageH / naturalH));
+      if (naturalH - pageH > 4) holderDoc.style.zoom = String(Math.max(0.25, pageH / naturalH));
     }
   }, []);
 
@@ -6920,8 +7729,9 @@ function App() {
               {tab === 'rep' && <RepsView data={data} goFacilities={goFacilities} />}
               {tab === 'prod' && <ProductsView data={data} rows={rows} masters={masters} setMasters={setMasters} showToast={showToast} openPrint={setPrintHtml} />}
               {tab === 'stock' && <StockView data={data} masters={masters} setMasters={setMasters} showToast={showToast} openPrint={setPrintHtml} />}
-              {tab === 'order' && <DocComposer docType="order" data={data} masters={masters} draft={orderDraft} setDraft={setOrderDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} goImport={() => setTab('import')} />}
-              {tab === 'quote' && <DocComposer docType="quote" data={data} masters={masters} draft={quoteDraft} setDraft={setQuoteDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} goImport={() => setTab('import')} />}
+              {tab === 'order' && <DocComposer docType="order" data={data} masters={masters} setMasters={setMasters} draft={orderDraft} setDraft={setOrderDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} goImport={() => setTab('import')} />}
+              {tab === 'bulkorder' && <BulkOrderView data={data} masters={masters} setMasters={setMasters} draft={bulkDraft} setDraft={setBulkDraft} showToast={showToast} openPrint={setPrintHtml} sendToOrderDraft={sendToOrderDraft} goImport={() => setTab('import')} />}
+              {tab === 'quote' && <DocComposer docType="quote" data={data} masters={masters} setMasters={setMasters} draft={quoteDraft} setDraft={setQuoteDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} goImport={() => setTab('import')} />}
               {tab === 'pricerevision' && <PriceRevisionView data={data} masters={masters} draft={priceRevisionDraft} setDraft={setPriceRevisionDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} />}
               {tab === 'targets' && <TargetsView data={data} masters={masters} targets={targets} setTargets={setTargets} showToast={showToast} jumpToFacility={jumpToFacility} />}
               {tab === 'import' && <ImportView rows={rows} masters={masters} setRows={setRows} setMasters={setMasters} setMeta={setMeta} docs={docs} setDocs={setDocs} showToast={showToast} />}
