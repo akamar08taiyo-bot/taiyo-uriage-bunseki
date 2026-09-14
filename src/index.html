@@ -7681,28 +7681,41 @@ function App() {
           <a href="https://akamar08taiyo-bot.github.io/taiyo-portal/" className="block px-5 md:px-8 pt-1.5 text-[10.5px] text-slate-400 hover:text-slate-600">
             ← 業務アプリポータルへ戻る
           </a>
-          <div className="px-5 md:px-8 py-4 flex items-center gap-3">
-            <div className="md:hidden inline-flex items-center justify-center w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 shrink-0">
-              <Sun size={16} className="text-white" />
+          {/* 画面の左右いっぱいに離れていると見落とされるため、取込と基準月はヘッダーの中央に
+              ひとまとまりで置く。左右を同じ幅（1fr）にして中央の帯が真ん中に来るようにしている。 */}
+          <div className="px-5 md:px-8 py-3 flex flex-col gap-3 md:grid md:grid-cols-[1fr_auto_1fr] md:items-center">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="md:hidden inline-flex items-center justify-center w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 shrink-0">
+                <Sun size={16} className="text-white" />
+              </div>
+              <div className="min-w-0">
+                <h1 className="font-extrabold text-slate-800 text-lg leading-tight truncate">{labelOf(current)}</h1>
+                <div className="text-[11px] text-slate-600 truncate">{current.sub}</div>
+              </div>
             </div>
-            <div className="flex-1 min-w-0">
-              <h1 className="font-extrabold text-slate-800 text-lg leading-tight truncate">{labelOf(current)}</h1>
-              <div className="text-[11px] text-slate-600 truncate">{current.sub}</div>
+
+            <div className="flex items-center justify-center gap-2.5 flex-wrap rounded-2xl border border-sky-200 bg-sky-50/80 px-3 py-2 shadow-sm">
+              {tab !== 'import' && (
+                <button onClick={() => setTab('import')} title="売上照会のCSVを取り込みます（蓄積型・重複は自動スキップ）"
+                  className="h-10 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-[.98] text-white text-sm shadow-sm shadow-emerald-200 font-bold shrink-0 transition inline-flex items-center gap-1.5">
+                  <FileUp size={15} /> 最新データを取り込む
+                </button>
+              )}
+              {monthsDesc.length > 0 && (
+                <label className="flex items-center gap-2 shrink-0" title="この月を「今月」として全画面の集計・帳票を作ります">
+                  <span className="text-[11px] font-bold text-slate-700 whitespace-nowrap">基準月</span>
+                  <select value={data.baseIdx} onChange={e => setBaseSel(+e.target.value)}
+                    className="h-10 px-3 rounded-xl border border-slate-300 bg-white text-sm shadow-sm font-bold text-slate-700 focus:border-sky-400 focus:outline-none transition">
+                    {monthsDesc.map(idx => (
+                      <option key={idx} value={idx}>{idxLabel(idx)}{idx === data.maxIdx ? '（最新）' : ''}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
             </div>
-            {tab !== 'import' && (
-              <button onClick={() => setTab('import')}
-                className="h-10 px-3.5 rounded-xl border border-emerald-300 bg-white hover:bg-emerald-50 hover:border-emerald-400 active:scale-[.98] text-emerald-700 text-sm shadow-sm font-bold shrink-0 transition inline-flex items-center gap-1.5">
-                <FileUp size={15} /> 最新データを取り込む
-              </button>
-            )}
-            {monthsDesc.length > 0 && (
-              <select value={data.baseIdx} onChange={e => setBaseSel(+e.target.value)}
-                className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-600 shrink-0">
-                {monthsDesc.map(idx => (
-                  <option key={idx} value={idx}>基準月: {idxLabel(idx)}{idx === data.maxIdx ? '（最新）' : ''}</option>
-                ))}
-              </select>
-            )}
+
+            {/* 右の余白。中央の帯を真ん中に保つためだけの列 */}
+            <div className="hidden md:block" />
           </div>
           {/* モバイル用タブ */}
           <nav className="md:hidden px-3 pb-2 flex gap-1 overflow-x-auto">
