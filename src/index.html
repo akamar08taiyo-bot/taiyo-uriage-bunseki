@@ -906,10 +906,25 @@ async function exportPdf(html, fileName) {
     const targets = docs.length ? docs : [holder];
     let first = true;
     for (let i = 0; i < targets.length; i++) {
-      const canvas = await html2canvas(targets[i], { scale: 2, backgroundColor: '#ffffff', logging: false });
+      // 改ページで文字の行を真ん中から切らないよう、行・段落・枠の下端を「切ってよい位置」として集めておく
+      const target = targets[i];
+      const topPx = target.getBoundingClientRect().top;
+      const breaksCss = [...target.querySelectorAll('tr, p, li, h1, h2, h3, h4, table, section, div')]
+        .map(el => el.getBoundingClientRect().bottom - topPx)
+        .filter(v => v > 0);
+      const canvas = await html2canvas(target, { scale: 2, backgroundColor: '#ffffff', logging: false });
+      const pxPerCss = canvas.width / (target.getBoundingClientRect().width || canvas.width);
+      const breaks = [...new Set(breaksCss.map(v => Math.round(v * pxPerCss)))].sort((p, q) => p - q);
       const pageHpx = canvas.width * 297 / 210;   // 1ページ分の高さ(px)
-      for (let y = 0; y < canvas.height - 2; y += pageHpx) {
-        const h = Math.min(pageHpx, canvas.height - y);
+      for (let y = 0; y < canvas.height - 2;) {
+        let h = Math.min(pageHpx, canvas.height - y);
+        if (y + h < canvas.height - 2) {
+          // ページ下端より上で最も近い区切り（ページの半分より下）で切る。見つからなければ従来どおりページ高さで切る
+          const limit = y + pageHpx;
+          let cut = 0;
+          for (const bpos of breaks) { if (bpos > y + pageHpx * 0.5 && bpos <= limit) cut = bpos; }
+          if (cut) h = cut - y;
+        }
         const slice = document.createElement('canvas');
         slice.width = canvas.width;
         slice.height = h;
@@ -917,6 +932,7 @@ async function exportPdf(html, fileName) {
         if (!first) pdf.addPage();
         first = false;
         pdf.addImage(slice.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, 210, h * 210 / canvas.width);
+        y += h;
       }
     }
     pdf.save(fileName);
