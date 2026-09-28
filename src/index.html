@@ -808,6 +808,30 @@ function buildAnalytics(rows, masters, baseSel) {
 /* ============================================================
    任意期間のレポート集計（明細を範囲で走査。12ヶ月窓に依存しない）
 ============================================================ */
+// 前年同期比の増減ランキング：前年同期の売上件数（売上番号の数）がこれ未満の施設は比較にならないので除外する
+const YOY_MIN_ORDERS = 3;
+// 選んだ期間（cur）と前年同期（prev）の施設別売上から、増加額・減少額の大きい順TOP10を作る
+function buildYoyChanges(cur, prev, limit = 10) {
+  const curMap = new Map(cur.ranking.map(f => [f.name, f]));
+  let excluded = 0;
+  const list = [];
+  prev.ranking.forEach(p => {
+    if ((p.orders || 0) < YOY_MIN_ORDERS) { excluded++; return; }
+    const c = curMap.get(p.name);
+    const now = c ? c.sales : 0;
+    const diff = now - p.sales;
+    list.push({ name: p.name, now, nowAvg: c ? c.avg : 0, prev: p.sales, prevAvg: p.avg, prevOrders: p.orders, diff,
+      pct: p.sales > 0 ? Math.round(diff / p.sales * 100) : null });
+  });
+  // 前年同期に売上が無かった（今期からの）施設も比較対象外として数える
+  cur.ranking.forEach(c => { if (!prev.ranking.some(p => p.name === c.name)) excluded++; });
+  return {
+    increase: list.filter(x => x.diff > 0).sort((a, b) => b.diff - a.diff).slice(0, limit),
+    decrease: list.filter(x => x.diff < 0).sort((a, b) => a.diff - b.diff).slice(0, limit),
+    excluded, compared: list.length,
+  };
+}
+
 function buildPeriodReport(rows, masters, fromIdx, toIdx, consumableOnly) {
   const custs = masters.customers, catOv = masters.catOverrides, catRules = masters.catRules;
   const facMap = new Map(), prodMap = new Map(), monMap = new Map();
@@ -829,8 +853,8 @@ function buildPeriodReport(rows, masters, fromIdx, toIdx, consumableOnly) {
     // 施設別ランキング等が個人客で長くならないよう、施設のみに限定する
     if (c.type === 'facility') {
       let f = facMap.get(name);
-      if (!f) { f = { name, repName: c.rep || '未設定', sales: 0, gross: 0, months: new Set() }; facMap.set(name, f); }
-      f.sales += amt; f.gross += g; f.months.add(d.idx);
+      if (!f) { f = { name, repName: c.rep || '未設定', sales: 0, gross: 0, months: new Set(), orders: new Set() }; facMap.set(name, f); }
+      f.sales += amt; f.gross += g; f.months.add(d.idx); f.orders.add(r[0]);
     }
 
     let p = prodMap.get(pn);
@@ -864,7 +888,7 @@ function buildPeriodReport(rows, masters, fromIdx, toIdx, consumableOnly) {
     topProducts: [...prodMap.values()].filter(p => p.sales > 0).sort((a, b) => b.sales - a.sales).slice(0, 10)
       .map(p => ({ name: p.name, cat: p.cat, qty: p.qty, unit: p.unit, sales: p.sales })),
     ranking: [...facMap.values()].sort((a, b) => b.sales - a.sales)
-      .map(f => ({ name: f.name, repName: f.repName, sales: f.sales, avg: f.sales / nMonths, margin: rate(f.gross, f.sales) })),
+      .map(f => ({ name: f.name, repName: f.repName, sales: f.sales, avg: f.sales / nMonths, margin: rate(f.gross, f.sales), orders: f.orders.size })),
   };
 }
 
@@ -2042,6 +2066,57 @@ function EmptyState({ goImport }) {
 /* ============================================================
    画面1: ダッシュボード
 ============================================================ */
+// 前年同期より売上が増えた／減った施設 TOP10（ダッシュボード）
+function YoyChangeCard({ kind, changes, repType, short, lyLabel, jumpToFacility }) {
+  const inc = kind === 'increase';
+  const list = changes ? (inc ? changes.increase : changes.decrease) : [];
+  const Icon = inc ? TrendingUp : TrendingDown;
+  let empty = '';
+  if (repType === 'trend') empty = '月別推移（全期間）では前年との比較はできません。月次・年度・期間指定を選んでください';
+  else if (!changes) empty = '前年同期（' + lyLabel + '）の売上データが取り込まれていないため比較できません';
+  else if (!list.length) empty = inc ? '前年同期より売上が増えた施設はありません' : '前年同期より売上が減った施設はありません';
+  return (
+    <Card>
+      <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5">
+        <span className={"inline-flex items-center justify-center w-8 h-8 rounded-xl " + (inc ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600')}><Icon size={16} /></span>
+        <div className="flex-1 min-w-0">
+          <div className="font-bold text-sm text-slate-800">前年同期より売上が{inc ? '増えた' : '減った'}施設 TOP10</div>
+          <div className="text-[11px] text-slate-600">
+            {repType === 'trend' ? '前年比較なし' : short + ' と 前年同期（' + lyLabel + '）の比較'} ・ クリックで施設の詳細分析へ
+          </div>
+        </div>
+      </div>
+      <div className="divide-y divide-slate-50">
+        {list.map((f, i) => (
+          <button key={f.name} onClick={() => jumpToFacility(f.name)}
+            className="w-full text-left px-5 py-2.5 hover:bg-slate-50 transition flex items-center gap-3 group">
+            <span className={"w-7 h-7 rounded-lg text-xs font-bold inline-flex items-center justify-center shrink-0 " +
+              (inc ? (i < 3 ? 'bg-emerald-500 text-white' : 'bg-emerald-50 text-emerald-700') : (i < 3 ? 'bg-rose-500 text-white' : 'bg-rose-50 text-rose-700'))}>{i + 1}</span>
+            <div className="flex-1 min-w-0">
+              <div className="font-bold text-xs text-slate-700 truncate">{f.name}</div>
+              <div className="mt-0.5 text-[10px] text-slate-600 tabular-nums leading-relaxed">
+                <span className="whitespace-nowrap">今期 {yen(f.now)}（月平均 {yen(Math.round(f.nowAvg))}）</span>{' '}
+                <span className="whitespace-nowrap">前年 {yen(f.prev)}（月平均 {yen(Math.round(f.prevAvg))}・{f.prevOrders}件）</span>
+              </div>
+            </div>
+            <div className="shrink-0 text-right">
+              <div className={"text-xs font-extrabold tabular-nums " + (inc ? 'text-emerald-700' : 'text-rose-700')}>{inc ? '+' : '−'}{yen(Math.abs(f.diff))}</div>
+              {f.pct !== null && <div className={"text-[10px] font-bold tabular-nums " + (inc ? 'text-emerald-600' : 'text-rose-600')}>{f.pct > 0 ? '+' : ''}{f.pct}%</div>}
+            </div>
+            <ChevronRight size={16} className="text-slate-400 group-hover:text-slate-700 group-hover:translate-x-0.5 transition shrink-0" />
+          </button>
+        ))}
+        {empty && <div className="px-5 py-8 text-center text-xs text-slate-600">{empty}</div>}
+      </div>
+      {changes && repType !== 'trend' && (
+        <div className="px-5 py-2 border-t border-slate-100 text-[10px] text-slate-600 leading-relaxed">
+          前年同期の売上件数が{YOY_MIN_ORDERS}件未満の施設（前年に取引がなかった施設を含む）は比較の対象外です（{changes.excluded}施設を除外）。
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office, showToast }) {
   const [repType, setRepType] = useState('month');
   const [consumableOnly, setConsumableOnly] = useState(false);
@@ -2110,6 +2185,20 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
     const m = chartRep.monthly;
     return { values: m.map(x => x.sales), labels: m.map(x => idxShort(x.idx)) };
   }, [chartRep]);
+
+  // 前年同期（選んだ期間をそのまま1年前にずらした期間）との比較。年度なら前年度、月次なら前年同月。
+  // 年度の途中など、選んだ期間の後半にまだデータが無いときは「データのある月まで」に揃えて比べる
+  // （例: 2026年度でデータが7月までなら、2026年4〜7月 と 2025年4〜7月。月平均もその月数で割る）
+  const lastDataIdx = data.monthsAll.length ? data.monthsAll[data.monthsAll.length - 1] : spec.to;
+  const yoyTo = Math.max(spec.from, Math.min(spec.to, lastDataIdx));
+  const yoyCur = useMemo(() => (repType === 'trend' ? null : (yoyTo === spec.to ? rep : buildPeriodReport(rows, masters, spec.from, yoyTo, consumableOnly))),
+    [repType, rows, masters, spec, yoyTo, rep, consumableOnly]);
+  const lyRep = useMemo(() => (repType === 'trend' ? null : buildPeriodReport(rows, masters, spec.from - 12, yoyTo - 12, consumableOnly)),
+    [repType, rows, masters, spec, yoyTo, consumableOnly]);
+  const rangeLabel = (a, b) => (a === b ? idxLabel(a) : idxLabel(a) + '〜' + idxLabel(b));
+  const yoyCurLabel = repType === 'trend' ? '' : (yoyTo === spec.to ? spec.short : rangeLabel(spec.from, yoyTo));
+  const lyLabel = repType === 'trend' ? '' : rangeLabel(spec.from - 12, yoyTo - 12);
+  const yoyChanges = useMemo(() => (yoyCur && lyRep && lyRep.ranking.length ? buildYoyChanges(yoyCur, lyRep) : null), [yoyCur, lyRep]);
 
   const facTop = rep.ranking.filter(f => f.sales > 0).slice(0, 10);
   const facMax = facTop.length ? facTop[0].sales : 1;
@@ -2323,6 +2412,12 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
             )}
           </div>
         </Card>
+      </div>
+
+      {/* 前年同期比の増減ランキング */}
+      <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-2 gap-4">
+        <YoyChangeCard kind="increase" changes={yoyChanges} repType={repType} short={yoyCurLabel} lyLabel={lyLabel} jumpToFacility={jumpToFacility} />
+        <YoyChangeCard kind="decrease" changes={yoyChanges} repType={repType} short={yoyCurLabel} lyLabel={lyLabel} jumpToFacility={jumpToFacility} />
       </div>
 
       {/* 分類別売上 */}
