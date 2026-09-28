@@ -1243,7 +1243,7 @@ function buildQuoteHtml(m) {
     </tr>`;
   }).join('');
   const sub = m.items.reduce((s, it) => it.isSpacer ? s : s + qn(it.qty) * it.price, 0);
-  const tax = Math.floor(sub * 0.1);
+  const tax = Math.round(sub * 0.1);
   const total = sub + tax;
   const colW = { cat: scat ? 14 : 0, case: sc ? 9 : 0, qty: 10, unit: 8, price: sp ? 14 : 0, amount: sp ? 16 : 0 };
   const nameW = 100 - colW.cat - colW.case - colW.qty - colW.unit - colW.price - colW.amount;
