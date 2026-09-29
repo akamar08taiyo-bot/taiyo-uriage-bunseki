@@ -149,15 +149,16 @@ const OFFICE_MASTER = [
   { name: '福岡南営業所', zip: '816-0912', addr: '福岡県大野城市御笠川2-10-15', tel: '092-504-9810', fax: '092-504-9811', chief: '神谷 大輔' },
   { name: '福岡西営業所', zip: '814-0032', addr: '福岡県福岡市早良区小田部4-11-31', tel: '092-833-0131', fax: '092-833-0132', chief: '佐藤 正利' },
   { name: '福岡東営業所', zip: '812-0064', addr: '福岡県福岡市東区松田3丁目25-2', tel: '092-627-1150', fax: '092-627-1151', chief: '岡本 将臣' },
-  { name: '久留米営業所', zip: '838-0814', addr: '福岡県朝倉郡筑前町高田585-1', tel: '0946-21-5355', fax: '0946-21-5356', chief: '牟田 知広' },
+  // 久留米・大分は見積アプリ(taiyo-mitsumori)で自社の見積書カバー(2025-02-01版)と照合して更新済みの最新情報に合わせる
+  { name: '久留米営業所', zip: '838-0141', addr: '福岡県小郡市小郡97-19', tel: '0942-72-8822', fax: '0942-72-8833', chief: '牟田 知広' },
   { name: '大牟田営業所', zip: '837-0924', addr: '福岡県大牟田市歴木446-1', tel: '0944-59-1488', fax: '0944-59-1481', chief: '橋本 浩志' },
   { name: '佐賀営業所', zip: '849-0937', addr: '佐賀県佐賀市鍋島5丁目4-15', tel: '0952-34-1224', fax: '0952-34-1225', chief: '江原 諒' },
   { name: '長崎営業所', zip: '851-0122', addr: '長崎県長崎市界2丁目2-4', tel: '095-834-0535', fax: '095-834-0536', chief: '吉本 幸治' },
   { name: '大村営業所', zip: '856-0844', addr: '長崎県大村市溝陸町643-1', tel: '0957-49-6222', fax: '0957-49-6333', chief: '山口 隆史' },
-  { name: '壱岐営業所', zip: '811-5117', addr: '長崎県壱岐市郷ノ浦町中触1078', tel: '0920-47-9005', fax: '0920-47-9006', chief: '長岡 計治' },
+  { name: '壱岐営業所', zip: '811-5117', addr: '長崎県壱岐市郷ノ浦町田中触1078', tel: '0920-47-9005', fax: '0920-47-9006', chief: '長岡 計治' },
   { name: '熊本営業所', zip: '862-0945', addr: '熊本県熊本市東区画図町大字下無田1432-22', tel: '096-377-7630', fax: '096-377-7631', chief: '城戸 健' },
   { name: '熊本北営業所', zip: '861-5517', addr: '熊本県熊本市北区鶴羽田1-10-7', tel: '096-341-5765', fax: '096-341-5766', chief: '高木 伸基' },
-  { name: '大分営業所', zip: '870-0142', addr: '大分県大分市三川下2-7-8', tel: '097-555-9684', fax: '097-555-9685', chief: '山下 厚' },
+  { name: '大分営業所', zip: '870-0953', addr: '大分県大分市下郡東1-4-35', tel: '097-504-8001', fax: '097-504-8002', chief: '山下 厚' },
 ];
 const officeByName = (name) => OFFICE_MASTER.find(o => o.name === name) || null;
 // ポータル(taiyo-portal)でログイン済みなら、その営業所を初回選択の代わりに使う（同一オリジンのlocalStorageを参照するだけ）
@@ -807,6 +808,30 @@ function buildAnalytics(rows, masters, baseSel) {
 /* ============================================================
    任意期間のレポート集計（明細を範囲で走査。12ヶ月窓に依存しない）
 ============================================================ */
+// 前年同期比の増減ランキング：前年同期の売上件数（売上番号の数）がこれ未満の施設は比較にならないので除外する
+const YOY_MIN_ORDERS = 3;
+// 選んだ期間（cur）と前年同期（prev）の施設別売上から、増加額・減少額の大きい順TOP10を作る
+function buildYoyChanges(cur, prev, limit = 10) {
+  const curMap = new Map(cur.ranking.map(f => [f.name, f]));
+  let excluded = 0;
+  const list = [];
+  prev.ranking.forEach(p => {
+    if ((p.orders || 0) < YOY_MIN_ORDERS) { excluded++; return; }
+    const c = curMap.get(p.name);
+    const now = c ? c.sales : 0;
+    const diff = now - p.sales;
+    list.push({ name: p.name, now, nowAvg: c ? c.avg : 0, prev: p.sales, prevAvg: p.avg, prevOrders: p.orders, diff,
+      pct: p.sales > 0 ? Math.round(diff / p.sales * 100) : null });
+  });
+  // 前年同期に売上が無かった（今期からの）施設も比較対象外として数える
+  cur.ranking.forEach(c => { if (!prev.ranking.some(p => p.name === c.name)) excluded++; });
+  return {
+    increase: list.filter(x => x.diff > 0).sort((a, b) => b.diff - a.diff).slice(0, limit),
+    decrease: list.filter(x => x.diff < 0).sort((a, b) => a.diff - b.diff).slice(0, limit),
+    excluded, compared: list.length,
+  };
+}
+
 function buildPeriodReport(rows, masters, fromIdx, toIdx, consumableOnly) {
   const custs = masters.customers, catOv = masters.catOverrides, catRules = masters.catRules;
   const facMap = new Map(), prodMap = new Map(), monMap = new Map();
@@ -828,8 +853,8 @@ function buildPeriodReport(rows, masters, fromIdx, toIdx, consumableOnly) {
     // 施設別ランキング等が個人客で長くならないよう、施設のみに限定する
     if (c.type === 'facility') {
       let f = facMap.get(name);
-      if (!f) { f = { name, repName: c.rep || '未設定', sales: 0, gross: 0, months: new Set() }; facMap.set(name, f); }
-      f.sales += amt; f.gross += g; f.months.add(d.idx);
+      if (!f) { f = { name, repName: c.rep || '未設定', sales: 0, gross: 0, months: new Set(), orders: new Set() }; facMap.set(name, f); }
+      f.sales += amt; f.gross += g; f.months.add(d.idx); f.orders.add(r[0]);
     }
 
     let p = prodMap.get(pn);
@@ -863,7 +888,7 @@ function buildPeriodReport(rows, masters, fromIdx, toIdx, consumableOnly) {
     topProducts: [...prodMap.values()].filter(p => p.sales > 0).sort((a, b) => b.sales - a.sales).slice(0, 10)
       .map(p => ({ name: p.name, cat: p.cat, qty: p.qty, unit: p.unit, sales: p.sales })),
     ranking: [...facMap.values()].sort((a, b) => b.sales - a.sales)
-      .map(f => ({ name: f.name, repName: f.repName, sales: f.sales, avg: f.sales / nMonths, margin: rate(f.gross, f.sales) })),
+      .map(f => ({ name: f.name, repName: f.repName, sales: f.sales, avg: f.sales / nMonths, margin: rate(f.gross, f.sales), orders: f.orders.size })),
   };
 }
 
@@ -905,10 +930,25 @@ async function exportPdf(html, fileName) {
     const targets = docs.length ? docs : [holder];
     let first = true;
     for (let i = 0; i < targets.length; i++) {
-      const canvas = await html2canvas(targets[i], { scale: 2, backgroundColor: '#ffffff', logging: false });
+      // 改ページで文字の行を真ん中から切らないよう、行・段落・枠の下端を「切ってよい位置」として集めておく
+      const target = targets[i];
+      const topPx = target.getBoundingClientRect().top;
+      const breaksCss = [...target.querySelectorAll('tr, p, li, h1, h2, h3, h4, table, section, div')]
+        .map(el => el.getBoundingClientRect().bottom - topPx)
+        .filter(v => v > 0);
+      const canvas = await html2canvas(target, { scale: 2, backgroundColor: '#ffffff', logging: false });
+      const pxPerCss = canvas.width / (target.getBoundingClientRect().width || canvas.width);
+      const breaks = [...new Set(breaksCss.map(v => Math.round(v * pxPerCss)))].sort((p, q) => p - q);
       const pageHpx = canvas.width * 297 / 210;   // 1ページ分の高さ(px)
-      for (let y = 0; y < canvas.height - 2; y += pageHpx) {
-        const h = Math.min(pageHpx, canvas.height - y);
+      for (let y = 0; y < canvas.height - 2;) {
+        let h = Math.min(pageHpx, canvas.height - y);
+        if (y + h < canvas.height - 2) {
+          // ページ下端より上で最も近い区切り（ページの半分より下）で切る。見つからなければ従来どおりページ高さで切る
+          const limit = y + pageHpx;
+          let cut = 0;
+          for (const bpos of breaks) { if (bpos > y + pageHpx * 0.5 && bpos <= limit) cut = bpos; }
+          if (cut) h = cut - y;
+        }
         const slice = document.createElement('canvas');
         slice.width = canvas.width;
         slice.height = h;
@@ -916,6 +956,7 @@ async function exportPdf(html, fileName) {
         if (!first) pdf.addPage();
         first = false;
         pdf.addImage(slice.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, 210, h * 210 / canvas.width);
+        y += h;
       }
     }
     pdf.save(fileName);
@@ -1226,7 +1267,7 @@ function buildQuoteHtml(m) {
     </tr>`;
   }).join('');
   const sub = m.items.reduce((s, it) => it.isSpacer ? s : s + qn(it.qty) * it.price, 0);
-  const tax = Math.floor(sub * 0.1);
+  const tax = Math.round(sub * 0.1);
   const total = sub + tax;
   const colW = { cat: scat ? 14 : 0, case: sc ? 9 : 0, qty: 10, unit: 8, price: sp ? 14 : 0, amount: sp ? 16 : 0 };
   const nameW = 100 - colW.cat - colW.case - colW.qty - colW.unit - colW.price - colW.amount;
@@ -1611,7 +1652,7 @@ function buildPriceCheckListHtml(m) {
 ============================================================ */
 function Segmented({ options, value, onChange }) {
   return (
-    <div className="inline-flex bg-slate-200/70 rounded-xl p-1 gap-0.5">
+    <div className="inline-flex flex-wrap max-w-full bg-slate-200/70 rounded-xl p-1 gap-0.5">
       {options.map(([id, label]) => (
         <button key={id} onClick={() => onChange(id)}
           className={"px-3.5 py-1.5 rounded-lg text-sm font-bold transition " +
@@ -2025,6 +2066,57 @@ function EmptyState({ goImport }) {
 /* ============================================================
    画面1: ダッシュボード
 ============================================================ */
+// 前年同期より売上が増えた／減った施設 TOP10（ダッシュボード）
+function YoyChangeCard({ kind, changes, repType, short, lyLabel, jumpToFacility }) {
+  const inc = kind === 'increase';
+  const list = changes ? (inc ? changes.increase : changes.decrease) : [];
+  const Icon = inc ? TrendingUp : TrendingDown;
+  let empty = '';
+  if (repType === 'trend') empty = '月別推移（全期間）では前年との比較はできません。月次・年度・期間指定を選んでください';
+  else if (!changes) empty = '前年同期（' + lyLabel + '）の売上データが取り込まれていないため比較できません';
+  else if (!list.length) empty = inc ? '前年同期より売上が増えた施設はありません' : '前年同期より売上が減った施設はありません';
+  return (
+    <Card>
+      <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5">
+        <span className={"inline-flex items-center justify-center w-8 h-8 rounded-xl " + (inc ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600')}><Icon size={16} /></span>
+        <div className="flex-1 min-w-0">
+          <div className="font-bold text-sm text-slate-800">前年同期より売上が{inc ? '増えた' : '減った'}施設 TOP10</div>
+          <div className="text-[11px] text-slate-600">
+            {repType === 'trend' ? '前年比較なし' : short + ' と 前年同期（' + lyLabel + '）の比較'} ・ クリックで施設の詳細分析へ
+          </div>
+        </div>
+      </div>
+      <div className="divide-y divide-slate-50">
+        {list.map((f, i) => (
+          <button key={f.name} onClick={() => jumpToFacility(f.name)}
+            className="w-full text-left px-5 py-2.5 hover:bg-slate-50 transition flex items-center gap-3 group">
+            <span className={"w-7 h-7 rounded-lg text-xs font-bold inline-flex items-center justify-center shrink-0 " +
+              (inc ? (i < 3 ? 'bg-emerald-500 text-white' : 'bg-emerald-50 text-emerald-700') : (i < 3 ? 'bg-rose-500 text-white' : 'bg-rose-50 text-rose-700'))}>{i + 1}</span>
+            <div className="flex-1 min-w-0">
+              <div className="font-bold text-xs text-slate-700 truncate">{f.name}</div>
+              <div className="mt-0.5 text-[10px] text-slate-600 tabular-nums leading-relaxed">
+                <span className="whitespace-nowrap">今期 {yen(f.now)}（月平均 {yen(Math.round(f.nowAvg))}）</span>{' '}
+                <span className="whitespace-nowrap">前年 {yen(f.prev)}（月平均 {yen(Math.round(f.prevAvg))}・{f.prevOrders}件）</span>
+              </div>
+            </div>
+            <div className="shrink-0 text-right">
+              <div className={"text-xs font-extrabold tabular-nums " + (inc ? 'text-emerald-700' : 'text-rose-700')}>{inc ? '+' : '−'}{yen(Math.abs(f.diff))}</div>
+              {f.pct !== null && <div className={"text-[10px] font-bold tabular-nums " + (inc ? 'text-emerald-600' : 'text-rose-600')}>{f.pct > 0 ? '+' : ''}{f.pct}%</div>}
+            </div>
+            <ChevronRight size={16} className="text-slate-400 group-hover:text-slate-700 group-hover:translate-x-0.5 transition shrink-0" />
+          </button>
+        ))}
+        {empty && <div className="px-5 py-8 text-center text-xs text-slate-600">{empty}</div>}
+      </div>
+      {changes && repType !== 'trend' && (
+        <div className="px-5 py-2 border-t border-slate-100 text-[10px] text-slate-600 leading-relaxed">
+          前年同期の売上件数が{YOY_MIN_ORDERS}件未満の施設（前年に取引がなかった施設を含む）は比較の対象外です（{changes.excluded}施設を除外）。
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office, showToast }) {
   const [repType, setRepType] = useState('month');
   const [consumableOnly, setConsumableOnly] = useState(false);
@@ -2093,6 +2185,20 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
     const m = chartRep.monthly;
     return { values: m.map(x => x.sales), labels: m.map(x => idxShort(x.idx)) };
   }, [chartRep]);
+
+  // 前年同期（選んだ期間をそのまま1年前にずらした期間）との比較。年度なら前年度、月次なら前年同月。
+  // 年度の途中など、選んだ期間の後半にまだデータが無いときは「データのある月まで」に揃えて比べる
+  // （例: 2026年度でデータが7月までなら、2026年4〜7月 と 2025年4〜7月。月平均もその月数で割る）
+  const lastDataIdx = data.monthsAll.length ? data.monthsAll[data.monthsAll.length - 1] : spec.to;
+  const yoyTo = Math.max(spec.from, Math.min(spec.to, lastDataIdx));
+  const yoyCur = useMemo(() => (repType === 'trend' ? null : (yoyTo === spec.to ? rep : buildPeriodReport(rows, masters, spec.from, yoyTo, consumableOnly))),
+    [repType, rows, masters, spec, yoyTo, rep, consumableOnly]);
+  const lyRep = useMemo(() => (repType === 'trend' ? null : buildPeriodReport(rows, masters, spec.from - 12, yoyTo - 12, consumableOnly)),
+    [repType, rows, masters, spec, yoyTo, consumableOnly]);
+  const rangeLabel = (a, b) => (a === b ? idxLabel(a) : idxLabel(a) + '〜' + idxLabel(b));
+  const yoyCurLabel = repType === 'trend' ? '' : (yoyTo === spec.to ? spec.short : rangeLabel(spec.from, yoyTo));
+  const lyLabel = repType === 'trend' ? '' : rangeLabel(spec.from - 12, yoyTo - 12);
+  const yoyChanges = useMemo(() => (yoyCur && lyRep && lyRep.ranking.length ? buildYoyChanges(yoyCur, lyRep) : null), [yoyCur, lyRep]);
 
   const facTop = rep.ranking.filter(f => f.sales > 0).slice(0, 10);
   const facMax = facTop.length ? facTop[0].sales : 1;
@@ -2248,8 +2354,8 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
       </div>
       {drilldown && <KpiDrilldownModal {...drilldown} onClose={() => setDrilldown(null)} />}
 
-      {/* ランキング2枚 */}
-      <div className="grid lg:grid-cols-2 gap-4">
+      {/* ランキング2枚（1列表示のスマホで、長い施設名に引っぱられて画面からはみ出さないよう列幅を0まで縮められるようにする） */}
+      <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-2 gap-4">
         <Card>
           <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5">
             <span className="inline-flex items-center justify-center w-8 h-8 rounded-xl bg-sky-50 text-sky-500"><Building2 size={16} /></span>
@@ -2306,6 +2412,12 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
             )}
           </div>
         </Card>
+      </div>
+
+      {/* 前年同期比の増減ランキング */}
+      <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-2 gap-4">
+        <YoyChangeCard kind="increase" changes={yoyChanges} repType={repType} short={yoyCurLabel} lyLabel={lyLabel} jumpToFacility={jumpToFacility} />
+        <YoyChangeCard kind="decrease" changes={yoyChanges} repType={repType} short={yoyCurLabel} lyLabel={lyLabel} jumpToFacility={jumpToFacility} />
       </div>
 
       {/* 分類別売上 */}
@@ -4396,7 +4508,7 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
     <div className="space-y-4">
       <Card className="px-5 py-4 space-y-3">
         <div className="flex items-center gap-3 flex-wrap">
-          <div className="inline-flex items-center gap-2">
+          <div className="inline-flex flex-wrap items-center gap-2 max-w-full">
             <span className="text-sm text-slate-600 font-bold shrink-0">宛先（任意）</span>
             <div className="relative" ref={facBoxRef}>
               <input value={draft.facility} onChange={e => { patch({ facility: e.target.value }); setFacSuggestOpen(true); }}
@@ -5102,7 +5214,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
     <div className="space-y-4">
       <Card className="px-5 py-4 space-y-3">
         <div className="flex items-center gap-3 flex-wrap">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 max-w-full">
             <span className="text-sm text-slate-600 font-bold shrink-0">施設名</span>
             <div className="relative" ref={facBoxRef}>
               <textarea ref={facInputRef} value={draft.facility}
@@ -6872,7 +6984,8 @@ function App() {
           <a href="https://akamar08taiyo-bot.github.io/taiyo-portal/" className="block px-5 md:px-8 pt-1.5 text-[10.5px] text-slate-400 hover:text-slate-600">
             ← 業務アプリポータルへ戻る
           </a>
-          <div className="px-5 md:px-8 py-4 flex items-center gap-3">
+          {/* スマホではボタンと基準月が入りきらず画面が横にはみ出していたため、折り返して次の行に並べる */}
+          <div className="px-5 md:px-8 py-4 flex flex-wrap md:flex-nowrap items-center gap-3">
             <div className="md:hidden inline-flex items-center justify-center w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 shrink-0">
               <Sun size={16} className="text-white" />
             </div>
@@ -6883,7 +6996,7 @@ function App() {
             {tab !== 'import' && (
               <button onClick={() => setTab('import')}
                 className="h-10 px-3.5 rounded-xl border border-emerald-300 bg-white hover:bg-emerald-50 hover:border-emerald-400 active:scale-[.98] text-emerald-700 text-sm shadow-sm font-bold shrink-0 transition inline-flex items-center gap-1.5">
-                <FileUp size={15} /> 最新データを取り込む
+                <FileUp size={15} /> <span className="hidden sm:inline">最新データを</span>取り込む
               </button>
             )}
             {monthsDesc.length > 0 && (
