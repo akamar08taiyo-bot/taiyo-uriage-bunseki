@@ -44,6 +44,7 @@ import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import ReactDOM from 'react-dom/client';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
+import { zipSync, strToU8 } from 'fflate';
 import {
   LayoutDashboard, Building2, Users, Package, Warehouse, Upload, Settings,
   Printer, X, Search, AlertTriangle, PhoneCall, ChevronDown, ChevronUp, ChevronRight,
@@ -934,6 +935,490 @@ function downloadText(fileName, text, mime) {
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
+
+/* ============================================================
+   出力: Excel（.xlsx）— 見積書・発注書を、印刷・PDF と同じ形の Excel でも保存する
+   ブラウザの中で xlsx を組み立てる（サーバーへは送らない）。zip 圧縮だけ fflate（jsPDF が使っているもの）を使い、
+   書式・結合セル・計算式・A4 の印刷設定は Office Open XML を直接書く。見積・提案書作成（taiyo-mitsumori）の Excel 保存と同じ作り。
+============================================================ */
+const XL_MINCHO = 'BIZ UDP明朝 Medium'; // 印刷帳票の BIZ UDPMincho と同じ書体（Windows 10 以降に標準）。無い PC では Excel が近い明朝体で表示する
+const XL_MDW = 10;                       // 標準フォント（BIZ UDP明朝 Medium 11pt）の数字1文字の幅(px)。列幅の mm → Excel の幅 の換算に使う
+const XL_PX_MM = 96 / 25.4;
+const XL_PT_MM = 72 / 25.4;
+const XL_NS_MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+const XL_NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+const XL_CT = 'application/vnd.openxmlformats-officedocument.';
+const XL_XML_HEAD = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
+const XL_MIME = XL_CT + 'spreadsheetml.sheet';
+const XL_YEN = '"¥"#,##0;"¥"-#,##0'; // 印刷の yen()（四捨五入して ¥1,234／¥-1,500）と同じ見え方
+
+// XML に書けない制御文字を除いてエスケープ
+const xlEsc = (s) => String(s == null ? '' : s)
+  .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g, '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const xlColName = (c) => { let s = ''; let n = c + 1; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; };
+// 0 始まりの行・列 → "A1"（abs=true で "$A$1"）
+const xlRef = (r, c, abs) => abs ? `$${xlColName(c)}$${r + 1}` : `${xlColName(c)}${r + 1}`;
+const xlRange = (r1, c1, r2, c2, abs) => `${xlRef(r1, c1, abs)}:${xlRef(r2, c2, abs)}`;
+const xlArgb = (hex) => 'FF' + String(hex || '000000').replace('#', '').toUpperCase();
+const xlNum = (n) => { const v = Number(n); return isFinite(v) ? String(Number(v.toPrecision(15))) : '0'; }; // Excel と同じ有効15桁
+// mm → Excel の列幅（標準フォントの数字幅単位。パディング込みの値をそのまま書く）
+const xlColWidth = (mm) => Math.max(0.5, Math.round(mm * XL_PX_MM / XL_MDW * 256) / 256);
+
+// 文字幅（em）の見積り。列幅と行の高さ（折り返し行数）を決めるのに使う。
+// 半角英数は BIZ UDP明朝 の実際の字幅（0x20〜0x7E、1/100 em）、かなは少し広めに見積もる
+const XL_ASCII_EM = [33, 38, 49, 86, 68, 100, 87, 30, 47, 47, 50, 84, 33, 50, 33, 50, 68, 52, 68, 68, 68, 68, 68, 68, 68, 68, 33, 33, 84, 84, 84, 70, 98, 84, 74, 81, 80, 72, 66, 84, 80, 38, 50, 79, 63, 96, 84, 84, 70, 86, 75, 70, 70, 82, 76, 98, 80, 76, 72, 50, 50, 50, 50, 31, 50, 62, 64, 58, 63, 63, 46, 66, 67, 33, 40, 65, 33, 92, 66, 62, 65, 64, 46, 54, 42, 64, 61, 86, 66, 64, 55, 51, 44, 51, 50];
+const xlTextEm = (s) => {
+  let w = 0;
+  for (const ch of String(s == null ? '' : s)) {
+    const cp = ch.codePointAt(0);
+    if (cp >= 0x20 && cp < 0x7f) w += XL_ASCII_EM[cp - 0x20] / 100;
+    else if (cp === 0xa5) w += 0.68; // ¥
+    else if (cp >= 0xff61 && cp <= 0xff9f) w += 0.5; // 半角カナ
+    else if ('（）「」【】・：'.includes(ch)) w += 0.5;
+    else if ('、。'.includes(ch)) w += 0.6;
+    else if (ch === '　') w += 0.667; // 全角スペース（BIZ UDP明朝 は 2/3 em）
+    else if ((cp >= 0x3041 && cp <= 0x30ff)) w += 0.95; // かな（プロポーショナル）
+    else w += 1;
+  }
+  return w;
+};
+// 幅 widthMm のセルに sizePt の文字を折り返したときの行数。
+// 書体が置き換わって列が少し狭く見える PC でも文字が切れないよう、使える幅は1割弱少なめに見積もる
+const xlLineCount = (text, widthMm, sizePt) => {
+  const usable = Math.max(4, (widthMm - 4) * 0.93); // セル内の左右余白・字下げ
+  const emMm = sizePt / XL_PT_MM;
+  return String(text == null ? '' : text).split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(xlTextEm(line) * emMm / usable - 0.02)), 0);
+};
+
+function createXlsxBook() {
+  const baseFont = { name: XL_MINCHO, sz: 11 }; // 標準スタイルの書体（列幅の単位もこの書体の数字幅になる）
+  const familyOf = (name) => (/明朝|Mincho/i.test(name) ? 1 : 3);
+  // --- スタイル（フォント・塗り・罫線・表示形式・配置）を重複なく登録 ---
+  const fonts = [], fills = ['<fill><patternFill patternType="none"/></fill>', '<fill><patternFill patternType="gray125"/></fill>'];
+  const borders = ['<border><left/><right/><top/><bottom/><diagonal/></border>'];
+  const numFmts = [], xfs = [];
+  const idx = { font: new Map(), fill: new Map(), border: new Map(), numFmt: new Map(), xf: new Map() };
+  const intern = (map, list, key, make) => { if (map.has(key)) return map.get(key); list.push(make()); map.set(key, list.length - 1); return list.length - 1; };
+  const fontBody = (f, tagName) => {
+    const name = f.name || baseFont.name;
+    return (f.b ? '<b/>' : '') + `<sz val="${xlNum(f.sz || baseFont.sz)}"/>` + `<color rgb="${xlArgb(f.color || '000000')}"/>`
+      + `<${tagName} val="${xlEsc(name)}"/><family val="${familyOf(name)}"/><charset val="128"/>`;
+  };
+  const fontId = (f = {}) => intern(idx.font, fonts, JSON.stringify([f.name || '', f.sz || 0, !!f.b, f.color || '']), () => `<font>${fontBody(f, 'name')}</font>`);
+  fontId({});
+  const fillId = (hex) => (hex ? intern(idx.fill, fills, hex, () => `<fill><patternFill patternType="solid"><fgColor rgb="${xlArgb(hex)}"/><bgColor indexed="64"/></patternFill></fill>`) : 0);
+  // 罫線は { l, r, t, b } に 'thin:93C5FD' のような「線種:色」を指定
+  const edge = (tag, spec) => { if (!spec) return `<${tag}/>`; const [st, col] = String(spec).split(':'); return `<${tag} style="${st}"><color rgb="${xlArgb(col || '000000')}"/></${tag}>`; };
+  const borderId = (b) => {
+    if (!b || !(b.l || b.r || b.t || b.b)) return 0;
+    return intern(idx.border, borders, [b.l, b.r, b.t, b.b].join('|'), () => `<border>${edge('left', b.l)}${edge('right', b.r)}${edge('top', b.t)}${edge('bottom', b.b)}<diagonal/></border>`);
+  };
+  const BUILTIN_FMT = { General: 0, '0': 1, '0.00': 2, '#,##0': 3, '#,##0.00': 4, '@': 49 };
+  const numFmtId = (code) => {
+    if (!code) return 0;
+    if (BUILTIN_FMT[code] !== undefined) return BUILTIN_FMT[code];
+    return 164 + intern(idx.numFmt, numFmts, code, () => code);
+  };
+  // st = { font:{name,sz,b,color}, fill:'RRGGBB', border:{l,r,t,b}, align:{h,v,wrap,indent,shrink}, fmt:'表示形式' }
+  const style = (st = {}) => {
+    const key = JSON.stringify(st);
+    if (idx.xf.has(key)) return idx.xf.get(key);
+    const f = fontId(st.font || {}), fl = fillId(st.fill), bd = borderId(st.border), nf = numFmtId(st.fmt);
+    const al = st.align || {};
+    const alignXml = (al.h || al.v || al.wrap || al.indent || al.shrink)
+      ? `<alignment${al.h ? ` horizontal="${al.h}"` : ''}${al.v ? ` vertical="${al.v}"` : ''}${al.wrap ? ' wrapText="1"' : ''}${al.indent ? ` indent="${al.indent}"` : ''}${al.shrink && !al.wrap ? ' shrinkToFit="1"' : ''}/>` : '';
+    xfs.push(`<xf numFmtId="${nf}" fontId="${f}" fillId="${fl}" borderId="${bd}" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">${alignXml}</xf>`);
+    idx.xf.set(key, xfs.length - 1);
+    return xfs.length - 1;
+  };
+  style({}); // 0 番 = 既定
+
+  // --- 共有文字列（リッチテキスト＝1セル内で大きさ・色を変える文字にも対応） ---
+  const sst = [], sstIdx = new Map();
+  let sstRefs = 0;
+  // 先頭・末尾の空白や改行を残すときだけ xml:space="preserve" を付ける（Excel と同じ）
+  const tXml = (t) => `<t${/^\s|\s$|[\n\t]/.test(String(t)) ? ' xml:space="preserve"' : ''}>${xlEsc(t)}</t>`;
+  const runXml = (run) => `<r><rPr>${fontBody(run.font || {}, 'rFont')}</rPr>${tXml(run.t)}</r>`;
+  const stringId = (v) => {
+    sstRefs++;
+    const key = typeof v === 'string' ? 's:' + v : 'r:' + JSON.stringify(v);
+    if (sstIdx.has(key)) return sstIdx.get(key);
+    const xml = typeof v === 'string' ? `<si>${tXml(v)}</si>` : `<si>${v.rich.filter(r => r.t !== '' && r.t != null).map(runXml).join('')}</si>`;
+    sst.push(xml); sstIdx.set(key, sst.length - 1);
+    return sst.length - 1;
+  };
+
+  const sheets = [];
+  const addSheet = (name, pageOpts = {}) => {
+    const ws = {
+      name: (String(name || 'Sheet1').replace(/[\[\]:*?\/\\]/g, ' ').trim() || 'Sheet1').slice(0, 31), cols: [], rows: new Map(), merges: [],
+      page: Object.assign({ orientation: 'portrait', paper: 9, margins: { l: 15, r: 15, t: 12, b: 12, h: 6, f: 6 }, fitWidth: 1, fitHeight: 0, hCenter: true, printArea: null, printTitles: null }, pageOpts),
+    };
+    const rowOf = (r) => { if (!ws.rows.has(r)) ws.rows.set(r, { ht: null, cells: new Map() }); return ws.rows.get(r); };
+    // 列幅（mm 指定）
+    ws.setCols = (mmList) => { ws.cols = mmList.map(xlColWidth); };
+    ws.height = (r, pt) => { rowOf(r).ht = Math.min(409, Math.max(rowOf(r).ht || 0, Math.round(pt * 4) / 4)); }; // Excel の行の高さは 409pt まで
+    // 値: 数値 / 文字列 / { rich:[{t,font}] } / { f:'式', v:キャッシュ値 } / null（書式だけ）
+    ws.cell = (r, c, v, s) => { rowOf(r).cells.set(c, { v, s: s || 0 }); };
+    ws.styleOnly = (r, c, s) => { const row = rowOf(r); const cur = row.cells.get(c); row.cells.set(c, { v: cur ? cur.v : null, s }); };
+    // 結合セル：外枠の罫線を周囲のセルに振り分け、塗りは全セルに入れる
+    ws.box = (r1, c1, r2, c2, v, st = {}) => {
+      const b = st.border || {};
+      for (let r = r1; r <= r2; r++) {
+        for (let c = c1; c <= c2; c++) {
+          const cs = Object.assign({}, st, { border: { l: c === c1 ? b.l : undefined, r: c === c2 ? b.r : undefined, t: r === r1 ? b.t : undefined, b: r === r2 ? b.b : undefined } });
+          if (r === r1 && c === c1) ws.cell(r, c, v, style(cs));
+          else ws.styleOnly(r, c, style(cs));
+        }
+      }
+      if (r1 !== r2 || c1 !== c2) ws.merges.push(xlRange(r1, c1, r2, c2));
+    };
+    sheets.push(ws);
+    return ws;
+  };
+
+  const sheetXml = (ws, sheetIndex) => {
+    const rowsSorted = [...ws.rows.keys()].sort((a, b) => a - b);
+    let maxR = 0, maxC = 0;
+    const sd = rowsSorted.map(r => {
+      const row = ws.rows.get(r);
+      const cols = [...row.cells.keys()].sort((a, b) => a - b);
+      maxR = Math.max(maxR, r);
+      const cells = cols.map(c => {
+        maxC = Math.max(maxC, c);
+        const { v, s } = row.cells.get(c);
+        const ref = xlRef(r, c);
+        const sa = s ? ` s="${s}"` : '';
+        if (v === null || v === undefined || v === '') return `<c r="${ref}"${sa}/>`;
+        if (typeof v === 'number') return isFinite(v) ? `<c r="${ref}"${sa}><v>${xlNum(v)}</v></c>` : `<c r="${ref}"${sa}/>`;
+        if (typeof v === 'object' && v.f) return `<c r="${ref}"${sa}><f>${xlEsc(v.f)}</f>${v.v === undefined || v.v === null || !isFinite(Number(v.v)) ? '' : `<v>${xlNum(v.v)}</v>`}</c>`;
+        return `<c r="${ref}"${sa} t="s"><v>${stringId(v)}</v></c>`;
+      }).join('');
+      const ht = row.ht ? ` ht="${xlNum(row.ht)}" customHeight="1"` : '';
+      return `<row r="${r + 1}"${ht}>${cells}</row>`;
+    }).join('');
+    const p = ws.page;
+    const dim = `<dimension ref="A1:${xlRef(Math.max(0, maxR), Math.max(0, maxC, ws.cols.length - 1))}"/>`;
+    const fit = p.fitWidth || p.fitHeight ? '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>' : '';
+    const views = `<sheetViews><sheetView showGridLines="0"${sheetIndex === 0 ? ' tabSelected="1"' : ''} zoomScale="100" zoomScaleNormal="100" workbookViewId="0"><selection activeCell="A1" sqref="A1"/></sheetView></sheetViews>`;
+    const colsXml = ws.cols.length ? `<cols>${ws.cols.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${xlNum(w)}" customWidth="1"/>`).join('')}</cols>` : '';
+    const merges = ws.merges.length ? `<mergeCells count="${ws.merges.length}">${ws.merges.map(m => `<mergeCell ref="${m}"/>`).join('')}</mergeCells>` : '';
+    const mm2in = (mm) => xlNum(Math.round(mm / 25.4 * 1000) / 1000);
+    const m = p.margins;
+    const printOpts = p.hCenter ? '<printOptions horizontalCentered="1"/>' : '';
+    const pageMargins = `<pageMargins left="${mm2in(m.l)}" right="${mm2in(m.r)}" top="${mm2in(m.t)}" bottom="${mm2in(m.b)}" header="${mm2in(m.h)}" footer="${mm2in(m.f)}"/>`;
+    const pageSetup = `<pageSetup paperSize="${p.paper}" orientation="${p.orientation}"${p.fitWidth || p.fitHeight ? ` fitToWidth="${p.fitWidth || 0}" fitToHeight="${p.fitHeight || 0}"` : ''}/>`;
+    return XL_XML_HEAD + `<worksheet xmlns="${XL_NS_MAIN}" xmlns:r="${XL_NS_R}">${fit}${dim}${views}<sheetFormatPr defaultRowHeight="15"/>${colsXml}<sheetData>${sd}</sheetData>${merges}${printOpts}${pageMargins}${pageSetup}</worksheet>`;
+  };
+
+  const toBytes = (meta = {}) => {
+    const files = {};
+    const enc = (s) => strToU8(s);
+    const ct = [], wbRels = [];
+    sheets.forEach((ws, i) => {
+      const n = i + 1;
+      files[`xl/worksheets/sheet${n}.xml`] = enc(sheetXml(ws, i));
+      ct.push(`<Override PartName="/xl/worksheets/sheet${n}.xml" ContentType="${XL_CT}spreadsheetml.worksheet+xml"/>`);
+      wbRels.push(`<Relationship Id="rId${n}" Type="${XL_NS_R}/worksheet" Target="worksheets/sheet${n}.xml"/>`);
+    });
+    const nS = sheets.length;
+    wbRels.push(`<Relationship Id="rId${nS + 1}" Type="${XL_NS_R}/styles" Target="styles.xml"/>`);
+    wbRels.push(`<Relationship Id="rId${nS + 2}" Type="${XL_NS_R}/sharedStrings" Target="sharedStrings.xml"/>`);
+    // 印刷範囲・印刷タイトル（各ページに繰り返す見出し行）
+    const names = [];
+    sheets.forEach((ws, i) => {
+      const p = ws.page, sh = `'${ws.name.replace(/'/g, "''")}'`;
+      if (p.printArea) names.push(`<definedName name="_xlnm.Print_Area" localSheetId="${i}">${xlEsc(sh + '!' + xlRange(p.printArea[0], p.printArea[1], p.printArea[2], p.printArea[3], true))}</definedName>`);
+      if (p.printTitles) names.push(`<definedName name="_xlnm.Print_Titles" localSheetId="${i}">${xlEsc(sh + `!$${p.printTitles[0] + 1}:$${p.printTitles[1] + 1}`)}</definedName>`);
+    });
+    // スタイル・共有文字列はシートの XML を作る途中で登録されるので、シートのあとに書き出す
+    files['xl/styles.xml'] = enc(XL_XML_HEAD + `<styleSheet xmlns="${XL_NS_MAIN}">`
+      + (numFmts.length ? `<numFmts count="${numFmts.length}">${numFmts.map((code, k) => `<numFmt numFmtId="${164 + k}" formatCode="${xlEsc(code)}"/>`).join('')}</numFmts>` : '')
+      + `<fonts count="${fonts.length}">${fonts.join('')}</fonts>`
+      + `<fills count="${fills.length}">${fills.join('')}</fills>`
+      + `<borders count="${borders.length}">${borders.join('')}</borders>`
+      + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+      + `<cellXfs count="${xfs.length}">${xfs.join('')}</cellXfs>`
+      + '<cellStyles count="1"><cellStyle name="標準" xfId="0" builtinId="0"/></cellStyles>'
+      + '</styleSheet>');
+    files['xl/sharedStrings.xml'] = enc(XL_XML_HEAD + `<sst xmlns="${XL_NS_MAIN}" count="${sstRefs}" uniqueCount="${sst.length}">${sst.join('')}</sst>`);
+    files['xl/workbook.xml'] = enc(XL_XML_HEAD + `<workbook xmlns="${XL_NS_MAIN}" xmlns:r="${XL_NS_R}"><workbookPr/><bookViews><workbookView activeTab="0"/></bookViews>`
+      + `<sheets>${sheets.map((ws, i) => `<sheet name="${xlEsc(ws.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets>`
+      + (names.length ? `<definedNames>${names.join('')}</definedNames>` : '')
+      + '<calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>');
+    files['xl/_rels/workbook.xml.rels'] = enc(XL_XML_HEAD + `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${wbRels.join('')}</Relationships>`);
+    const now = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+    files['docProps/core.xml'] = enc(XL_XML_HEAD + '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+      + `<dc:title>${xlEsc(meta.title || '')}</dc:title><dc:creator>${xlEsc(meta.creator || '')}</dc:creator>`
+      + `<dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified></cp:coreProperties>`);
+    files['docProps/app.xml'] = enc(XL_XML_HEAD + '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Microsoft Excel</Application></Properties>');
+    files['_rels/.rels'] = enc(XL_XML_HEAD + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+      + `<Relationship Id="rId1" Type="${XL_NS_R}/officeDocument" Target="xl/workbook.xml"/>`
+      + '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>'
+      + `<Relationship Id="rId3" Type="${XL_NS_R}/extended-properties" Target="docProps/app.xml"/></Relationships>`);
+    files['[Content_Types].xml'] = enc(XL_XML_HEAD + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+      + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
+      + `<Override PartName="/xl/workbook.xml" ContentType="${XL_CT}spreadsheetml.sheet.main+xml"/>`
+      + `<Override PartName="/xl/styles.xml" ContentType="${XL_CT}spreadsheetml.styles+xml"/>`
+      + `<Override PartName="/xl/sharedStrings.xml" ContentType="${XL_CT}spreadsheetml.sharedStrings+xml"/>`
+      + ct.join('')
+      + '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
+      + `<Override PartName="/docProps/app.xml" ContentType="${XL_CT}extended-properties+xml"/></Types>`);
+    // [Content_Types].xml を先頭に置く（一部の読み込み側が先頭を期待するため）
+    const ordered = { '[Content_Types].xml': files['[Content_Types].xml'] };
+    Object.keys(files).forEach(k => { if (k !== '[Content_Types].xml') ordered[k] = files[k]; });
+    return zipSync(ordered, { level: 6 });
+  };
+
+  return { style, addSheet, toBytes };
+}
+
+// 印刷の letter-spacing:0.5em の代わり。全角スペース（2/3 em）は「全角2つ＋半角1つ」にすると字の位置が印刷とそろい、
+// 全角スペースのない字の間には半角スペースを挟む
+const xlLetterSpace = (s) => {
+  const ch = [...String(s || '')];
+  return ch.map((c, i) => {
+    if (c === '　') return '　　 ';
+    const next = ch[i + 1];
+    return next !== undefined && !/\s/.test(c) && !/\s/.test(next) ? c + ' ' : c;
+  }).join('');
+};
+
+// 見積書（kind='quote'）・発注書（'order'）の Excel。印刷の buildQuoteHtml／buildFacilityOrderHtml と同じ m を受け取り、
+// 同じ並び・大きさ・配色で書く。頭の部分（題名・宛名・御見積金額・右の枠）は印刷と同じ位置（横は mm・縦は pt）に置き、
+// その境目と表の列の境目をあわせた行・列を作って、1つの枠は必要なセルをつなげて（結合して）作る。
+// 金額・小計・消費税・合計は計算式（開いた時点の値は印刷と同じ。Excel で数量や単価を直すと計算し直される）。
+function buildDocXlsx(kind, m) {
+  const isQuote = kind === 'quote';
+  const sp = !!m.showPrices, sc = m.showCaseSize !== false, scat = m.showCat !== false, sin = !!m.showItemNote;
+  const st = isQuote && m.showTotal !== false;
+  const o = officeByName(m.office);
+  const PT = XL_PT_MM;
+  const W = 184, RX = W - 70; // 本文の幅（A4 の 210mm − 左右の余白 13mm）と、右の枠（幅 70mm）の左端
+  const C = {
+    navy: '1E3A8A', blue: '2563EB', blue3: '3B82F6', blue4: '93C5FD', line: 'BFDBFE', head: 'DBEAFE', tint: 'F0F7FF', tint2: 'EFF6FF',
+    zebra: 'F8FBFF', ink: '1F2937', sub: '4B5563', gray: '6B7280', mute: '9CA3AF', qty: 'FFFDF5',
+  };
+  const F = (sz, o2) => Object.assign({ name: XL_MINCHO, sz, color: C.ink }, o2);
+  const mmOf = (text, pt, bold) => xlTextEm(text) * pt / PT * (bold ? 1.06 : 1); // 文字列の幅(mm)
+  const oneLine = (s) => String(s || '').replace(/\s*\n\s*/g, ' ');             // 印刷では改行は空白になる
+  const qn = (q) => (Number(q) || 0);
+  const priceOf = (it) => Number(it.price) || 0;
+  const sub = m.items.reduce((s, it) => it.isSpacer ? s : s + qn(it.qty) * priceOf(it), 0);
+  const tax = Math.floor(sub * 0.1);
+  const total = sub + tax;
+
+  // --- 表の列（印刷の colgroup と同じ割合） ---
+  const pct = isQuote ? { cat: 14, case: 9, qty: 10, unit: 8, price: 14, amount: 16 } : { cat: 15, case: 9, qty: 11, unit: 8, price: 13 };
+  const cols = [];
+  if (scat) cols.push({ key: 'cat', head: 'カテゴリ' });
+  cols.push({ key: 'name', head: isQuote ? '品目' : '商品名' });
+  if (sc) cols.push({ key: 'case', head: '入数' });
+  cols.push({ key: 'qty', head: '数量' }, { key: 'unit', head: '単位' });
+  if (sp) {
+    cols.push({ key: 'price', head: '単価（税抜）' });
+    if (isQuote) cols.push({ key: 'amount', head: '金額（税抜）' });
+  }
+  const namePct = 100 - cols.reduce((s, c) => s + (c.key === 'name' ? 0 : pct[c.key]), 0);
+  let cx = 0;
+  const col = {};
+  cols.forEach(c => { c.x1 = cx; cx += W * (c.key === 'name' ? namePct : pct[c.key]) / 100; c.x2 = cx; col[c.key] = c; });
+
+  // --- 頭の部分：印刷と同じ位置に枠を並べる（els）。値が関数のものは表を書いたあとで決まる式 ---
+  const els = [];
+  const put = (x1, x2, y1, y2, v, s) => els.push({ x1, x2: Math.min(x2, W), y1, y2, v, s });
+  const ref = {};
+  // 左：題名（字間 0.5em・下線）
+  const title = isQuote ? '御　見　積　書' : (m.title || '発　注　書');
+  let ly = 22 * 1.6 + 2 * PT; // 行の高さ（22pt×1.6）＋下の余白 2mm
+  put(0, Math.min(RX, mmOf(title, 22) + [...title].length * 11 / PT + 1), 0, ly, xlLetterSpace(title),
+    { font: F(22, { color: C.navy }), border: { b: 'medium:' + C.blue3 }, align: { v: 'center', shrink: true } });
+  ly += 1.1;
+  // 宛名（見積書＝施設名、発注書＝当社の営業所）＋「御中」。下線は文字の幅＋右の余白 10mm。
+  // 1行に入らないときは、印刷と同じく右の余白 10mm を残して折り返す（少しだけ長いときは余白に入れて1行のままにする）
+  const toName = isQuote ? oneLine(m.facilityName) : '太陽シルバーサービス株式会社' + (o ? '　' + o.name : '');
+  const toPt = isQuote ? 15 : 14;
+  const toTextW = mmOf(toName + ' ', toPt) + mmOf('御中', 10.5);
+  const toWrap = toTextW > RX - 4;
+  const toLines = toWrap ? Math.ceil(toTextW / ((RX - 10) * 0.93)) : 1;
+  const toH = toLines * toPt * 1.6 + 1 * PT;
+  const toLine = { b: 'thin:' + C.blue4 };
+  ly += 5 * PT;
+  put(0, toWrap ? RX - 10 : toTextW + 11, ly, ly + toH, { rich: [{ t: toName + ' ', font: F(toPt) }, { t: '御中', font: F(10.5, { color: C.blue }) }] },
+    { font: F(toPt), border: toLine, align: { v: 'center', wrap: toWrap } });
+  if (toWrap) put(RX - 10, RX, ly, ly + toH, null, { border: toLine });
+  ly += toH + 0.75 + 3 * PT;
+  put(0, RX, ly, ly + 13.6, isQuote ? '下記の通りお見積り申し上げます。' : '下記のとおり注文いたします。', { font: F(8.5, { color: C.sub }), align: { v: 'center' } });
+  ly += 13.6;
+  if (!isQuote && o) {
+    ly += 2 * PT;
+    put(0, RX, ly, ly + 13.6, 'TEL：' + o.tel, { font: F(8.5, { color: C.sub }), align: { v: 'center' } });
+    put(0, RX, ly + 13.6, ly + 27.2, 'FAX：' + o.fax, { font: F(8.5, { b: true }), align: { v: 'center' } });
+    ly += 27.2;
+  }
+  // 御見積金額の枠：見出し・金額・（税抜）の3つのセル。中の行の下端を字の下にそろえて、大きさの違う字の並びを印刷に近づける
+  if (st) {
+    ly += 4 * PT;
+    const v = m.taxIncluded ? total : sub;
+    const suffix = m.taxIncluded ? '（税込）' : '（税抜）';
+    const x1 = 6 + mmOf('御見積金額', 9, true) + 0.5;     // 左の余白 6mm＋見出し
+    const x2 = x1 + 5 + mmOf(yen(v), 15, true) + 2;        // 間 5mm＋金額（Excel で直して桁が増えたときの分を少し）
+    const x3 = Math.min(RX, x2 + mmOf(suffix, 8.5) + 6.5); // （税抜）＋右の余白 6mm
+    const bd = 'medium:' + C.navy, fill = C.tint, pad = 2 * PT + 1.1, mid = 21.5, boxH = 15 * 1.6 + 2 * pad;
+    put(0, x3, ly, ly + pad, null, { fill, border: { l: bd, r: bd, t: bd } });
+    put(0, x1, ly + pad, ly + pad + mid, '御見積金額', { font: F(9, { b: true, color: C.navy }), fill, border: { l: bd }, align: { h: 'right', v: 'bottom' } });
+    put(x1, x2, ly + pad, ly + pad + mid, () => ({ f: m.taxIncluded ? ref.total : ref.sub, v }),
+      { font: F(15, { b: true, color: C.navy }), fill, fmt: XL_YEN, align: { h: 'right', v: 'bottom', shrink: true } });
+    put(x2, x3, ly + pad, ly + pad + mid, suffix, { font: F(8.5, { color: C.sub }), fill, border: { r: bd }, align: { v: 'bottom' } });
+    put(0, x3, ly + pad + mid, ly + boxH, null, { fill, border: { l: bd, r: bd, b: bd } });
+    ly += boxH;
+  }
+  // 右：日付などの行と、発行元（見積書）・発注元（発注書）の枠
+  let ry = 0;
+  const rline = (t) => { put(RX, W, ry, ry + 13.6, t, { font: F(8.5, { color: C.sub }), align: { h: 'right', v: 'center' } }); ry += 13.6; };
+  // 枠（罫線・薄い青の塗り・内側の余白 2.5mm）。lines = [{ t, pt, b, color, mt（上のあき mm） }]
+  const infoBox = (lines) => {
+    const bd = 'thin:' + C.blue4, fill = C.tint, side = { l: bd, r: bd }, pad = 2.5 * PT + 0.75;
+    ry += 3 * PT;
+    put(RX, W, ry, ry + pad, null, { fill, border: Object.assign({ t: bd }, side) });
+    ry += pad;
+    lines.forEach(ln => {
+      if (ln.mt) { put(RX, W, ry, ry + ln.mt * PT, null, { fill, border: side }); ry += ln.mt * PT; }
+      const n = xlLineCount(ln.t, 70 - 5 + 4, ln.pt);
+      const h = n * ln.pt * 1.6;
+      put(RX, W, ry, ry + h, ln.t, { font: F(ln.pt, { b: !!ln.b, color: ln.color || C.sub }), fill, border: side, align: { h: 'left', v: 'center', wrap: n > 1, indent: 1 } });
+      ry += h;
+    });
+    put(RX, W, ry, ry + pad, null, { fill, border: Object.assign({ b: bd }, side) });
+    ry += pad;
+  };
+  if (isQuote) {
+    rline('発行日：' + m.issued);
+    rline('見積番号：' + m.quoteNo);
+    rline('有効期限：お見積日より30日間');
+    // officeBlockHtml と同じ並び
+    const lines = [{ t: '太陽シルバーサービス株式会社', pt: 9.5, b: true, color: C.navy }, { t: o ? o.name : '営業本部', pt: 8.5, b: true }];
+    if (o) lines.push({ t: '〒' + o.zip, pt: 8.5, mt: 0.5 }, { t: o.addr, pt: 8.5 }, { t: 'TEL：' + o.tel, pt: 8.5, mt: 1 }, { t: 'FAX：' + o.fax, pt: 8.5 });
+    else lines.push({ t: 'TEL：　　　　　', pt: 8.5, mt: 1 }, { t: 'FAX：　　　　　', pt: 8.5 });
+    if (m.repName) lines.push({ t: '担当：' + m.repName, pt: 8.5, mt: 1 });
+    infoBox(lines);
+  } else {
+    rline('発注日：　　　　　　　　　（ご記入ください）');
+    const lines = [{ t: '発注元', pt: 7.5, b: true, color: C.blue }, { t: oneLine(m.facilityName), pt: 10, b: true, color: C.navy }];
+    if (String(m.facilityAddress || '').trim()) lines.push({ t: oneLine(m.facilityAddress), pt: 8, mt: 1 });
+    if (String(m.facilityTel || '').trim()) lines.push({ t: 'TEL：' + m.facilityTel, pt: 8, mt: 1 });
+    if (String(m.facilityFax || '').trim()) lines.push({ t: 'FAX：' + m.facilityFax, pt: 8, mt: 1 });
+    lines.push({ t: 'ご担当者：　　　　　　　　　', pt: 8.5, mt: 1.5 });
+    infoBox(lines);
+  }
+
+  // --- 列・行の境目：表の列の境目を優先し、近すぎる境目（横 2mm・縦 1pt 未満）はまとめる ---
+  const xs = [0, ...cols.map(c => c.x2)];
+  els.forEach(e => [e.x1, e.x2].forEach(v => { if (!xs.some(u => Math.abs(u - v) < 2)) xs.push(v); }));
+  xs.sort((a, b) => a - b);
+  const ys = [0, Math.max(ly, ry)];
+  els.forEach(e => [e.y1, e.y2].forEach(v => { if (!ys.some(u => Math.abs(u - v) < 1)) ys.push(v); }));
+  ys.sort((a, b) => a - b);
+  const nearest = (list, v) => list.reduce((best, u, i) => (Math.abs(u - v) < Math.abs(list[best] - v) ? i : best), 0);
+  const span = (x1, x2) => { const c1 = nearest(xs, x1); return [c1, Math.max(c1, nearest(xs, x2) - 1)]; };
+  const last = xs.length - 2;
+
+  const book = createXlsxBook();
+  // 発注書は印刷と同じく A4 1枚に収める（印刷は data-fit-page で縮小している）
+  const ws = book.addSheet(isQuote ? '御見積書' : '発注書', { margins: { l: 13, r: 13, t: 14, b: 14, h: 6, f: 6 }, fitWidth: 1, fitHeight: isQuote ? 0 : 1 });
+  ws.setCols(xs.slice(1).map((v, i) => v - xs[i]));
+  ys.slice(1).forEach((v, i) => ws.height(i, v - ys[i]));
+
+  // --- 表 ---
+  let r = ys.length - 1;
+  ws.height(r, 7 * PT); r++; // 表の上のあき 7mm
+  const BL = 'thin:' + C.line, BH = 'thin:' + C.blue4;
+  const thRow = r;
+  cols.forEach(c => {
+    const [c1, c2] = span(c.x1, c.x2);
+    ws.box(r, c1, r, c2, c.head, { font: F(8.5, { b: true, color: C.navy }), fill: C.head, border: { l: BH, r: BH, t: BH, b: BH }, align: { h: 'center', v: 'center' } });
+  });
+  ws.height(r, 8.5 * 1.6 + 2 * 1.6 * PT + 0.75); r++;
+  const padY = (isQuote ? 1.8 : 2.2) * PT;
+  const firstItem = r;
+  const at = (key) => span(col[key].x1, col[key].x2)[0];
+  m.items.forEach((it, i) => {
+    if (it.isSpacer) { // 行と行の間の空き（上下の罫線だけ）
+      ws.box(r, 0, r, last, null, { border: { t: BL, b: BL } });
+      ws.height(r, 6 * PT); r++;
+      return;
+    }
+    const fill = i % 2 === 1 ? C.zebra : undefined;
+    const put2 = (key, v, s) => { const [c1, c2] = span(col[key].x1, col[key].x2); ws.box(r, c1, r, c2, v, Object.assign({ fill, border: { l: BL, r: BL, b: BL } }, s)); };
+    const cellW = (key) => col[key].x2 - col[key].x1;
+    const name = String(it.name || '');
+    const note = sin && it.note ? String(it.note) : '';
+    put2('name', note ? { rich: [{ t: name, font: F(9.5) }, { t: '\n' + note, font: F(7.5, { color: C.gray }) }] } : name, { font: F(9.5), align: { h: 'left', v: 'center', wrap: true, indent: 1 } });
+    let h = xlLineCount(name, cellW('name'), 9.5) * 15.2 + (note ? 1.4 + xlLineCount(note, cellW('name'), 7.5) * 12 : 0);
+    if (scat) {
+      put2('cat', String(it.cat || ''), { font: F(8, { b: true, color: C.blue }), align: { h: 'left', v: 'center', wrap: true, indent: 1 } });
+      h = Math.max(h, xlLineCount(it.cat || '', cellW('cat'), 8) * 12.8);
+    }
+    if (sc) put2('case', String(it.caseSize || ''), { font: F(9.5), align: { h: 'center', v: 'center', shrink: true } });
+    // 数量：未入力は空欄（発注書は施設が手書きで書く欄）。表示は印刷と同じく整数に丸める
+    const q = it.qty === '' || it.qty == null ? null : (isFinite(Number(it.qty)) ? Number(it.qty) : String(it.qty));
+    put2('qty', q, { font: F(9.5), fmt: '#,##0', fill: isQuote ? fill : C.qty, align: { h: 'right', v: 'center', indent: 1, shrink: true } });
+    put2('unit', String(it.unit || ''), { font: F(9.5), align: { h: 'center', v: 'center', shrink: true } });
+    if (sp) {
+      const price = priceOf(it);
+      const num = { font: F(9.5), fmt: XL_YEN, align: { h: 'right', v: 'center', indent: 1, shrink: true } };
+      if (isQuote) {
+        put2('price', price, num);
+        put2('amount', { f: `N(${xlRef(r, at('qty'))})*${xlRef(r, at('price'))}`, v: qn(it.qty) * price }, num);
+      } else put2('price', price > 0 ? price : null, num);
+    }
+    ws.height(r, h + 2 * padY + 0.75);
+    r++;
+  });
+  // 小計（税抜）・消費税（10%）・合計（税込）。消費税は印刷と同じく切り捨て
+  if (st) {
+    const [v1, v2] = span(cols[cols.length - 1].x1, W);
+    ref.sub = xlRef(r, v1); ref.total = xlRef(r + 2, v1);
+    const sumF = col.amount && r > firstItem ? `SUM(${xlRange(firstItem, at('amount'), r - 1, at('amount'))})` : null;
+    [['小計（税抜）', sumF ? { f: sumF, v: sub } : sub],
+      ['消費税（10%）', { f: `INT(${ref.sub}*0.1)`, v: tax }],
+      ['合計（税込）', { f: `${ref.sub}+${xlRef(r + 1, v1)}`, v: total }]].forEach(([label, v], k) => {
+      const big = k === 2;
+      ws.box(r, 0, r, v1 - 1, label, { font: F(9.5, { b: true, color: C.navy }), fill: C.tint2, border: { l: BL, r: BL, b: BL }, align: { h: 'right', v: 'center', indent: 1 } });
+      ws.box(r, v1, r, v2, v, { font: F(big ? 11 : 9.5, { b: true }), fill: C.tint2, fmt: XL_YEN, border: { l: BL, r: BL, b: BL }, align: { h: 'right', v: 'center', indent: 1, shrink: true } });
+      ws.height(r, (big ? 11 : 9.5) * 1.6 + 2 * padY + 0.75);
+      r++;
+    });
+  }
+  if (!isQuote && m.items.some(it => !it.isSpacer && !String(it.name).trim())) {
+    ws.height(r, 2 * PT); r++;
+    ws.box(r, 0, r, last, '※商品名が空欄の行は、リストにない商品を手書きでご記入いただく欄です。', { font: F(7.5, { color: C.mute }), align: { v: 'center' } });
+    ws.height(r, 7.5 * 1.6); r++;
+  }
+  // 備考（枠の内側の余白 3mm）。1行ずつ別の行にして、行の間隔を印刷（9.5pt×1.6）とそろえる
+  ws.height(r, (isQuote ? 8 : 6) * PT); r++;
+  const bd = { l: BL, r: BL };
+  const pad = 3 * PT + 0.75;
+  ws.box(r, 0, r, last, null, { fill: C.tint2, border: Object.assign({ t: BL }, bd) }); ws.height(r, pad); r++;
+  ['【備考】', ...String(m.note || '').split('\n')].forEach(line => {
+    const n = xlLineCount(line, W - 6 + 4, 9.5);
+    ws.box(r, 0, r, last, line, { font: F(9.5, { color: C.sub }), fill: C.tint2, border: bd, align: { h: 'left', v: 'center', wrap: n > 1, indent: 1 } });
+    ws.height(r, n * 15.2); r++;
+  });
+  ws.box(r, 0, r, last, null, { fill: C.tint2, border: Object.assign({ b: BL }, bd) }); ws.height(r, pad); r++;
+
+  // 頭の部分を置く（表の小計・合計のセルが決まってから。御見積金額はその式になる）
+  els.forEach(e => {
+    const [c1, c2] = span(e.x1, e.x2);
+    const r1 = nearest(ys, e.y1), r2 = Math.max(r1, nearest(ys, e.y2) - 1);
+    ws.box(r1, c1, r2, c2, typeof e.v === 'function' ? e.v() : e.v, e.s);
+  });
+  ws.page.printArea = [0, 0, r - 1, last];
+  if (isQuote) ws.page.printTitles = [thRow, thRow]; // 2ページ目以降にも表の見出し（印刷の thead と同じ）
+  return book.toBytes({ title: isQuote ? '御見積書' : title.replace(/\s/g, '') });
+}
+/* Excel ここまで */
 
 /* ============================================================
    印刷: 売上レポート（月次 / 年次 / 年度 / 月別推移 の共通帳票）
@@ -5025,7 +5510,8 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
   });
   const total = draft.items.reduce((s, it) => it.isSpacer ? s : s + (Number(it.qty) || 0) * (it.price || 0), 0);
 
-  const buildHtml = () => {
+  // 帳票の中身。印刷・PDF・Excel で同じものを使う
+  const docModel = () => {
     // 商品名が空欄の行も、施設側が手書きで記入できるようそのまま印刷に含める。
     const items = draft.items;
     const common = {
@@ -5036,9 +5522,11 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
       showCat: draft.showCat !== false, showItemNote: !!draft.showItemNote,
     };
     return isQuote
-      ? buildQuoteHtml({ ...common, taxIncluded: !!draft.taxIncluded, showTotal: !!draft.showTotal, quoteNo: 'M-' + String(draft.issued || '').replace(/-/g, '') + '-01' })
-      : buildFacilityOrderHtml(common);
+      ? { ...common, taxIncluded: !!draft.taxIncluded, showTotal: !!draft.showTotal, quoteNo: 'M-' + String(draft.issued || '').replace(/-/g, '') + '-01' }
+      : common;
   };
+  const buildHtml = () => (isQuote ? buildQuoteHtml(docModel()) : buildFacilityOrderHtml(docModel()));
+  const docFileName = (ext) => (isQuote ? '御見積書_' : '発注書_') + String(draft.facility).replace(/[\\/:*?"<>|]/g, '') + '_' + (draft.issued || todayISO()) + ext;
   const validate = () => {
     if (!String(draft.facility).trim()) { showToast('施設名を入力してください', 'error'); return false; }
     if (draft.items.filter(it => String(it.name).trim()).length === 0) { showToast('明細に商品を追加してください', 'error'); return false; }
@@ -5057,13 +5545,22 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
     setBusy(true);
     showToast('PDFを作成しています…', 'info');
     try {
-      const fname = (isQuote ? '御見積書_' : '発注書_') + String(draft.facility).replace(/[\\/:*?"<>|]/g, '') + '_' + (draft.issued || todayISO()) + '.pdf';
-      await exportPdf(buildHtml(), fname);
+      await exportPdf(buildHtml(), docFileName('.pdf'));
       showToast('PDFを保存しました');
     } catch (e) {
       showToast('PDFの作成に失敗しました。印刷ダイアログの「PDFとして保存」もお試しください', 'error', 7000);
     } finally {
       setBusy(false);
+    }
+  };
+  // 印刷と同じ形の Excel。金額・小計・合計は Excel の式なので、Excel で数量や単価を直しても計算し直される
+  const handleExcel = () => {
+    if (!validate()) return;
+    try {
+      downloadText(docFileName('.xlsx'), buildDocXlsx(docType, docModel()), XL_MIME);
+      showToast('Excelを保存しました');
+    } catch (e) {
+      showToast('Excelの作成に失敗しました', 'error', 7000);
     }
   };
   const handleSave = () => {
@@ -5223,6 +5720,10 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
             className={"px-4 py-2.5 rounded-xl shadow-sm text-sm font-bold transition inline-flex items-center gap-1.5 text-white " +
               (busy ? 'bg-slate-300' : 'bg-indigo-600 hover:bg-indigo-700 active:scale-[.98] shadow-indigo-200')}>
             <Download size={15} /> {busy ? '作成中…' : 'PDF保存'}
+          </button>
+          <button onClick={handleExcel} title="印刷と同じ形の Excel ファイル（.xlsx）で保存します"
+            className="bg-white border border-emerald-300 hover:bg-emerald-50 hover:border-emerald-400 active:scale-[.98] text-emerald-700 px-4 py-2.5 rounded-xl shadow-sm text-sm font-bold transition inline-flex items-center gap-1.5">
+            <FileSpreadsheet size={15} /> Excel保存
           </button>
           <button onClick={handlePrint}
             className="bg-sky-600 hover:bg-sky-700 active:scale-[.98] text-white px-4 py-2.5 rounded-xl shadow-sm shadow-sky-200 text-sm font-bold transition inline-flex items-center gap-1.5">

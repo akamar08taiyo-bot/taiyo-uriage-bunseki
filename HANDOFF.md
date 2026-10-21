@@ -257,6 +257,24 @@
 15. 発注書/見積書の保存済み一覧のレイアウトを刷新（施設名を太字大きめに、日付・品目数・金額を整理して視認性向上）
 16. 数量・単価などの`<input type="number">`のスピンボタン（上下矢印）をCSSで全画面非表示に
 
+## 見積書・発注書の Excel 保存（2026-10-21 指示）
+
+ユーザーの依頼「見積もりが PDF で出力となっているため、Excel ベースで印刷できるように出力できるように」
+（見積・提案書作成 taiyo-mitsumori と同じく、ポータルで見積書を作るアプリすべてに付ける）。
+
+1. 発注書作成・見積書作成の「PDF保存」の右に **「Excel保存」**。印刷・PDF と同じ中身・同じ形の .xlsx を保存する
+   （ファイル名は PDF と同じで拡張子だけ .xlsx）。印刷の手直し（プレビューの contenteditable）は PDF と同じく入らない
+2. 作り：`buildDocXlsx(kind, m)`。印刷の buildQuoteHtml／buildFacilityOrderHtml と**同じ m**（DocComposer の `docModel()`）を受け取る。
+   xlsx はブラウザの中で組み立て、zip だけ fflate（jsPDF の依存。build/package.json に明記）。taiyo-mitsumori の Excel 出力と同じ作り
+3. 見た目：書体は BIZ UDP明朝 Medium（印刷の BIZ UDPMincho と同じ書体。無い PC は Excel が近い明朝体で表示）、配色・罫線・縞・列の割合は印刷と同じ。
+   頭の部分（題名・宛名・御見積金額の枠・右の発行元／発注元の枠）は印刷と同じ位置（mm・pt）に置き、その境目と表の列の境目をあわせた細かい行・列を作って結合する。
+   題名の字間（letter-spacing 0.5em）は全角スペース（BIZ UDP明朝は 2/3 em）を「全角2つ＋半角1つ」にして字の位置をそろえた
+4. 計算：金額＝数量×単価、小計＝SUM、消費税＝INT(小計×0.1)（印刷と同じ切り捨て）、合計＝小計＋消費税、御見積金額＝小計か合計（税込表示）のセル。
+   開いた時点の値は印刷と同じで、Excel で数量・単価を直すと計算し直される。数量の表示は印刷と同じく整数に丸める
+5. 印刷設定：A4 縦・余白（左右 13mm・上下 14mm）・横1ページに収める。見積書は2ページ目以降にも表の見出し、
+   発注書は印刷（data-fit-page）と同じく A4 1枚に収める
+6. テスト：`test/docXlsx.test.mjs`（src/index.html から帳票の関数をそのまま取り出して、印刷の金額と Excel の式・値を比べる）
+
 ## 今後の拡張候補（未実装・要相談）
 
 - 実在庫台帳（現在庫数の記録・入出庫管理）
@@ -267,8 +285,8 @@
 ## 開発メモ
 
 - ソース: `src/index.html`（text/babel 約3,100行）→ `cd build && node build.js` → `index.html`（約1.15MB）
-- 印刷帳票ビルダー: buildMonthlyReportHtml / buildFacilitySalesHtml / buildFacilityOrderHtml / buildQuoteHtml
-- 依存: react / react-dom / lucide-react / jspdf / html2canvas（すべて build/node_modules から同梱。CDN参照ゼロ）
+- 印刷帳票ビルダー: buildMonthlyReportHtml / buildFacilitySalesHtml / buildFacilityOrderHtml / buildQuoteHtml（Excel は buildDocXlsx）
+- 依存: react / react-dom / lucide-react / jspdf / html2canvas / fflate（すべて build/node_modules から同梱。CDN参照ゼロ）
 - localStorageキー: rows_v1 / masters_v1 / meta_v1 / docs_v1
 - プレビュー: launch.json `uriage-bunseki`（node _serve.cjs）
 - 検証時の実CSV: `C:\Users\akama\OneDrive\デスクトップ\売上照会検索結果.csv`（Shift-JIS）
