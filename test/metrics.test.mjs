@@ -13,7 +13,7 @@ const slice = (from, to) => src.slice(src.indexOf(from), src.indexOf(to))
 const code = slice('const yen = ', 'function Segmented(') + '\n' + slice('function buyerBreakdown(', 'function BuyersModal(') +
   '\n' + slice('function buildFacilityComparison(', '// KPIカードの施設別内訳')
 const NAMES = ['comparisonWindow', 'buildPeriodReport', 'buildAnalytics', 'decomposeSalesChange', 'mergeImportRows',
-  'analyzeCsv', 'buyerBreakdown', 'pctChange', 'withinCut', 'buildFacilityComparison', 'autoCategory', 'parseReferral', 'buildReformReport']
+  'analyzeCsv', 'buyerBreakdown', 'pctChange', 'withinCut', 'buildFacilityComparison', 'autoCategory', 'parseReferral', 'buildReformReport', 'isFacilityBuyer']
 const load = (y, mo, d) => {
   class FixedDate extends Date {
     constructor(...a) { if (a.length) super(...a); else super(y, mo - 1, d, 10, 0, 0) }
@@ -67,7 +67,10 @@ test('第9節：継続購入率の例（A・B・C → B・C・D は 2/3 ＝ 66.7
   assert.deepEqual(b.prevOnly.map(c => c.name), ['A'])
   assert.equal(b.rate, 66.7)
   // D は取り込んだ明細の中で最初の購入が当期にある（それ以前の履歴が取り込まれていれば新規と判断できる）
-  assert.deepEqual(b.firstInData.map(c => c.name), ['D'])
+  assert.deepEqual(b.firstInData.map(c => c.name), ['D'])  // 個人（facilityBuyer:false や type:person）は比べない
+  const withPersons = [...cust(['B', 'C', 'D']), { name: '築上町包括　水ノ江', type: 'facility', facilityBuyer: false, sales: 500 }, { name: '見本 花子', type: 'person', sales: 300 }]
+  const b2 = L.buyerBreakdown(withPersons, [...cust(['A', 'B', 'C']), { name: '見本 花子', type: 'person', sales: 300 }], new Map(), 20260901)
+  assert.deepEqual([b2.curB.length, b2.prevB.length, b2.curOnly.map(c => c.name).join(), b2.prevOnly.map(c => c.name).join()], [3, 3, 'D', 'A'])
 })
 
 test('粗利率は合計粗利÷合計売上（商品別の粗利率を単純平均しない）', () => {
@@ -264,17 +267,41 @@ test('売上差の内訳：数量分＋価格分＋新しい商品＋なくな�
   assert.equal(d.check, true)
 })
 
-test('購入得意先数は返品・値引き後の売上がプラスの得意先。同じ得意先の複数伝票は1件', () => {
+test('購入得意先数は施設だけ：返品・値引き後の売上がプラスの施設。個人と包括・居宅経由の個人は数えない', () => {
   const rows = [
     row('1', '2026/9/1', 'A施設', '見本の品', 1, '個', 1000, 1000, 200),
     row('2', '2026/9/5', 'A施設', '見本の品', 1, '個', 1000, 1000, 200),
     row('3', '2026/9/2', 'B施設', '見本の品', 1, '個', 1000, 1000, 200),
     row('4', '2026/9/9', 'B施設', '見本の品', -1, '個', 1000, -1000, -200), // 全額返品 → 0円
     row('5', '2026/9/3', '見本 花子', '見本の品', 1, '個', 500, 500, 100),
+    // 包括経由の個人：自動判定で施設として保存されていても数えない
+    row('6', '2026/9/4', '築上町包括　水ノ江', '見本の品', 1, '個', 800, 800, 100),
+    // 包括そのもの（個人名がない）は施設として数える
+    row('7', '2026/9/6', '行橋市地域包括支援センター', '見本の品', 1, '個', 300, 300, 50),
   ]
-  const k = L.buildPeriodReport(rows, masters({ A施設: facility(), B施設: facility(), '見本 花子': { type: 'person' } }), idx(2026, 9), idx(2026, 9)).kpi
-  assert.equal(k.buyers, 2)
-  assert.equal(k.buyersFacility, 1)
+  const m = masters({ A施設: facility(), B施設: facility(), '見本 花子': { type: 'person' },
+    '築上町包括　水ノ江': facility(), '行橋市地域包括支援センター': facility() })
+  const rep = L.buildPeriodReport(rows, m, idx(2026, 9), idx(2026, 9))
+  assert.equal(rep.kpi.buyers, 2)       // A施設・行橋市地域包括支援センター
+  assert.equal(rep.kpi.buyersOther, 2)  // 見本 花子・築上町包括　水ノ江
+  // 月ごとの取引施設数も施設だけ（合計の行の施設数と同じ数え方。B施設は売上0円でも取引あり）
+  assert.equal(rep.monthly[0].count, 4) // A施設・B施設・築上町包括　水ノ江（施設として保存）・行橋市地域包括支援センター
+  assert.equal(rep.monthly[0].count, rep.kpi.count)
+  // 依頼元の手直しで「依頼元なし」にした名前は、施設/個人判定どおり施設として数える
+  const m2 = { ...m, referralOverrides: { '築上町包括　水ノ江': '' } }
+  assert.equal(L.buildPeriodReport(rows, m2, idx(2026, 9), idx(2026, 9)).kpi.buyers, 3)
+})
+
+test('得意先として数える施設の判定（isFacilityBuyer）', () => {
+  assert.equal(L.isFacilityBuyer('ケアハイツぶぜん', 'facility', {}), true)
+  assert.equal(L.isFacilityBuyer('行橋市地域包括支援センター', 'facility', {}), true)
+  assert.equal(L.isFacilityBuyer('春風ケアプランセンター', 'facility', {}), true)
+  assert.equal(L.isFacilityBuyer('築上町包括　水ノ江', 'facility', {}), false)
+  assert.equal(L.isFacilityBuyer('春風ケアプランセンター　山田', 'facility', {}), false)
+  assert.equal(L.isFacilityBuyer('神奈川地域包括支援センター大場', 'facility', {}), false)
+  assert.equal(L.isFacilityBuyer('熊本　千佳', 'person', {}), false)
+  // 依頼元を手で付けた名前は個人として扱う
+  assert.equal(L.isFacilityBuyer('水ノ江', 'facility', { 水ノ江: '築上町包括' }), false)
 })
 
 test('境目：1月は前年の1月と、4月はじめ（年度の切り替わり）は前年4月と比べる', () => {

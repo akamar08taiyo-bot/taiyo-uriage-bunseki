@@ -334,6 +334,13 @@
 メモ：この作業環境（Linux・ロケール未設定）の Playwright では、日本語のファイル名のダウンロードが「download」になる。
 `LANG=C.UTF-8 LC_ALL=C.UTF-8` を付けて動かすと正しい名前（価格改定_2026-10-28.xlsx など）になる。アプリの不具合ではない。
 
+## 購入得意先数は施設だけ（2026-10-28 指示）
+
+1. `buildPeriodReport` の `kpi.buyers` は施設だけ（`customers[].facilityBuyer`）。個人の数は `kpi.buyersOther`（画面には出していない）
+2. `isFacilityBuyer(name, type, referralOverrides)`：施設/個人判定が施設で、かつ「依頼元＋個人名」（parseReferral で依頼元と個人名の両方が取れる）でないもの
+3. `buyerBreakdown`（継続・当期のみ・前年同期のみ）も施設だけ。月次レポートの月ごとの取引施設数も施設だけ（合計の行と同じ数え方）
+4. 施設/個人の区分そのもの（施設別・担当別・見積書の施設一覧）は変えていない。詳細は確認記録の第11節
+
 ## 今後の拡張候補（未実装・要相談）
 
 - 実在庫台帳（現在庫数の記録・入出庫管理）
