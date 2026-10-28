@@ -6,6 +6,12 @@
 <title>売上分析ダッシュボード - 太陽シルバーサービス</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
+/* 業務アプリポータルへ戻るボタン（太陽ポータルの全アプリ共通。色・大きさ・字はどのアプリでも同じにするため、アプリの書式に負けないよう !important。
+   ユーザーの指示「太陽ポータルに戻るボタンは左上に設置。太陽ポータル全アプリ共通にする。色や大きさも含めて統一する」2026-10-28。決まりは taiyo-portal スキル） */
+.taiyo-portal-back{display:inline-flex!important;align-items:center!important;gap:4px;box-sizing:border-box!important;height:34px!important;margin:0;padding:0 12px!important;border:1px solid #cbd5e1!important;border-radius:8px!important;background:#fff!important;color:#334155!important;font:500 13px/1 "Hiragino Kaku Gothic ProN","Hiragino Sans","Yu Gothic UI","Yu Gothic","Meiryo",sans-serif!important;letter-spacing:0!important;text-decoration:none!important;white-space:nowrap!important;flex:none!important;box-shadow:0 1px 2px rgba(15,23,42,.08)!important}
+.taiyo-portal-back:hover{background:#f1f5f9!important;color:#0f172a!important}
+.taiyo-portal-back:focus-visible{outline:2px solid #64748b!important;outline-offset:2px}
+@media print{.taiyo-portal-back{display:none!important}}
   body { font-family: 'Segoe UI', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', Meiryo, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
   /* 印刷: holder のみを出力する（DOM注入方式） */
   #print-content-holder { display: none; }
@@ -8111,6 +8117,11 @@ function App() {
     <div className="min-h-screen">
       {/* サイドバー（md以上）: 白×空色のさわやか配色 */}
       <aside className="hidden md:flex w-56 bg-gradient-to-b from-cyan-50 via-sky-50 to-white border-r border-sky-100 flex-col fixed inset-y-0 left-0 z-30">
+        {/* 業務アプリポータルへ戻るボタンは左上（広い画面は左の列のいちばん上、スマホは見出しのいちばん上。全アプリ共通の形 .taiyo-portal-back。
+            ユーザーの指示「太陽ポータルに戻るボタンは左上に設置。太陽ポータル全アプリ共通にする。色や大きさも含めて統一する」2026-10-28。前は見出しの上の小さな灰色の文字） */}
+        <div className="px-2.5 pt-4">{/* 左の列の幅（224px）にボタン（201px）が収まるよう、左右の余白は少なめ */}
+          <a href="https://akamar08taiyo-bot.github.io/taiyo-portal/" className="taiyo-portal-back">← 業務アプリポータルへ戻る</a>
+        </div>
         <div className="px-4 py-5 flex items-center gap-2.5">
           <span className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-gradient-to-br from-amber-300 to-orange-400 shadow-lg shadow-amber-200">
             <Sun size={18} className="text-white" />
@@ -8140,9 +8151,9 @@ function App() {
       <div className="md:pl-56">
         {/* ヘッダー */}
         <header className="bg-white/80 backdrop-blur-md border-b border-slate-200/70 sticky top-0 z-20">
-          <a href="https://akamar08taiyo-bot.github.io/taiyo-portal/" className="block px-5 md:px-8 pt-1.5 text-[10.5px] text-slate-400 hover:text-slate-600">
-            ← 業務アプリポータルへ戻る
-          </a>
+          <div className="md:hidden px-5 pt-3">
+            <a href="https://akamar08taiyo-bot.github.io/taiyo-portal/" className="taiyo-portal-back">← 業務アプリポータルへ戻る</a>
+          </div>
           {/* 取込ボタンと基準月は画面上部の中央に大きく出す。
               横幅1280px以上は「ページ名｜ボタンと基準月｜空き」の3列で、ボタンと基準月をちょうど真ん中に置く。
               それより狭い画面ではページ名の下の行に中央そろえで並べる（1024px前後で3列にするとページ名が切れる。
