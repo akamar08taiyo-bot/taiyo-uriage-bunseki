@@ -282,9 +282,15 @@ const pctChange = (now, base) => (base > 0 ? Math.round((now - base) / base * 10
 //   （前年の月全体と比べると、まだ注文が来ていないだけの得意先が減少に見える）。
 //   前年に同じ日がない（2/29）ときは前年の月末にそろえ、dayAdjusted で知らせる
 // ・前年の期間が取込範囲（最初の売上日の月）より前なら prevCovered=false（前年データ未取得。0円とは区別する）
+// ・opts.months（明細のある月の一覧）を渡すと、営業所全体で明細が1件もない月を取り込み漏れとみなす。
+//   前年同期にそういう月があれば prevCovered=false（prevMissing に月を入れる）、当期にあれば curMissing に入れる
+//   （取り込みは何度かに分けて行うため、途中の月だけ抜けることがある。抜けた月を0円として比べない）
 // ・締まった期間なのに最終売上日が期間末より4日以上前なら short=true（取得不足の可能性）
-function comparisonWindow(fromIdx, toIdx, latest, first, today = todayParts()) {
+function comparisonWindow(fromIdx, toIdx, latest, first, opts = {}) {
   if (!latest) return null;
+  const today = opts.today || todayParts();
+  const months = opts.months ? (opts.months instanceof Set ? opts.months : new Set(opts.months)) : null;
+  const missingIn = (a, b) => { const out = []; if (months) for (let i = a; i <= b; i++) if (!months.has(i)) out.push(i); return out; };
   const inProgress = toIdx >= today.y * 12 + today.mo - 1;
   let curCut = null, prevCut = null, dayAdjusted = false;
   if (inProgress && latest.idx >= fromIdx && latest.idx <= toIdx) {
@@ -297,13 +303,16 @@ function comparisonWindow(fromIdx, toIdx, latest, first, today = todayParts()) {
   const prevEnd = prevCut || { idx: toIdx - 12, d: daysInMonthIdx(toIdx - 12) };
   const toDate = (e) => new Date(Math.floor(e.idx / 12), e.idx % 12, e.d);
   const gapDays = Math.round((toDate(curEnd) - toDate(latest)) / 86400000);
+  const prevBeforeData = !first || fromIdx - 12 < first.idx;
+  const prevMissing = prevBeforeData ? [] : missingIn(fromIdx - 12, prevEnd.idx);
   return {
     inProgress, short: !inProgress && gapDays > 3, dayAdjusted, asOf: latest,
+    curMissing: missingIn(fromIdx, Math.min(curEnd.idx, latest.idx)), prevMissing, prevBeforeData,
     cur: { from: fromIdx, to: toIdx, cutoff: curCut },
     prev: { from: fromIdx - 12, to: toIdx - 12, cutoff: prevCut },
     curRange: dateLabel(fromIdx, 1) + '〜' + dateLabel(curEnd.idx, curEnd.d),
     prevRange: dateLabel(fromIdx - 12, 1) + '〜' + dateLabel(prevEnd.idx, prevEnd.d),
-    prevCovered: !!first && fromIdx - 12 >= first.idx,
+    prevCovered: !prevBeforeData && prevMissing.length === 0,
   };
 }
 // 保存日時は new Date().toISOString()（UTC）で持っている。これを先頭10文字で切ると
@@ -648,7 +657,7 @@ function buildAnalytics(rows, masters, baseSel) {
   }
   const baseIdx = (baseSel != null && monthSet.has(baseSel)) ? baseSel : maxIdx;
   // 基準月が月途中なら、前月・前年同月も同じ日までの明細で比べる（inCmp）
-  const cmp = comparisonWindow(baseIdx, baseIdx, latest, first);
+  const cmp = comparisonWindow(baseIdx, baseIdx, latest, first, { months: monthSet });
   const cutDay = cmp.cur.cutoff ? cmp.cur.cutoff.d : null;
   const inCmp = (d, monthIdx) => d.idx === monthIdx && (cutDay === null || d.d <= Math.min(cutDay, daysInMonthIdx(monthIdx)));
   const fyStart = fiscalStartIdx(baseIdx);
@@ -768,8 +777,9 @@ function buildAnalytics(rows, masters, baseSel) {
   }
 
   // 施設ごとの派生値。比較先の月が取込範囲より前なら「前年データ未取得」として null（0円とは区別）
-  const hasPrevMonth = baseIdx - 1 >= first.idx;
-  const hasYoyMonth = baseIdx - 12 >= first.idx;
+  // 月の明細が1件もなければ取り込み漏れとみなして比べない（comparisonWindow と同じ考え方）
+  const hasPrevMonth = baseIdx - 1 >= first.idx && monthSet.has(baseIdx - 1);
+  const hasYoyMonth = cmp.prevCovered;
   const facilities = [...facMap.values()];
   for (const f of facilities) {
     f.winSum = sum12(f.monthly);
@@ -859,8 +869,9 @@ function buildAnalytics(rows, masters, baseSel) {
   lowAll.sort((a, b) => a.margin - b.margin);
 
   // 担当別（前月比・前年同月差・今年度累計とその前年度同期差）。基準月が月途中なら比較先も同じ日まで
-  // 全体KPIと同じ理由で、前年度同期が丸ごと取り込まれているときだけ比較する
-  const hasFyPrev = (fyStart - 12) >= first.idx;
+  // 前年度同期が丸ごと取り込まれているときだけ比較する（途中の月が抜けていても比べない）
+  const fyCmp = comparisonWindow(fyStart, baseIdx, latest, first, { months: monthSet });
+  const hasFyPrev = fyCmp.prevCovered;
   const repAgg = new Map();
   for (const f of facilities) {
     let r = repAgg.get(f.repName);
@@ -899,7 +910,7 @@ function buildAnalytics(rows, masters, baseSel) {
     lowMargin: lowAll.slice(0, 30), lowMarginTotal: lowAll.length,
     reps, repsSale, repSaleRows, others: othersOut, custStats, settings: st,
     fyLabel, fyRangeLabel, hasYoy: hasYoyMonth, hasFyPrev,
-    latestDate: latest, firstDate: first, cmp, fyCmp: comparisonWindow(fyStart, baseIdx, latest, first),
+    latestDate: latest, firstDate: first, cmp, fyCmp,
   };
 }
 
@@ -2339,7 +2350,9 @@ function InfoNote({ children, className, tone }) {
 function KpiCard({ icon: Icon, tint, label, value, delta, deltaSuffix, note, extra, onClick, emphasize, title, linkLabel }) {
   return (
     <div onClick={onClick}
-      className={"bg-white rounded-2xl p-4 flex-1 min-w-[160px] transition " +
+      role={onClick ? 'button' : undefined} tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } : undefined}
+      className={"bg-white rounded-2xl p-4 flex-1 min-w-[160px] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 " +
         (emphasize ? 'border-2 border-teal-300 shadow-md ring-1 ring-teal-100' : 'border border-slate-200/70 shadow-sm hover:shadow-md') +
         (onClick ? ' cursor-pointer hover:border-sky-300 active:scale-[.99]' : '')}
       title={title || (onClick ? '施設別の内訳を見る' : undefined)}>
@@ -2366,7 +2379,7 @@ function KpiCard({ icon: Icon, tint, label, value, delta, deltaSuffix, note, ext
 // metric: 'sales' | 'gross' | 'margin'。片方の期間にしか購入がない施設は onlyCur / onlyPrev で示す
 // （「新規」「離脱」とは断定しない。取引開始・終了かどうかは過去の履歴や事情の確認が要る）。
 // 粗利額が不明な明細を含む施設の粗利・粗利率は unknown=true にして差額を出さない。
-function buildFacilityComparison(curRanking, prevRanking, metric) {
+function buildFacilityComparison(curRanking, prevRanking, metric, prevCovered = true) {
   const curMap = new Map((curRanking || []).map(f => [f.name, f]));
   const prevMap = new Map((prevRanking || []).map(f => [f.name, f]));
   const names = new Set([...curMap.keys(), ...prevMap.keys()]);
@@ -2379,15 +2392,17 @@ function buildFacilityComparison(curRanking, prevRanking, metric) {
       name,
       repName: (c || p).repName,
       curVal, prevVal, unknown,
+      salesCur: c ? c.sales : 0, salesPrev: p ? p.sales : 0,
       diff: unknown ? null : curVal - prevVal,
       pct: unknown || metric === 'margin' ? null : pctChange(curVal, prevVal),
       onlyCur: !!c && !p,
       onlyPrev: !c && !!p,
     };
   });
-  // 粗利率は片方の期間に実績がない施設を除外する（存在しない側が便宜上0%扱いになり、
-  // 「0%→20%」のような取引実態のない変化が紛れ込んでしまうため。両方に数字がある施設のみ比較する）。
-  if (metric === 'margin') rows = rows.filter(r => !r.onlyCur && !r.onlyPrev);
+  // 粗利率は売上が正の期間どうしだけで比べる（売上0以下の粗利率は算出対象外。片方に実績がない施設を
+  // 入れると、存在しない側が便宜上0%扱いになり「0%→20%」のような取引実態のない変化が紛れ込む）。
+  // 前年データがないときは比べずに、当期の売上が正の施設だけを並べる。
+  if (metric === 'margin') rows = rows.filter(r => r.salesCur > 0 && (!prevCovered || r.salesPrev > 0));
   // 金額は減少額が大きい施設から（率だけで重要度を決めない）。粗利率は差の大きい順。未確定は最後
   rows.sort((a, b) => (a.diff === null) - (b.diff === null)
     || (metric === 'margin' ? Math.abs(b.diff) - Math.abs(a.diff) : a.diff - b.diff));
@@ -2397,7 +2412,7 @@ function buildFacilityComparison(curRanking, prevRanking, metric) {
 // KPIカードの施設別内訳。curLabel/prevLabel は日付の範囲（例: 2026/10/1〜2026/10/27）。
 // note: 月途中などの注意文。prevCovered=false なら前年データ未取得として差額を出さない。
 function KpiDrilldownModal({ title, curLabel, prevLabel, curRanking, prevRanking, metric, unit, note, inProgress, prevCovered, onJump, onClose }) {
-  const rows = React.useMemo(() => buildFacilityComparison(curRanking, prevCovered ? prevRanking : [], metric), [curRanking, prevRanking, metric, prevCovered]);
+  const rows = React.useMemo(() => buildFacilityComparison(curRanking, prevCovered ? prevRanking : [], metric, prevCovered), [curRanking, prevRanking, metric, prevCovered]);
   const fmt = (v) => unit === '%' ? v.toFixed(1) + '%' : yen(v);
   const increased = rows.filter(r => r.diff > 0).length;
   const decreased = rows.filter(r => r.diff < 0).length;
@@ -2421,7 +2436,7 @@ function KpiDrilldownModal({ title, curLabel, prevLabel, curRanking, prevRanking
               {unit !== '%' && decreased > 0 && <span className="text-slate-700">減少額の合計 <DiffText v={decTotal} /></span>}
             </div>
           ) : (
-            <InfoNote tone="warn">前年同期（{prevLabel}）の明細が取り込まれていないため、比較できません。当期の数字だけを表示しています。</InfoNote>
+            <InfoNote tone="warn">前年同期（{prevLabel}）の明細が取り込まれていない（または途中の月が抜けている）ため、比較できません。当期の数字だけを表示しています。</InfoNote>
           )}
           {note && <InfoNote>{note}</InfoNote>}
           {onJump && <div className="text-[11px] text-slate-600">施設名を押すと、その施設の明細・内訳へ進みます。</div>}
@@ -2482,7 +2497,7 @@ function buyerBreakdown(curCustomers, prevCustomers, firstBuy, curStartSort) {
   return { curB, prevB, both, curOnly, prevOnly, firstInData, rate: prevB.length ? Math.round(both.length / prevB.length * 1000) / 10 : null };
 }
 
-function BuyersModal({ curRep, prevRep, win, firstBuy, dataFrom, onJump, onClose }) {
+function BuyersModal({ curRep, prevRep, noCompare, win, firstBuy, dataFrom, onJump, onClose }) {
   const curStartSort = Math.floor(win.cur.from / 12) * 10000 + (win.cur.from % 12 + 1) * 100 + 1;
   const { prevB, both, curOnly, prevOnly, firstInData, rate } = buyerBreakdown(curRep.customers, prevRep ? prevRep.customers : [], firstBuy, curStartSort);
   // 継続購入率は締め済みの同じ長さの期間どうしで出す（月途中の「まだ購入なし」を離脱と数えない）
@@ -2512,14 +2527,17 @@ function BuyersModal({ curRep, prevRep, win, firstBuy, dataFrom, onJump, onClose
           <span className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-sky-100 text-sky-600"><Users size={17} /></span>
           <div className="flex-1 min-w-0">
             <div className="font-extrabold text-slate-800">購入得意先の内訳</div>
-            <div className="text-[11px] text-slate-600">当期 {win.curRange} ／ 前年同期 {win.prevRange}</div>
+            <div className="text-[11px] text-slate-600">当期 {win.curRange}{noCompare ? '' : ' ／ 前年同期 ' + win.prevRange}</div>
           </div>
           <button onClick={onClose} className="text-slate-600 hover:text-slate-800 transition"><X size={20} /></button>
         </div>
         <div className="px-6 py-4 space-y-4 max-h-[65vh] overflow-auto">
           <InfoNote>購入得意先＝期間内の売上（返品・値引き後）がプラスの得意先（お客様名）の数。同じ得意先の複数伝票は1件と数えます。</InfoNote>
-          {!prevRep ? (
-            <InfoNote tone="warn">前年同期の明細が取り込まれていないため、継続・当期のみの区別はできません。</InfoNote>
+          {noCompare && <Group title="期間内に購入" list={curRep.customers.filter(c => c.sales > 0)} />}
+          {noCompare ? (
+            <InfoNote>全期間の表示のため、前年との比較（継続・当期だけ・前年同期だけ）はしません。月次・年度・期間指定で確認できます。</InfoNote>
+          ) : !prevRep ? (
+            <InfoNote tone="warn">前年同期の明細が取り込まれていない（または途中の月が抜けている）ため、継続・当期のみの区別はできません。</InfoNote>
           ) : (
             <>
               <div className="text-sm font-bold text-slate-800">
@@ -2871,7 +2889,7 @@ function DashboardView({ data, rows, masters, meta, jumpToFacility, openPrint, o
   }, [repType, repMonth, repFy, customFrom, customTo, data]);
 
   // 比較条件（当期・前年同期の日付範囲、月途中、前年データの有無）
-  const win = useMemo(() => comparisonWindow(spec.from, spec.to, data.latestDate, data.firstDate), [spec, data.latestDate, data.firstDate]);
+  const win = useMemo(() => comparisonWindow(spec.from, spec.to, data.latestDate, data.firstDate, { months: data.monthsAll }), [spec, data]);
   // 画面表示・帳票の両方がこの集計を参照する
   const rep = useMemo(() => buildPeriodReport(rows, masters, spec.from, spec.to, consumableOnly, win && win.cur.cutoff), [rows, masters, spec, consumableOnly, win]);
   const prevRep = useMemo(() => (!win || spec.noCompare || !win.prevCovered ? null
@@ -2918,10 +2936,12 @@ function DashboardView({ data, rows, masters, meta, jumpToFacility, openPrint, o
   const lastImport = meta && meta.lastImport ? stampToLocalDate(meta.lastImport) : '—';
   const scopeLabel = consumableOnly ? '消耗品のみ（住宅改修・器具本体・部材と個人受給者向けを除く）' : '全売上（施設・個人を含む）';
   const showCompare = !spec.noCompare;
-  const inProgNote = win && win.inProgress && showCompare
-    ? '月の途中です。前年も同じ日（' + dateLabel(win.prev.cutoff ? win.prev.cutoff.idx : win.prev.to, win.prev.cutoff ? win.prev.cutoff.d : 1) + '）までで比べています' +
+  // 月次で今月を見ているときは「月の途中」、年度・期間指定で最終月が締まっていないときは「期間の途中」
+  const inProgNote = win && win.inProgress && win.prev.cutoff && showCompare
+    ? (repType === 'month' ? '月の途中です。' : '期間の途中です。') + '前年も同じ日（' + dateLabel(win.prev.cutoff.idx, win.prev.cutoff.d) + '）までで比べています' +
       (win.dayAdjusted ? '（前年に同じ日がないため前年は月末まで）' : '') + '。'
     : '';
+  const monthsLabel = (list) => list.map(idxLabel).join('・');
 
   const drill = (title, metric, unit) => setDrilldown({ title, metric, unit, curLabel: curRange, prevLabel: prevRange,
     curRanking: rep.ranking, prevRanking: prevRep ? prevRep.ranking : [], prevCovered: !!prevRep, inProgress: !!(win && win.inProgress),
@@ -2962,6 +2982,7 @@ function DashboardView({ data, rows, masters, meta, jumpToFacility, openPrint, o
 
   const selCls = 'h-10 w-full px-3 rounded-xl border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-600';
   const notCovered = showCompare && win && !win.prevCovered;
+  const noPrevText = win && !win.prevBeforeData && win.prevMissing.length ? '前年同期の明細がそろっていません（' + win.prevMissing.map(idxLabel).join('・') + 'がない）' : '前年同期の明細が未取得です';
   const prevLine = (v) => (
     <div className="flex items-center justify-between gap-2 text-[11px]">
       <span className="text-slate-600 font-bold">前年同期</span>
@@ -3027,7 +3048,17 @@ function DashboardView({ data, rows, masters, meta, jumpToFacility, openPrint, o
         <div className="mt-2 space-y-1.5">
           {inProgNote && <InfoNote>{inProgNote}当期は取り込んだ最終売上日（{dateLabel(win.asOf.idx, win.asOf.d)}）までの数字です。</InfoNote>}
           {win && win.short && <InfoNote tone="warn">締め済みの期間ですが、取込済みデータは {dateLabel(win.asOf.idx, win.asOf.d)} までです。期間の最後まで取り込まれていない可能性があります（取得不足）。</InfoNote>}
-          {notCovered && <InfoNote tone="warn">前年同期（{prevRange}）の明細が取り込まれていないため、前年との比較は表示しません（取込済みデータは {dataRange}）。0円とは区別しています。</InfoNote>}
+          {notCovered && (
+            <InfoNote tone="warn">
+              {win.prevBeforeData
+                ? '前年同期（' + prevRange + '）の明細が取り込まれていないため、前年との比較は表示しません（取込済みデータは ' + dataRange + '）。'
+                : '前年同期のうち ' + monthsLabel(win.prevMissing) + ' の明細が1件もありません（取り込み漏れの可能性）。0円として比べると誤るため、前年との比較は表示しません。'}
+              0円とは区別しています。
+            </InfoNote>
+          )}
+          {win && win.curMissing.length > 0 && (
+            <InfoNote tone="warn">対象期間のうち {monthsLabel(win.curMissing)} の明細が1件もありません。取り込み漏れの可能性があります（当期の数字が実際より少ない可能性）。</InfoNote>
+          )}
         </div>
       </Card>
 
@@ -3068,14 +3099,14 @@ function DashboardView({ data, rows, masters, meta, jumpToFacility, openPrint, o
           onClick={showCompare ? () => drill('売上', 'sales', '¥') : undefined}
           extra={showCompare && (pk
             ? <div className="text-[11px] text-slate-600 tabular-nums">当期 {yen(k.sales)} － 前年同期 {yen(pk.sales)}{pctChange(k.sales, pk.sales) === null ? '（前年同期が0円以下のため増減率は算出対象外）' : ''}</div>
-            : <div className="text-[11px] text-amber-800">前年同期の明細が未取得です</div>)} />
+            : <div className="text-[11px] text-amber-800">{noPrevText}</div>)} />
         <KpiCard icon={TrendingUp} tint="bg-teal-50 text-teal-600" label="前年より増えた・減った粗利"
           value={!showCompare ? '比較なし' : grossDiff === null ? (pk ? '未確定' : '比較データ不足') : <DiffText v={grossDiff} className="text-2xl" />}
           delta={grossDiff !== null && pctChange(k.gross, pk.gross) !== null ? pctChange(k.gross, pk.gross) : undefined} note={grossDiff !== null ? '増減率' : undefined}
           onClick={showCompare ? () => drill('粗利', 'gross', '¥') : undefined}
           extra={showCompare && (grossDiff !== null
             ? <div className="text-[11px] text-slate-600 tabular-nums">当期 {yen(k.gross)} － 前年同期 {yen(pk.gross)}{pctChange(k.gross, pk.gross) === null ? '（前年同期が0円以下のため増減率は算出対象外）' : ''}</div>
-            : <div className="text-[11px] text-amber-800">{pk ? '粗利額が不明な明細があるため差額を出しません' : '前年同期の明細が未取得です'}</div>)} />
+            : <div className="text-[11px] text-amber-800">{pk ? '粗利額が不明な明細があるため差額を出しません' : noPrevText}</div>)} />
         <KpiCard icon={Users} tint="bg-amber-50 text-amber-600" label="購入得意先数" value={num(k.buyers) + '件'}
           title="内訳（継続・当期だけ・前年同期だけ）を見る" linkLabel="内訳を見る"
           onClick={() => setBuyersOpen(true)}
@@ -3092,7 +3123,7 @@ function DashboardView({ data, rows, masters, meta, jumpToFacility, openPrint, o
           )} />
       </div>
       {drilldown && <KpiDrilldownModal {...drilldown} onJump={jumpFromModal} onClose={() => setDrilldown(null)} />}
-      {buyersOpen && win && <BuyersModal curRep={rep} prevRep={showCompare ? prevRep : null} win={win} firstBuy={firstBuy}
+      {buyersOpen && win && <BuyersModal curRep={rep} prevRep={showCompare ? prevRep : null} noCompare={!showCompare} win={win} firstBuy={firstBuy}
         dataFrom={data.firstDate ? dateLabel(data.firstDate.idx, data.firstDate.d) : '—'} onJump={jumpFromModal} onClose={() => setBuyersOpen(false)} />}
       {(k.returnCount > 0 || k.discountCount > 0) && (
         <div className="text-[11px] text-slate-600 -mt-2">
@@ -4872,8 +4903,12 @@ function DataCheckCard({ rows, data, meta, goTab }) {
     const other = data.products.filter(p => p.cat === 'その他' && p.winSales !== 0);
     const mixed = data.products.filter(p => p.mixedUnit);
     const unassigned = data.facilities.filter(f => !f.rep);
+    // 取込済みの最初の月〜最後の月のうち、明細が1件もない月（取り込み漏れの可能性）
+    const have = new Set(data.monthsAll);
+    const gapMonths = [];
+    for (let i = data.firstDate.idx; i <= data.latestDate.idx; i++) if (!have.has(i)) gapMonths.push(i);
     return {
-      grossNull, grossNullSales, retN, retAmt, discN, discAmt,
+      grossNull, grossNullSales, retN, retAmt, discN, discAmt, gapMonths,
       other, otherSales: other.reduce((t, p) => t + p.winSales, 0), mixed,
       unassigned, unassignedSales: unassigned.reduce((t, f) => t + f.winSum, 0),
       uncertain: custs.uncertain, noRepRows: data.facilities.reduce((t, f) => t + f.rows.length, 0) - data.repSaleRows,
@@ -4898,6 +4933,8 @@ function DataCheckCard({ rows, data, meta, goTab }) {
       <div className="font-bold text-sm text-slate-800 mb-0.5">データ確認</div>
       <div className="text-[11px] text-slate-600 mb-2">取込済みデータ {dataRangeLabel(data)}・明細 {num(rows.length)}行。売上の成果とは別に、数字の確からしさに関わる件数を示します。</div>
       <ul className="divide-y divide-slate-100">
+        <Row label="明細が1件もない月（取り込み漏れの可能性）" value={num(c.gapMonths.length) + 'か月'} warn={c.gapMonths.length > 0}
+          sub={c.gapMonths.length ? c.gapMonths.map(idxLabel).join('・') + '。この月を含む前年比較は「比較データ不足」になります。その月のCSVを取り込んでください。' : '取込済みの期間に、明細のない月はありません。'} />
         <Row label="粗利額・仕入単価のない明細（粗利が未確定）" value={num(c.grossNull) + '行'} warn={c.grossNull > 0}
           sub={c.grossNull ? '売上 ' + yen(c.grossNullSales) + ' 分。この明細を含む集計の粗利・粗利率は「未確定」と表示します。CSVに粗利額か仕入単価の列を含めて取り込み直してください。' : '以前の取込で粗利額列がなかった明細は0円として保存されているため、ここでは区別できません。'} />
         <Row label="分類「その他」の商品（直近12ヶ月に売上あり）" value={num(c.other.length) + '商品'} warn={c.other.length > 0}
@@ -5565,15 +5602,15 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
     <div className="space-y-4">
       <Card className="px-5 py-4 space-y-3">
         <div className="flex items-center gap-3 flex-wrap">
-          <div className="inline-flex items-center gap-2">
+          <div className="inline-flex items-center gap-2 max-w-full">
             <span className="text-sm text-slate-600 font-bold shrink-0">宛先（任意）</span>
-            <div className="relative" ref={facBoxRef}>
+            <div className="relative flex-1 min-w-0 sm:flex-none" ref={facBoxRef}>
               <input value={draft.facility} onChange={e => { patch({ facility: e.target.value }); setFacSuggestOpen(true); }}
                 onFocus={() => setFacSuggestOpen(true)}
                 onKeyDown={e => { if (e.key === 'Escape') setFacSuggestOpen(false); }}
-                placeholder="施設名など（空欄可）" className={inputCls + ' w-56'} />
+                placeholder="施設名など（空欄可）" className={inputCls + ' w-full sm:w-56'} />
               {facSuggestOpen && facSuggests.length > 0 && (
-                <div className="absolute z-30 top-full left-0 mt-1.5 w-56 bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
+                <div className="absolute z-30 top-full left-0 mt-1.5 w-full sm:w-56 bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
                   {facSuggests.map(n => (
                     <button key={n} type="button" onMouseDown={e => e.preventDefault()}
                       onClick={() => { patch({ facility: n }); setFacSuggestOpen(false); }}
@@ -6283,18 +6320,19 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
     <div className="space-y-4">
       <Card className="px-5 py-4 space-y-3">
         <div className="flex items-center gap-3 flex-wrap">
-          <div className="flex items-center gap-2">
+          {/* スマホ幅では施設名の入力欄を残りの幅に縮める（固定幅だと「一覧から選ぶ」と並んで横にはみ出す） */}
+          <div className="flex items-center gap-2 max-w-full">
             <span className="text-sm text-slate-600 font-bold shrink-0">施設名</span>
-            <div className="relative" ref={facBoxRef}>
+            <div className="relative flex-1 min-w-0 sm:flex-none" ref={facBoxRef}>
               <textarea ref={facInputRef} value={draft.facility}
                 onChange={e => { patch({ facility: e.target.value }); setFacSuggestOpen(true); }}
                 onFocus={() => setFacSuggestOpen(true)}
                 onKeyDown={e => { if (e.key === 'Escape') setFacSuggestOpen(false); }}
                 placeholder="選択、または新規の施設名を入力"
                 rows={1}
-                className="w-72 min-h-[40px] max-h-20 px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm shadow-sm focus:border-blue-400 focus:outline-none transition font-bold text-slate-700 leading-snug resize-y" />
+                className="w-full sm:w-72 min-h-[40px] max-h-20 px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm shadow-sm focus:border-blue-400 focus:outline-none transition font-bold text-slate-700 leading-snug resize-y" />
               {facSuggestOpen && facSuggests.length > 0 && (
-                <div className="absolute z-30 top-full left-0 mt-1.5 w-72 bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
+                <div className="absolute z-30 top-full left-0 mt-1.5 w-full sm:w-72 bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
                   {facSuggests.map(n => (
                     <button key={n} type="button" onMouseDown={e => e.preventDefault()}
                       onClick={() => { patch({ facility: n }); setFacSuggestOpen(false); }}
@@ -8065,28 +8103,31 @@ function App() {
           <a href="https://akamar08taiyo-bot.github.io/taiyo-portal/" className="block px-5 md:px-8 pt-1.5 text-[10.5px] text-slate-400 hover:text-slate-600">
             ← 業務アプリポータルへ戻る
           </a>
-          <div className="px-5 md:px-8 py-4 flex items-center gap-3">
+          {/* スマホ幅では、取込ボタンと基準月を2行目に下ろす（1行に並べると横にはみ出し、ページ名も消える） */}
+          <div className="px-5 md:px-8 py-4 flex items-center gap-3 flex-wrap md:flex-nowrap">
             <div className="md:hidden inline-flex items-center justify-center w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 shrink-0">
               <Sun size={16} className="text-white" />
             </div>
-            <div className="flex-1 min-w-0">
+            <div className="flex-1 min-w-[10rem]">
               <h1 className="font-extrabold text-slate-800 text-lg leading-tight truncate">{labelOf(current)}</h1>
               <div className="text-[11px] text-slate-600 truncate">{current.sub}</div>
             </div>
+            <div className="flex gap-2 w-full md:w-auto">
             {tab !== 'import' && (
               <button onClick={() => setTab('import')}
-                className="h-10 px-3.5 rounded-xl border border-emerald-300 bg-white hover:bg-emerald-50 hover:border-emerald-400 active:scale-[.98] text-emerald-700 text-sm shadow-sm font-bold shrink-0 transition inline-flex items-center gap-1.5">
-                <FileUp size={15} /> 最新データを取り込む
+                className="h-10 px-3.5 rounded-xl border border-emerald-300 bg-white hover:bg-emerald-50 hover:border-emerald-400 active:scale-[.98] text-emerald-700 text-sm shadow-sm font-bold shrink-0 flex-1 md:flex-none justify-center transition inline-flex items-center gap-1.5">
+                <FileUp size={15} /> <span><span className="hidden sm:inline">最新データを</span>取り込む</span>
               </button>
             )}
             {monthsDesc.length > 0 && (
               <select value={data.baseIdx} onChange={e => setBaseSel(+e.target.value)}
-                className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-600 shrink-0">
+                className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-600 flex-1 min-w-0 md:flex-none md:shrink-0">
                 {monthsDesc.map(idx => (
                   <option key={idx} value={idx}>基準月: {idxLabel(idx)}{idx === data.maxIdx ? '（最新）' : ''}</option>
                 ))}
               </select>
             )}
+            </div>
           </div>
           {/* モバイル用タブ */}
           <nav className="md:hidden px-3 pb-2 flex gap-1 overflow-x-auto">
