@@ -271,6 +271,20 @@ const todayParts = () => { const t = new Date(); return { y: t.getFullYear(), mo
 const todayLabel = () => { const t = todayParts(); return t.y + '年' + t.mo + '月' + t.d + '日'; };
 const todayCompact = () => { const t = todayParts(); return '' + t.y + String(t.mo).padStart(2, '0') + String(t.d).padStart(2, '0'); };
 const todayISO = () => { const t = todayParts(); return t.y + '-' + String(t.mo).padStart(2, '0') + '-' + String(t.d).padStart(2, '0'); };
+const daysInMonthIdx = (idx) => new Date(Math.floor(idx / 12), (idx % 12) + 1, 0).getDate();
+// 月途中の判定。今月を含む期間はまだ締まっておらず、売上は取り込んだ最終売上日までしかない。
+// これを締まった前月・前年同月などと増減率で比べると、まだ注文が来ていないだけの施設が
+// 「減少」「離脱」に見えてしまうため、その場合は「比較先の何％まで来たか」（進捗率）で表す。
+// 戻り値: 締まった期間 → null ／ 月途中 → { asOf: 最終売上日, asOfLabel: '10/27', pace: 期間の経過割合(%) }
+const periodProgress = (fromIdx, toIdx, latest, today = todayParts()) => {
+  if (!latest || toIdx < today.y * 12 + today.mo - 1) return null;
+  const elapsed = latest.idx < fromIdx ? 0
+    : latest.idx > toIdx ? toIdx - fromIdx + 1
+    : (latest.idx - fromIdx) + latest.d / daysInMonthIdx(latest.idx);
+  return { asOf: latest, asOfLabel: latest.mo + '/' + latest.d, pace: Math.round(elapsed / (toIdx - fromIdx + 1) * 100) };
+};
+// 進捗率（％）＝ 当期 ÷ 比較先。比較先が0以下（実績なし・返品超過）のときは出せない
+const progressPct = (now, base, ok = true) => (ok && base > 0 ? Math.round(now / base * 100) : null);
 // 保存日時は new Date().toISOString()（UTC）で持っている。これを先頭10文字で切ると
 // 日本時間の朝9時前が前日付で表示されてしまうため、ローカル日付に直してから表示する。
 // （CSVの日付文字列と違い自分で作ったISO-8601なので new Date() で解釈して問題ない）
@@ -554,10 +568,13 @@ function buildAnalytics(rows, masters, baseSel) {
     yoySales: 0, hasYoy: false, yoyPctSales: null, fySales: 0, fyPrevSales: 0, hasFyPrev: false, fyPct: null };
   // 月インデックス収集
   const monthSet = new Set();
-  let maxIdx = -1;
+  let maxIdx = -1, latest = null;
   for (let i = 0; i < rows.length; i++) {
     const d = parseDateStr(rows[i][1]);
-    if (d) { monthSet.add(d.idx); if (d.idx > maxIdx) maxIdx = d.idx; }
+    if (d) {
+      monthSet.add(d.idx); if (d.idx > maxIdx) maxIdx = d.idx;
+      if (!latest || d.sort > latest.sort) latest = d;
+    }
   }
   const monthsAll = [...monthSet].sort((a, b) => a - b);
   if (monthsAll.length === 0) {
@@ -567,9 +584,12 @@ function buildAnalytics(rows, masters, baseSel) {
       products: [], prodByName: new Map(), categories: [],
       growth: [], dead: [], deadTotal: 0, lowMargin: [], lowMarginTotal: 0, reps: [], custStats, settings: st,
       fyLabel: '', fyRangeLabel: '', hasYoy: false, hasFyPrev: false,
+      latestDate: null, progress: null, fyProgress: null,
     };
   }
   const baseIdx = (baseSel != null && monthSet.has(baseSel)) ? baseSel : maxIdx;
+  // 基準月が月途中なら、前月比・前年同月比などは増減率でなく進捗率（*Prog）で見せる
+  const progress = periodProgress(baseIdx, baseIdx, latest);
   const winStart = baseIdx - 11;
   const win = [];
   for (let i = 0; i < 12; i++) win.push(winStart + i);
@@ -666,6 +686,9 @@ function buildAnalytics(rows, masters, baseSel) {
     const yoyM = f.byMonth.get(baseIdx - 12);
     f.mom = pctDelta(f.last, f.monthly[10], hasPrevMonth);
     f.yoyPct = pctDelta(f.last, yoyM ? yoyM.sales : 0, hasYoyMonth);
+    f.pctProg = progressPct(f.last, f.prev3);
+    f.momProg = progressPct(f.last, f.monthly[10], hasPrevMonth);
+    f.yoyProg = progressPct(f.last, yoyM ? yoyM.sales : 0, hasYoyMonth);
   }
 
   // 全体の前年同月比・年度内前年比較（例: 2026年度4〜7月 と 2025年度4〜7月）
@@ -727,6 +750,7 @@ function buildAnalytics(rows, masters, baseSel) {
       // 構成比の合計が100%を超える。実態どおりマイナスで出す。
       share: sales > 0 ? Math.round(s / sales * 100) : 0,
       mom: pv !== 0 ? Math.round((s - pv) / Math.abs(pv) * 100) : 0,
+      momProg: progressPct(s, pv),
       margin: s !== 0 ? Math.round(g / s * 1000) / 10 : 0,
       top: c.items.slice().sort((a, b) => b.winSales - a.winSales).slice(0, 6).map(p => p.name),
     };
@@ -788,6 +812,9 @@ function buildAnalytics(rows, masters, baseSel) {
       mom: pctOf(r.sales, r.prev, hasPrev),
       yoyPct: pctOf(r.sales, r.yoy, hasYoy),
       fyPct: pctOf(r.fy, r.fyPrev, hasFyPrev),
+      momProg: progressPct(r.sales, r.prev, hasPrev),
+      yoyProg: progressPct(r.sales, r.yoy, hasYoy),
+      fyProg: progressPct(r.fy, r.fyPrev, hasFyPrev),
     }))
     .sort((a, b) => b.sales - a.sales);
   const fyLabel = Math.floor(fyStart / 12) + '年度';
@@ -802,6 +829,7 @@ function buildAnalytics(rows, masters, baseSel) {
     lowMargin: lowAll.slice(0, 30), lowMarginTotal: lowAll.length,
     reps, custStats, settings: st,
     fyLabel, fyRangeLabel, hasYoy, hasFyPrev,
+    latestDate: latest, progress, fyProgress: periodProgress(fyStart, baseIdx, latest),
   };
 }
 
@@ -2114,7 +2142,25 @@ function DeltaPill({ v, suffix }) {
   return <span className="bg-slate-100 text-slate-700 text-xs font-bold px-2 py-0.5 rounded-full tabular-nums">±0{suffix || '%'}</span>;
 }
 
-function KpiCard({ icon: Icon, tint, label, value, delta, deltaSuffix, note, extra, onClick, emphasize }) {
+// 月途中の比較に使う進捗率（比較先の何％まで来たか）。比較先をもう超えた100%以上だけ緑にする。
+// 施設の注文は月1〜2回のまとめ買いが多く、日数の経過と比べて遅れ・進みの色を付けると誤解を招くため付けない
+function ProgressPill({ v }) {
+  return <span className={"inline-flex items-center text-xs font-bold px-2 py-0.5 rounded-full tabular-nums " + (v >= 100 ? 'bg-emerald-50 text-emerald-700' : 'bg-sky-50 text-sky-700')}>{v}%</span>;
+}
+
+// 締まった月どうしなら増減率、月途中なら進捗率を出す。値がなければ「—」
+function ComparePill({ delta, progress, inProgress, dashCls }) {
+  const v = inProgress ? progress : delta;
+  if (v === null || v === undefined) return <span className={dashCls || 'text-xs text-slate-400 font-bold'}>—</span>;
+  return inProgress ? <ProgressPill v={v} /> : <DeltaPill v={v} />;
+}
+
+// 月途中のため進捗率で表示していることを、表やカードの上で知らせる
+function ProgressNote({ children, className }) {
+  return <div className={"text-[11px] text-sky-800 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2 leading-relaxed " + (className || '')}>{children}</div>;
+}
+
+function KpiCard({ icon: Icon, tint, label, value, delta, deltaSuffix, progress, note, extra, onClick, emphasize }) {
   return (
     <div onClick={onClick}
       className={"bg-white rounded-2xl p-4 flex-1 min-w-[160px] transition " +
@@ -2128,6 +2174,7 @@ function KpiCard({ icon: Icon, tint, label, value, delta, deltaSuffix, note, ext
         <div className="flex items-center flex-wrap justify-end gap-1.5 min-w-0">
           {note && <span className="text-[10px] text-slate-600 font-bold text-right">{note}</span>}
           {delta !== undefined && <DeltaPill v={delta} suffix={deltaSuffix} />}
+          {progress !== undefined && <ProgressPill v={progress} />}
         </div>
       </div>
       <div className="text-2xl font-extrabold text-slate-800 tabular-nums mt-2.5 leading-none">{value}</div>
@@ -2169,27 +2216,49 @@ function buildFacilityComparison(curRanking, prevRanking, metric) {
   return rows;
 }
 
-function KpiDrilldownModal({ title, curLabel, prevLabel, curRanking, prevRanking, metric, unit, onClose }) {
-  const rows = React.useMemo(() => buildFacilityComparison(curRanking, prevRanking, metric), [curRanking, prevRanking, metric]);
+// progress: 当期が月途中のとき { label: '前年進捗率' など, note: 月途中である旨の文 }。
+// 月途中の当期を締まった比較先と差額で比べると、まだ注文が来ていないだけの施設が「減少」「離脱」に
+// 見えるため、差額の代わりに進捗率（比較先の何％まで来たか）を出す。粗利率は率どうしの比較なので対象外
+function KpiDrilldownModal({ title, curLabel, prevLabel, curRanking, prevRanking, metric, unit, progress, onClose }) {
+  const prog = progress && metric !== 'margin' ? progress : null;
+  const rows = React.useMemo(() => {
+    const list = buildFacilityComparison(curRanking, prevRanking, metric);
+    // 月途中は、比較先に届いていない額が大きい施設から並べる
+    return prog ? list.slice().sort((a, b) => a.diff - b.diff) : list;
+  }, [curRanking, prevRanking, metric, prog]);
   const fmt = (v) => unit === '%' ? v.toFixed(1) + '%' : yen(v);
   const fmtDiff = (v) => unit === '%' ? (v > 0 ? '+' : '') + v.toFixed(1) + 'pt' : (v > 0 ? '+' : '') + yen(v);
   const increased = rows.filter(r => r.diff > 0).length;
   const decreased = rows.filter(r => r.diff < 0).length;
+  const reached = rows.filter(r => r.prevVal > 0 && r.curVal >= r.prevVal).length;
+  const notYet = rows.filter(r => r.isGone).length;
   return (
     <div className="fixed inset-0 z-40 bg-slate-600/50 backdrop-blur-sm overflow-auto py-8 px-4 no-print" onClick={onClose}>
       <div className="max-w-2xl mx-auto bg-white rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
         <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-3 bg-gradient-to-r from-sky-50 to-blue-50">
           <span className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-sky-100 text-sky-600"><Building2 size={17} /></span>
           <div className="flex-1 min-w-0">
-            <div className="font-extrabold text-slate-800">{title}：施設別の増減</div>
+            <div className="font-extrabold text-slate-800">{title}：施設別の{prog ? '進捗' : '増減'}</div>
             <div className="text-[11px] text-slate-600">{prevLabel} → {curLabel}</div>
           </div>
           <button onClick={onClose} className="text-slate-600 hover:text-slate-800 transition"><X size={20} /></button>
         </div>
-        <div className="px-6 pt-4 flex gap-4 text-xs text-slate-600 font-bold">
-          <span className="text-emerald-600">増加 {increased}施設</span>
-          <span className="text-rose-600">減少 {decreased}施設</span>
-        </div>
+        {prog ? (
+          <div className="px-6 pt-4 space-y-2">
+            <div className="flex gap-4 text-xs font-bold">
+              <span className="text-emerald-600">100%以上 {reached}施設</span>
+              <span className="text-slate-600">まだ売上なし {notYet}施設</span>
+            </div>
+            <ProgressNote>
+              {prog.note}{prevLabel}の売上に対して何％まで来たかを「{prog.label}」で表示しています。
+            </ProgressNote>
+          </div>
+        ) : (
+          <div className="px-6 pt-4 flex gap-4 text-xs text-slate-600 font-bold">
+            <span className="text-emerald-600">増加 {increased}施設</span>
+            <span className="text-rose-600">減少 {decreased}施設</span>
+          </div>
+        )}
         <div className="max-h-[60vh] overflow-auto px-6 py-4">
           {rows.length === 0 ? (
             <div className="text-sm text-slate-600 text-center py-6">比較できるデータがありません。</div>
@@ -2200,7 +2269,7 @@ function KpiDrilldownModal({ title, curLabel, prevLabel, curRanking, prevRanking
                   <th className="text-left font-bold py-2">施設名</th>
                   <th className="text-right font-bold py-2">{prevLabel}</th>
                   <th className="text-right font-bold py-2">{curLabel}</th>
-                  <th className="text-right font-bold py-2">増減</th>
+                  <th className="text-right font-bold py-2">{prog ? prog.label : '増減'}</th>
                 </tr>
               </thead>
               <tbody>
@@ -2209,11 +2278,15 @@ function KpiDrilldownModal({ title, curLabel, prevLabel, curRanking, prevRanking
                     <td className="py-2 text-slate-800 font-bold">
                       {r.name}
                       {r.isNew && <span className="ml-1.5 text-[10px] text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-full font-bold">新規</span>}
-                      {r.isGone && <span className="ml-1.5 text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-full font-bold">離脱</span>}
+                      {r.isGone && <span className="ml-1.5 text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-full font-bold">{prog ? '未購入' : '離脱'}</span>}
                     </td>
                     <td className="py-2 text-right text-slate-600 tabular-nums">{fmt(r.prevVal)}</td>
                     <td className="py-2 text-right text-slate-800 tabular-nums font-bold">{fmt(r.curVal)}</td>
-                    <td className={"py-2 text-right tabular-nums font-bold " + (r.diff > 0 ? 'text-emerald-600' : r.diff < 0 ? 'text-rose-600' : 'text-slate-500')}>{fmtDiff(r.diff)}</td>
+                    {prog ? (
+                      <td className="py-2 text-right"><ComparePill progress={progressPct(r.curVal, r.prevVal)} inProgress /></td>
+                    ) : (
+                      <td className={"py-2 text-right tabular-nums font-bold " + (r.diff > 0 ? 'text-emerald-600' : r.diff < 0 ? 'text-rose-600' : 'text-slate-500')}>{fmtDiff(r.diff)}</td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -2559,6 +2632,14 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
   const pct = (now, base) => (hasPrev && base !== 0 ? Math.round((now - base) / Math.abs(base) * 100) : null);
   const momSales = prevRep ? pct(rep.kpi.sales, prevRep.kpi.sales) : null;
   const momGross = prevRep ? pct(rep.kpi.gross, prevRep.kpi.gross) : null;
+  // 選んだ期間が月途中なら、締まった前期・前年との比較は増減率でなく進捗率で表す
+  const prog = useMemo(() => periodProgress(spec.from, spec.to, data.latestDate), [spec, data.latestDate]);
+  const curLabel = prog ? spec.label + '（' + prog.asOfLabel + 'まで）' : spec.label;
+  const progSales = prevRep ? progressPct(rep.kpi.sales, prevRep.kpi.sales, hasPrev) : null;
+  const progGross = prevRep ? progressPct(rep.kpi.gross, prevRep.kpi.gross, hasPrev) : null;
+  const progNote = !prog || repType === 'trend' ? '' :
+    (repType === 'month' ? idxLabel(spec.from) + 'はまだ月の途中です' : repType === 'fy' ? spec.short + 'はまだ途中です' : '選んだ期間はまだ途中です') +
+    '（データは' + prog.asOfLabel + 'まで・' + (repType === 'month' ? '月' : repType === 'fy' ? '年度' : '期間') + 'の経過 ' + prog.pace + '%）。';
 
   // 前年同月比（月次モードのときだけ意味を持つ）
   const yoyRep = useMemo(() => (repType === 'month' ? buildPeriodReport(rows, masters, repMonth - 12, repMonth - 12, consumableOnly) : null), [repType, repMonth, rows, masters, consumableOnly]);
@@ -2566,10 +2647,15 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
   const pctYoy = (now, base) => (hasYoy && base !== 0 ? Math.round((now - base) / Math.abs(base) * 100) : null);
   const yoyPctSales = yoyRep ? pctYoy(rep.kpi.sales, yoyRep.kpi.sales) : null;
   const yoyPctGross = yoyRep ? pctYoy(rep.kpi.gross, yoyRep.kpi.gross) : null;
+  const yoyProgSales = yoyRep ? progressPct(rep.kpi.sales, yoyRep.kpi.sales, hasYoy) : null;
+  const yoyProgGross = yoyRep ? progressPct(rep.kpi.gross, yoyRep.kpi.gross, hasYoy) : null;
   const yoyLabel = repType === 'month' ? idxLabel(repMonth - 12) : '';
   // KPIカードの施設別ドリルダウン用：月次モードは前年同月、それ以外は選択期間の直前と比較する
   const compareRep = repType === 'month' ? yoyRep : prevRep;
   const compareLabel = repType === 'month' ? (yoyLabel + '（前年同月）') : (spec.prevName || '前期');
+  const compareProgress = progNote ? { label: repType === 'month' ? '前年進捗率' : spec.prevName + '進捗率', note: progNote } : null;
+  const drill = (title, metric, unit) => setDrilldown({ title, curLabel, prevLabel: compareLabel,
+    curRanking: rep.ranking, prevRanking: compareRep ? compareRep.ranking : [], metric, unit, progress: compareProgress });
 
   // 推移グラフ: 月次は選んだ月までの12ヶ月、それ以外は期間内の各月
   const chartRep = useMemo(() => (repType === 'month' ? buildPeriodReport(rows, masters, repMonth - 11, repMonth, consumableOnly) : rep),
@@ -2592,8 +2678,10 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
   const fyHasPrev = !!(fyRepPrev && fyRepPrev.monthly.length > 0);
   const fyTotal = useMemo(() => {
     const s = fyRepCur ? fyRepCur.kpi.sales : 0, p = fyRepPrev ? fyRepPrev.kpi.sales : 0;
-    return { sales: s, prevSales: p, pct: fyHasPrev && p !== 0 ? Math.round((s - p) / Math.abs(p) * 100) : null };
+    return { sales: s, prevSales: p, pct: fyHasPrev && p !== 0 ? Math.round((s - p) / Math.abs(p) * 100) : null,
+      prog: progressPct(s, p, fyHasPrev) };
   }, [fyRepCur, fyRepPrev, fyHasPrev]);
+  const fyProg = data.fyProgress;   // 今年度累計（4月〜基準月）が月途中を含むか
   const fyPrevLabel = data.fyLabel ? (parseInt(data.fyLabel, 10) - 1) + '年度' : '';
   const fyPrevRangeLabel = useMemo(() => {
     if (data.baseIdx == null) return '';
@@ -2603,7 +2691,7 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
 
   const buildHtml = () => {
     if (rep.kpi.count === 0) return null;
-    return buildReportHtml({ ...rep, title: spec.title, periodLabel: spec.label, issued: todayLabel(), office });
+    return buildReportHtml({ ...rep, title: spec.title, periodLabel: curLabel, issued: todayLabel(), office });
   };
   const handlePrint = () => {
     const html = buildHtml();
@@ -2681,7 +2769,7 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <h2 className="text-sm font-bold text-slate-700">
           {repType === 'month' ? '月次サマリー' : repType === 'trend' ? '全期間サマリー' : '期間サマリー'}
-          <span className="text-slate-600 font-normal">（{spec.label}）</span>
+          <span className="text-slate-600 font-normal">（{spec.label}{prog ? '・' + prog.asOfLabel + 'まで' : ''}）</span>
         </h2>
         <button onClick={() => setConsumableOnly(v => !v)} title="住宅改修・器具本体等を除いた、消耗品の売上だけで集計します"
           className={"h-8 px-3 rounded-full text-xs font-bold border transition inline-flex items-center gap-1.5 shrink-0 " +
@@ -2689,6 +2777,11 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
           <Filter size={13} /> 消耗品のみ
         </button>
       </div>
+      {progNote && (
+        <ProgressNote className="-mt-2">
+          {progNote}{repType === 'month' ? '前月・前年同月' : spec.prevName}との比較は、増減率ではなく<b>何％まで来たか（進捗率）</b>で表示しています。
+        </ProgressNote>
+      )}
       {consumableOnly && (
         <div className="text-[11px] text-sky-700 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2 -mt-2">
           消耗品のみ表示中：住宅改修・車いす等の器具本体・部材と、個人（地域包括支援センター経由等）向けとみられる売上を除いて集計しています。
@@ -2696,33 +2789,41 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
       )}
       <div className="flex gap-3 flex-wrap">
         <KpiCard icon={JapaneseYen} tint="bg-blue-50 text-blue-600" label="純売上" value={yen(rep.kpi.sales)}
-          delta={momSales === null ? undefined : momSales} note={spec.prevName ? spec.prevName + '比' : '全期間'}
-          onClick={() => setDrilldown({ title: '純売上', curLabel: spec.label, prevLabel: compareLabel, curRanking: rep.ranking, prevRanking: compareRep ? compareRep.ranking : [], metric: 'sales', unit: '¥' })}
+          delta={prog || momSales === null ? undefined : momSales}
+          progress={prog && progSales !== null ? progSales : undefined}
+          note={spec.prevName ? spec.prevName + (prog ? '進捗率' : '比') : '全期間'}
+          onClick={() => drill('純売上', 'sales', '¥')}
           extra={repType === 'month' && (
             <div className="flex items-center justify-between gap-2 flex-wrap">
-              <span className="text-[11px] text-slate-600 font-bold whitespace-nowrap">前年同月比（{yoyLabel}）</span>
-              {yoyPctSales === null ? <span className="text-[11px] text-slate-500 font-bold">—</span> : <DeltaPill v={yoyPctSales} />}
+              <span className="text-[11px] text-slate-600 font-bold whitespace-nowrap">{prog ? '前年進捗率' : '前年同月比'}（{yoyLabel}）</span>
+              <ComparePill delta={yoyPctSales} progress={yoyProgSales} inProgress={!!prog} dashCls="text-[11px] text-slate-500 font-bold" />
             </div>
           )} />
         <KpiCard icon={Coins} tint="bg-emerald-50 text-emerald-600" label="粗利額" value={yen(rep.kpi.gross)}
-          delta={momGross === null ? undefined : momGross} note={spec.prevName ? spec.prevName + '比' : '全期間'}
-          onClick={() => setDrilldown({ title: '粗利額', curLabel: spec.label, prevLabel: compareLabel, curRanking: rep.ranking, prevRanking: compareRep ? compareRep.ranking : [], metric: 'gross', unit: '¥' })}
+          delta={prog || momGross === null ? undefined : momGross}
+          progress={prog && progGross !== null ? progGross : undefined}
+          note={spec.prevName ? spec.prevName + (prog ? '進捗率' : '比') : '全期間'}
+          onClick={() => drill('粗利額', 'gross', '¥')}
           extra={repType === 'month' && (
             <div className="flex items-center justify-between gap-2 flex-wrap">
-              <span className="text-[11px] text-slate-600 font-bold whitespace-nowrap">前年同月比（{yoyLabel}）</span>
-              {yoyPctGross === null ? <span className="text-[11px] text-slate-500 font-bold">—</span> : <DeltaPill v={yoyPctGross} />}
+              <span className="text-[11px] text-slate-600 font-bold whitespace-nowrap">{prog ? '前年進捗率' : '前年同月比'}（{yoyLabel}）</span>
+              <ComparePill delta={yoyPctGross} progress={yoyProgGross} inProgress={!!prog} dashCls="text-[11px] text-slate-500 font-bold" />
             </div>
           )} />
         <KpiCard icon={Percent} tint="bg-violet-50 text-violet-600" label="粗利率" value={rep.kpi.rate + '%'}
           note={hasPrev ? spec.prevName + ' ' + prevRep.kpi.rate + '%' : '—'}
-          onClick={() => setDrilldown({ title: '粗利率', curLabel: spec.label, prevLabel: compareLabel, curRanking: rep.ranking, prevRanking: compareRep ? compareRep.ranking : [], metric: 'margin', unit: '%' })} />
+          onClick={() => drill('粗利率', 'margin', '%')} />
         <KpiCard icon={Building2} tint="bg-amber-50 text-amber-600" label="取引施設" value={rep.kpi.count + '件'} note="施設のみ集計"
-          onClick={() => setDrilldown({ title: '取引施設', curLabel: spec.label, prevLabel: compareLabel, curRanking: rep.ranking, prevRanking: compareRep ? compareRep.ranking : [], metric: 'sales', unit: '¥' })} />
+          onClick={() => drill('取引施設', 'sales', '¥')} />
         {repType === 'month' && (
           <KpiCard icon={ClipboardList} tint="bg-teal-50 text-teal-600" label={data.fyLabel + '累計'} value={yen(fyTotal.sales)}
-            delta={fyTotal.pct === null ? undefined : fyTotal.pct} note={fyPrevLabel + '比'}
+            delta={fyProg || fyTotal.pct === null ? undefined : fyTotal.pct}
+            progress={fyProg && fyTotal.prog !== null ? fyTotal.prog : undefined}
+            note={fyPrevLabel + (fyProg ? '同期進捗率' : '比')}
             emphasize
-            onClick={() => setDrilldown({ title: data.fyLabel + '累計', curLabel: data.fyLabel, prevLabel: fyPrevLabel, curRanking: fyRepCur ? fyRepCur.ranking : [], prevRanking: fyRepPrev ? fyRepPrev.ranking : [], metric: 'sales', unit: '¥' })}
+            onClick={() => setDrilldown({ title: data.fyLabel + '累計', curLabel: data.fyLabel + (fyProg ? '（' + fyProg.asOfLabel + 'まで）' : ''),
+              prevLabel: fyPrevLabel + '同期', curRanking: fyRepCur ? fyRepCur.ranking : [], prevRanking: fyRepPrev ? fyRepPrev.ranking : [], metric: 'sales', unit: '¥',
+              progress: fyProg ? { label: '前年度同期進捗率', note: data.baseLabel + 'はまだ月の途中です（データは' + fyProg.asOfLabel + 'まで・' + data.fyRangeLabel + 'の経過 ' + fyProg.pace + '%）。' } : null })}
             extra={(
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[10px] text-slate-600 font-bold">{fyPrevLabel}同期（{fyPrevRangeLabel}）</span>
@@ -2859,6 +2960,7 @@ const DECLINE_MIN_BASE = 50000;   // 直近3ヶ月平均がこの金額以上の
 const CSV_PERIODS = [['all', '全期間'], ['fy', '今年度'], ['month', '月を選ぶ']];
 
 function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, showToast, openPrint, startDoc, office }) {
+  const prog = data.progress;   // 今月が月途中なら前月比・前年同月比を進捗率で出す
   const [search, setSearch] = useState('');
   const [suggestOpen, setSuggestOpen] = useState(false);
   const [sortKey, setSortKey] = useState('sales');
@@ -3128,11 +3230,15 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
 
         {/* 基本指標 */}
         <div className="flex gap-3 flex-wrap">
-          <KpiCard icon={JapaneseYen} tint="bg-blue-50 text-blue-600" label="今月売上" value={yen(f.monthly[11])} delta={f.pct} deltaSuffix="%" note="直近3ヶ月平均比"
+          <KpiCard icon={JapaneseYen} tint="bg-blue-50 text-blue-600"
+            label={prog ? '今月売上（' + prog.asOfLabel + 'まで）' : '今月売上'} value={yen(f.monthly[11])}
+            delta={prog ? undefined : f.pct} deltaSuffix="%"
+            progress={prog && f.pctProg !== null ? f.pctProg : undefined}
+            note={prog ? '3ヶ月平均進捗率' : '直近3ヶ月平均比'}
             extra={(
               <div className="flex items-center justify-between gap-2 flex-wrap">
-                <span className="text-[11px] text-slate-600 font-bold whitespace-nowrap">前年同月比（{idxLabel(data.baseIdx - 12)}）</span>
-                {f.yoyPct === null ? <span className="text-[11px] text-slate-500 font-bold">—</span> : <DeltaPill v={f.yoyPct} />}
+                <span className="text-[11px] text-slate-600 font-bold whitespace-nowrap">{prog ? '前年進捗率' : '前年同月比'}（{idxLabel(data.baseIdx - 12)}）</span>
+                <ComparePill delta={f.yoyPct} progress={f.yoyProg} inProgress={!!prog} dashCls="text-[11px] text-slate-500 font-bold" />
               </div>
             )} />
           <KpiCard icon={Coins} tint="bg-emerald-50 text-emerald-600" label="月平均" value={yen(f.avg)} note="12ヶ月" />
@@ -3263,6 +3369,12 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
               増減率順のため、3ヶ月平均が{num(DECLINE_MIN_BASE)}円未満・今月0円の施設は除いています{declineHidden > 0 ? '（非表示 ' + num(declineHidden) + '施設）' : ''}
             </span>
           )}
+          {prog && (
+            <ProgressNote className="mt-2">
+              {data.baseLabel}はまだ月の途中です（データは{prog.asOfLabel}まで・月の経過 {prog.pace}%）。
+              前月・前年同月との比較は、増減率ではなく<b>前月・前年同月の何％まで来たか（進捗率）</b>で表示しています。
+            </ProgressNote>
+          )}
         </div>
         <div className="overflow-x-auto">
         <table className="w-full text-sm min-w-[960px]">
@@ -3271,8 +3383,8 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
               <th className="text-left font-bold px-5 py-3">施設名</th>
               <th className="text-center font-bold px-2 py-3 pr-4">今月売上</th>
               <th className="text-center font-bold px-2 py-3 pr-4">月平均</th>
-              <th className="text-center font-bold px-2 py-3">前月比</th>
-              <th className="text-center font-bold px-2 py-3">前年同月比</th>
+              <th className="text-center font-bold px-2 py-3">{prog ? '前月進捗率' : '前月比'}</th>
+              <th className="text-center font-bold px-2 py-3">{prog ? '前年進捗率' : '前年同月比'}</th>
               <th className="text-center font-bold px-2 py-3 pr-4">粗利率</th>
               <th className="text-center font-bold px-2 py-3">担当</th>
               <th className="w-10"></th>
@@ -3289,8 +3401,8 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
                 </td>
                 <td className="px-2 py-3 pr-4 text-center tabular-nums font-bold text-slate-800">{yen(f.monthly[11])}</td>
                 <td className="px-2 py-3 pr-4 text-center tabular-nums text-slate-700">{yen(f.avg)}</td>
-                <td className="px-2 py-3.5 text-center">{f.mom === null ? <span className="text-xs text-slate-400 font-bold">—</span> : <DeltaPill v={f.mom} />}</td>
-                <td className="px-2 py-3.5 text-center">{f.yoyPct === null ? <span className="text-xs text-slate-400 font-bold">—</span> : <DeltaPill v={f.yoyPct} />}</td>
+                <td className="px-2 py-3.5 text-center"><ComparePill delta={f.mom} progress={f.momProg} inProgress={!!prog} /></td>
+                <td className="px-2 py-3.5 text-center"><ComparePill delta={f.yoyPct} progress={f.yoyProg} inProgress={!!prog} /></td>
                 <td className="px-2 py-3 pr-4 text-center tabular-nums text-slate-700">{f.margin}%</td>
                 <td className="px-2 py-3">
                   <span className="inline-flex items-center justify-center gap-1.5 text-slate-600">
@@ -3486,7 +3598,7 @@ function FacilityTrendView({ data, jumpToFacility, showToast }) {
               <th className="px-3 py-2.5 font-bold text-right whitespace-nowrap">{fyPrevLabel}平均/月</th>
               <th className="px-3 py-2.5 font-bold text-right whitespace-nowrap">増減率</th>
               <th className="px-3 py-2.5 font-bold text-right whitespace-nowrap">今月</th>
-              <th className="px-5 py-2.5 font-bold text-right whitespace-nowrap">前月比</th>
+              <th className="px-5 py-2.5 font-bold text-right whitespace-nowrap">{data.progress ? '前月進捗率' : '前月比'}</th>
               <th className="pr-4"></th>
             </tr>
           </thead>
@@ -3501,7 +3613,7 @@ function FacilityTrendView({ data, jumpToFacility, showToast }) {
                 <td className="px-3 py-3 text-right tabular-nums text-slate-600">{yen(t.fyPrevAvg)}</td>
                 <td className="px-3 py-3 text-right">{t.growth === null ? <span className="text-slate-400 text-xs">—</span> : <DeltaPill v={t.growth} />}</td>
                 <td className="px-3 py-3 text-right tabular-nums font-bold text-slate-700">{yen(t.f.monthly[11])}</td>
-                <td className="px-5 py-3 text-right">{t.f.mom === null ? <span className="text-slate-400 text-xs">—</span> : <DeltaPill v={t.f.mom} />}</td>
+                <td className="px-5 py-3 text-right"><ComparePill delta={t.f.mom} progress={t.f.momProg} inProgress={!!data.progress} dashCls="text-slate-400 text-xs" /></td>
                 <td className="pr-4 text-slate-400 group-hover:text-sky-500 group-hover:translate-x-0.5 transition"><ChevronRight size={16} /></td>
               </tr>
             ))}
@@ -3521,7 +3633,8 @@ function FacilityTrendView({ data, jumpToFacility, showToast }) {
 ============================================================ */
 function RepsView({ data, goFacilities }) {
   const rows = data.reps;
-  const pill = (v) => (v === null ? <span className="text-xs text-slate-400 font-bold">—</span> : <DeltaPill v={v} />);
+  const prog = data.progress;   // 今月が月途中なら前月比・前年同月比・前年度同期比を進捗率で出す
+  const pill = (delta, progress) => <ComparePill delta={delta} progress={progress} inProgress={!!prog} />;
   return (
     <Card className="overflow-x-auto">
       <table className="w-full text-sm min-w-[980px]">
@@ -3530,10 +3643,10 @@ function RepsView({ data, goFacilities }) {
             <th className="text-left font-bold px-5 py-3">担当者</th>
             <th className="text-center font-bold px-2 py-3 pr-4">担当施設数</th>
             <th className="text-center font-bold px-2 py-3 pr-4">今月売上</th>
-            <th className="text-center font-bold px-2 py-3">前月比</th>
-            <th className="text-center font-bold px-2 py-3">前年同月比</th>
+            <th className="text-center font-bold px-2 py-3">{prog ? '前月進捗率' : '前月比'}</th>
+            <th className="text-center font-bold px-2 py-3">{prog ? '前年進捗率' : '前年同月比'}</th>
             <th className="text-center font-bold px-2 py-3 pr-4">今年度累計</th>
-            <th className="text-center font-bold px-2 py-3">前年度同期比</th>
+            <th className="text-center font-bold px-2 py-3">{prog ? '前年度同期進捗率' : '前年度同期比'}</th>
             <th className="text-center font-bold px-2 py-3 pr-4">粗利率</th>
             <th className="w-10"></th>
           </tr>
@@ -3549,10 +3662,10 @@ function RepsView({ data, goFacilities }) {
               </td>
               <td className="px-2 py-3.5 pr-4 text-center tabular-nums text-slate-700">{r.count}件</td>
               <td className="px-2 py-3.5 pr-4 text-center tabular-nums font-bold text-slate-800">{yen(r.sales)}</td>
-              <td className="px-2 py-3.5 text-center">{pill(r.mom)}</td>
-              <td className="px-2 py-3.5 text-center">{pill(r.yoyPct)}</td>
+              <td className="px-2 py-3.5 text-center">{pill(r.mom, r.momProg)}</td>
+              <td className="px-2 py-3.5 text-center">{pill(r.yoyPct, r.yoyProg)}</td>
               <td className="px-2 py-3.5 pr-4 text-center tabular-nums font-bold text-slate-700">{yen(r.fy)}</td>
-              <td className="px-2 py-3.5 text-center">{pill(r.fyPct)}</td>
+              <td className="px-2 py-3.5 text-center">{pill(r.fyPct, r.fyProg)}</td>
               <td className="px-2 py-3.5 pr-4 text-center tabular-nums text-slate-700">{r.rate}%</td>
               <td className="pr-4 text-slate-400 group-hover:text-slate-700 transition"><ChevronRight size={16} /></td>
             </tr>
@@ -3565,6 +3678,12 @@ function RepsView({ data, goFacilities }) {
       <div className="px-5 py-2.5 text-[11px] text-slate-600 border-t border-slate-50 leading-relaxed">
         今年度累計＝{data.fyRangeLabel}（{data.fyLabel}・4月始まり）の合計。
         前年度同期比＝その1年前の同じ期間との比較。
+        {prog && (
+          <span className="text-sky-700 font-bold">
+            {' '}※ {data.baseLabel}はまだ月の途中のため（データは{prog.asOfLabel}まで・月の経過 {prog.pace}%）、
+            比較は増減率ではなく比較先の何％まで来たか（進捗率）で表示しています。
+          </span>
+        )}
         {(!data.hasYoy || !data.hasFyPrev) && (
           <span className="text-amber-600 font-bold">
             {' '}※ 前年のデータが取り込まれていない期間は「—」と表示されます（比較には前年分のCSVが必要です）
@@ -3663,7 +3782,7 @@ function ProductsView({ data, rows, masters, setMasters, showToast, openPrint })
                 <th className="text-left font-bold px-5 py-3">分類</th>
                 <th className="text-right font-bold px-2 py-3 pr-4">今月売上</th>
                 <th className="text-left font-bold px-2 py-3 w-40">構成比</th>
-                <th className="text-right font-bold px-2 py-3 pr-4">前月比</th>
+                <th className="text-right font-bold px-2 py-3 pr-4">{data.progress ? '前月進捗率' : '前月比'}</th>
                 <th className="text-right font-bold px-2 py-3 pr-4">粗利率</th>
                 <th className="w-10"></th>
               </tr>
@@ -3683,7 +3802,7 @@ function ProductsView({ data, rows, masters, setMasters, showToast, openPrint })
                         <span className="text-[11px] text-slate-600 tabular-nums font-bold w-8 text-right">{c.share}%</span>
                       </div>
                     </td>
-                    <td className="px-2 py-3 pr-4 text-right"><DeltaPill v={c.mom} /></td>
+                    <td className="px-2 py-3 pr-4 text-right"><ComparePill delta={c.mom} progress={c.momProg} inProgress={!!data.progress} /></td>
                     <td className="px-2 py-3 pr-4 text-right tabular-nums text-slate-700">{c.margin}%</td>
                     <td className="pr-4 text-slate-600">{openCat === c.name ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</td>
                   </tr>
