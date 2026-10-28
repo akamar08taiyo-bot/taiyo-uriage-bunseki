@@ -13,7 +13,7 @@ const slice = (from, to) => src.slice(src.indexOf(from), src.indexOf(to))
 const code = slice('const yen = ', 'function Segmented(') + '\n' + slice('function buyerBreakdown(', 'function BuyersModal(') +
   '\n' + slice('function buildFacilityComparison(', '// KPIカードの施設別内訳')
 const NAMES = ['comparisonWindow', 'buildPeriodReport', 'buildAnalytics', 'decomposeSalesChange', 'mergeImportRows',
-  'analyzeCsv', 'buyerBreakdown', 'pctChange', 'withinCut', 'buildFacilityComparison']
+  'analyzeCsv', 'buyerBreakdown', 'pctChange', 'withinCut', 'buildFacilityComparison', 'autoCategory', 'parseReferral', 'buildReformReport']
 const load = (y, mo, d) => {
   class FixedDate extends Date {
     constructor(...a) { if (a.length) super(...a); else super(y, mo - 1, d, 10, 0, 0) }
@@ -364,4 +364,79 @@ test('一番新しい月の明細が経過日数に比べて極端に少なけ�
   // データが3か月分しかなければ、ふだんの量がわからないので判定しない
   const short = rows.filter(r => /^2026\/(8|9)\//.test(r[1])).concat([row('x', '2026/10/27', 'A施設', '見本の品', 1, '個', 1000, 1000, 200)])
   assert.equal(L.buildAnalytics(short, m).thinLatest, null)
+})
+
+test('特定福祉用具の分類：入浴・排泄の用具は特定福祉用具、ポータブルトイレ用の消耗品はポータブルトイレ用品のまま', () => {
+  assert.equal(L.autoCategory('シャワーチェア SC-1'), '特定福祉用具')
+  assert.equal(L.autoCategory('浴槽台 ジャスト'), '特定福祉用具')
+  assert.equal(L.autoCategory('浴槽用手すり'), '特定福祉用具')
+  assert.equal(L.autoCategory('ポータブルトイレ 木製'), '特定福祉用具')
+  assert.equal(L.autoCategory('ポータブルトイレ用消臭剤'), 'ポータブルトイレ用品')
+  assert.equal(L.autoCategory('ポータブルトイレ用処理袋'), 'ポータブルトイレ用品')
+  // 付属品・交換部品は本体ではないので特定福祉用具にしない
+  assert.equal(L.autoCategory('ポータブルトイレ用バケツ'), 'ポータブルトイレ用品')
+  assert.equal(L.autoCategory('シャワーチェア 交換用キャップ'), 'その他')
+  assert.equal(L.autoCategory('洋式トイレ用 補高便座'), '特定福祉用具')
+  assert.equal(L.autoCategory('手すり取付工事'), '住宅改修')
+  assert.equal(L.autoCategory('バスタオル'), '清拭・入浴')
+})
+
+test('依頼元の取り出し：お客様名の「依頼元＋個人名」を分ける。手直しがあれば優先する', () => {
+  const p = (n, o) => { const r = L.parseReferral(n, o || {}); return [r.source, r.person] }
+  assert.deepEqual(p('築上町包括　水ノ江'), ['築上町包括', '水ノ江'])
+  assert.deepEqual(p('春風ケアプランセンター　山田'), ['春風ケアプランセンター', '山田'])
+  assert.deepEqual(p('神奈川地域包括支援センター大場'), ['神奈川地域包括支援センター', '大場'])
+  assert.deepEqual(p('行橋市居宅介護支援事業所 田中 花子'), ['行橋市居宅介護支援事業所', '田中 花子'])
+  assert.deepEqual(p('築上町 包括'), ['築上町 包括', ''])
+  assert.deepEqual(p('水ノ江'), ['', '水ノ江'])
+  assert.deepEqual(p('特別養護老人ホーム誠松園'), ['', '特別養護老人ホーム誠松園'])
+  const o = L.parseReferral('みどり 太郎', { 'みどり 太郎': 'みどりケアプラン' })
+  assert.equal(o.source, 'みどりケアプラン')
+  assert.equal(o.manual, true)
+  assert.equal(L.parseReferral('築上町包括　水ノ江', { '築上町包括　水ノ江': '' }).source, '')
+})
+
+test('住宅改修・特定福祉用具の集計：工事と同じ伝票の手すりは住宅改修。件数はお客様の数。個人の範囲から施設を外す', () => {
+  const m = masters({ 'A施設': facility(), '水ノ江': { type: 'person' } })
+  const rows = [
+    // 築上町包括の水ノ江さん：手すり工事（同じ伝票に I型手すり・ブラケット）＋別の月にシャワーチェア
+    row('101', '2026/6/10', '築上町包括　水ノ江', '手すり取付工事', 1, '式', 30000, 30000, 12000),
+    row('101', '2026/6/10', '築上町包括　水ノ江', 'I型手すり 600mm', 2, '本', 8000, 16000, 5000),
+    row('101', '2026/6/10', '築上町包括　水ノ江', 'ブラケット', 4, '個', 1000, 4000, 1500),
+    row('102', '2026/7/2', '築上町包括　水ノ江', 'シャワーチェア SC-1', 1, '台', 25000, 25000, 7000),
+    // 同じ包括の別の人
+    row('103', '2026/7/9', '築上町包括　山本', '浴槽台 ジャスト', 1, '台', 15000, 15000, 4000),
+    // 春風ケアプランセンター経由
+    row('104', '2026/8/1', '春風ケアプランセンター　佐藤', '段差解消工事', 1, '式', 80000, 80000, 30000),
+    // 依頼元の記載がない個人
+    row('105', '2026/8/5', '水ノ江', 'ポータブルトイレ 木製', 1, '台', 40000, 40000, 12000),
+    // 施設の手すり（工事なし）は住宅改修に入らない／施設の工事は「すべてのお客様」だけで数える
+    row('106', '2026/8/9', 'A施設', 'I型手すり 600mm', 1, '本', 8000, 8000, 2000),
+    row('107', '2026/8/9', 'A施設', '手すり取付工事', 1, '式', 50000, 50000, 20000),
+    // 消耗品は対象外
+    row('108', '2026/8/9', '築上町包括　水ノ江', 'ポータブルトイレ用消臭剤', 2, '本', 500, 1000, 300),
+  ]
+  const rep = L.buildReformReport(rows, m, idx(2026, 4), idx(2027, 3), 'person')
+  assert.equal(rep.kpi.reform.sales, 30000 + 16000 + 4000 + 80000)
+  assert.equal(rep.kpi.reform.cases, 2)      // 水ノ江さん（包括）・佐藤さん
+  assert.equal(rep.kpi.welfare.sales, 25000 + 15000 + 40000)
+  assert.equal(rep.kpi.welfare.cases, 3)
+  assert.equal(rep.kpi.sources, 2)           // 築上町包括・春風ケアプランセンター
+  const src = Object.fromEntries(rep.sources.map(s => [s.source || 'なし', s]))
+  assert.equal(src['築上町包括'].sales, 50000 + 25000 + 15000)
+  assert.equal(src['築上町包括'].cases, 2)
+  assert.equal(src['春風ケアプランセンター'].reform, 80000)
+  assert.equal(src['なし'].welfare, 40000)
+  assert.equal(rep.kpi.viaReferral, 50000 + 25000 + 15000 + 80000)
+  // 月ごとの推移
+  const jun = rep.months.find(x => x.idx === idx(2026, 6)), jul = rep.months.find(x => x.idx === idx(2026, 7))
+  assert.deepEqual([jun.reform, jun.reformCases, jul.welfare, jul.welfareCases], [50000, 1, 40000, 2])
+  // すべてのお客様：施設の工事 50,000円が住宅改修に入る（工事と別の伝票の手すり 8,000円は入らない）
+  const all = L.buildReformReport(rows, m, idx(2026, 4), idx(2027, 3), 'all')
+  assert.equal(all.kpi.reform.sales, 130000 + 50000)
+  // 明細のある月を渡すと、明細のない月は「取込なし」（0円の月と区別する）
+  const withMonths = L.buildReformReport(rows, m, idx(2026, 4), idx(2026, 9), 'person', { months: [idx(2026, 6), idx(2026, 7), idx(2026, 8)] })
+  assert.deepEqual(withMonths.months.map(x => x.noData), [true, true, false, false, false, true])
+  assert.equal(withMonths.kpi.reform.sales, rep.kpi.reform.sales)
+  assert.equal(rep.months.some(x => x.noData), false) // 渡さなければ従来どおり
 })
