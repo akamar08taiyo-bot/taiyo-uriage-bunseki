@@ -339,3 +339,29 @@ test('JSONに書き出して読み戻しても、粗利不明（null）は0円�
   assert.equal(back[0][8], null)
   assert.equal(L.buildPeriodReport(back, masters({ A施設: facility() }), idx(2026, 9), idx(2026, 9)).kpi.grossUnknown, 1)
 })
+
+test('一番新しい月の明細が経過日数に比べて極端に少なければ「明細わずか」とし、基準月を自動で前の月にする', () => {
+  const m = masters({ A施設: facility(), B施設: facility() })
+  const rows = []
+  // 2026年4月〜9月は毎月100行
+  for (let mo = 4; mo <= 9; mo++) for (let k = 0; k < 100; k++) rows.push(row(`${mo}-${k}`, `2026/${mo}/${1 + (k % 28)}`, k % 2 ? 'A施設' : 'B施設', '見本の品', 1, '個', 1000, 1000, 200))
+  // 10月は10/27の1行だけ（月末にまとめて入力している、先の日付の伝票が1件だけ、など）
+  const thin = [...rows, row('10-0', '2026/10/27', 'A施設', '見本の品', 1, '個', 499286, 499286, 34964)]
+  const data = L.buildAnalytics(thin, m)
+  assert.equal(data.thinLatest.idx, idx(2026, 10))
+  assert.equal(data.thinLatest.rows, 1)
+  assert.equal(data.thinLatest.customers, 1)
+  assert.equal(data.baseIdx, idx(2026, 9))           // 自動では9月を表示
+  assert.equal(L.buildAnalytics(thin, m, idx(2026, 10)).baseIdx, idx(2026, 10)) // 自分で選べば10月
+
+  // 月の途中でふつうに取り込んだ場合（10/3までで10行＝目安どおり）は10月のまま
+  const early = [...rows]
+  for (let k = 0; k < 10; k++) early.push(row('e' + k, `2026/10/${1 + (k % 3)}`, 'A施設', '見本の品', 1, '個', 1000, 1000, 200))
+  const d2 = L.buildAnalytics(early, m)
+  assert.equal(d2.thinLatest, null)
+  assert.equal(d2.baseIdx, idx(2026, 10))
+
+  // データが3か月分しかなければ、ふだんの量がわからないので判定しない
+  const short = rows.filter(r => /^2026\/(8|9)\//.test(r[1])).concat([row('x', '2026/10/27', 'A施設', '見本の品', 1, '個', 1000, 1000, 200)])
+  assert.equal(L.buildAnalytics(short, m).thinLatest, null)
+})

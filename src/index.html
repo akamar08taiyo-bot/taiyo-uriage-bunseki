@@ -641,6 +641,7 @@ function buildAnalytics(rows, masters, baseSel) {
 
   // 月インデックス収集
   const monthSet = new Set();
+  const monthRows = new Map(), monthCusts = new Map(), monthSales = new Map();
   let maxIdx = -1, latest = null, first = null;
   for (let i = 0; i < rows.length; i++) {
     const d = parseDateStr(rows[i][1]);
@@ -648,6 +649,11 @@ function buildAnalytics(rows, masters, baseSel) {
       monthSet.add(d.idx); if (d.idx > maxIdx) maxIdx = d.idx;
       if (!latest || d.sort > latest.sort) latest = d;
       if (!first || d.sort < first.sort) first = d;
+      monthRows.set(d.idx, (monthRows.get(d.idx) || 0) + 1);
+      monthSales.set(d.idx, (monthSales.get(d.idx) || 0) + (+rows[i][7] || 0));
+      let cs = monthCusts.get(d.idx);
+      if (!cs) { cs = new Set(); monthCusts.set(d.idx, cs); }
+      cs.add(rows[i][2]);
     }
   }
   const monthsAll = [...monthSet].sort((a, b) => a - b);
@@ -658,10 +664,26 @@ function buildAnalytics(rows, masters, baseSel) {
       products: [], prodByName: new Map(), categories: [],
       growth: [], dead: [], deadTotal: 0, lowMargin: [], lowMarginTotal: 0, reps: [], custStats, settings: st,
       fyLabel: '', fyRangeLabel: '', hasYoy: false, hasFyPrev: false,
-      latestDate: null, firstDate: null, cmp: null, fyCmp: null, repsSale: [], repSaleRows: 0, others: null,
+      latestDate: null, firstDate: null, cmp: null, fyCmp: null, repsSale: [], repSaleRows: 0, others: null, thinLatest: null,
     };
   }
-  const baseIdx = (baseSel != null && monthSet.has(baseSel)) ? baseSel : maxIdx;
+  // 一番新しい月の明細が、経過日数に比べて極端に少ないか（売上を月末にまとめて入力している、
+  // 先の日付の伝票が1件だけ入っている、CSVが途中まで、など）。直前の最大12か月の行数の中央値に
+  // 経過日数の割合をかけた目安の2割に届かなければ「明細わずか」とし、基準月を自動で選ぶときは前の月にする。
+  // （明細がほとんどない月を最初に見せると、売上が急に減ったように見えるため）
+  let thinLatest = null;
+  if (monthsAll.length >= 4) {
+    const prevCounts = monthsAll.slice(-13, -1).map(i => monthRows.get(i)).sort((a, b) => a - b);
+    const median = prevCounts[Math.floor(prevCounts.length / 2)];
+    const expected = median * latest.d / daysInMonthIdx(maxIdx);
+    const n = monthRows.get(maxIdx);
+    if (n < expected * 0.2) {
+      thinLatest = { idx: maxIdx, rows: n, customers: monthCusts.get(maxIdx).size, sales: monthSales.get(maxIdx),
+        expectedRows: Math.round(expected), medianRows: median, prevIdx: monthsAll[monthsAll.length - 2] };
+    }
+  }
+  const autoBase = thinLatest ? thinLatest.prevIdx : maxIdx;
+  const baseIdx = (baseSel != null && monthSet.has(baseSel)) ? baseSel : autoBase;
   // 基準月が月途中なら、前月・前年同月も同じ日までの明細で比べる（inCmp）
   const cmp = comparisonWindow(baseIdx, baseIdx, latest, first, { months: monthSet });
   const cutDay = cmp.cur.cutoff ? cmp.cur.cutoff.d : null;
@@ -916,7 +938,7 @@ function buildAnalytics(rows, masters, baseSel) {
     lowMargin: lowAll.slice(0, 30), lowMarginTotal: lowAll.length,
     reps, repsSale, repSaleRows, others: othersOut, custStats, settings: st,
     fyLabel, fyRangeLabel, hasYoy: hasYoyMonth, hasFyPrev,
-    latestDate: latest, firstDate: first, cmp, fyCmp,
+    latestDate: latest, firstDate: first, cmp, fyCmp, thinLatest,
   };
 }
 
@@ -2347,6 +2369,17 @@ function RateSub({ v, className }) {
   return <DeltaPill v={v} />;
 }
 
+// 一番新しい月の明細がわずかなときのお知らせ。基準月が自動で前の月になっているか、その月を選んでいるかで文言を変える
+function ThinMonthNote({ data, className }) {
+  const t = data.thinLatest;
+  if (!t) return null;
+  const detail = idxLabel(t.idx) + 'の明細はまだ' + num(t.rows) + '行（得意先' + num(t.customers) + '件・' + yen(t.sales) + '）しかありません' +
+    '（ふだんの月は' + num(t.medianRows) + '行ほど）。';
+  return data.baseIdx === t.idx
+    ? <InfoNote tone="warn" className={className}>{detail}売上を月末にまとめて入力している場合や、CSVが途中までの場合に起こります。この月の数字と前年比較は、実態より少なく出ます。</InfoNote>
+    : <InfoNote className={className}>{detail}取り込みが途中の可能性があるため、基準月は{idxLabel(data.baseIdx)}にしています。{idxLabel(t.idx)}を見るときは、画面上部の基準月で選んでください。</InfoNote>;
+}
+
 // 集計条件や注意を表やカードの上で知らせる（tone: info=青 / warn=黄）
 function InfoNote({ children, className, tone }) {
   const t = tone === 'warn' ? 'text-amber-900 bg-amber-50 border-amber-200' : 'text-sky-800 bg-sky-50 border-sky-200';
@@ -3007,7 +3040,7 @@ function DashboardView({ data, rows, masters, meta, jumpToFacility, openPrint, o
           <div className={repType === 'custom' ? 'flex items-center gap-2 shrink-0' : 'w-40 shrink-0'}>
             {repType === 'month' && (
               <select value={repMonth} onChange={e => setRepMonth(+e.target.value)} className={selCls}>
-                {data.monthsAll.slice().reverse().map(i => <option key={i} value={i}>{idxLabel(i)}</option>)}
+                {data.monthsAll.slice().reverse().map(i => <option key={i} value={i}>{idxLabel(i)}{data.thinLatest && i === data.thinLatest.idx ? '（明細わずか）' : ''}</option>)}
               </select>
             )}
             {repType === 'fy' && (
@@ -3061,6 +3094,9 @@ function DashboardView({ data, rows, masters, meta, jumpToFacility, openPrint, o
                 : '前年同期のうち ' + monthsLabel(win.prevMissing) + ' の明細が1件もありません（取り込み漏れの可能性）。0円として比べると誤るため、前年との比較は表示しません。'}
               0円とは区別しています。
             </InfoNote>
+          )}
+          {data.thinLatest && data.baseIdx !== data.thinLatest.idx && spec.from <= data.thinLatest.idx && data.thinLatest.idx <= spec.to && (
+            <InfoNote tone="warn">この期間に含まれる {idxLabel(data.thinLatest.idx)} は明細がまだ {num(data.thinLatest.rows)} 行しかありません（取り込みが途中の可能性）。この月を含む数字と前年比較は、実態より少なく出ます。</InfoNote>
           )}
           {win && win.curMissing.length > 0 && (
             <InfoNote tone="warn">対象期間のうち {monthsLabel(win.curMissing)} の明細が1件もありません。取り込み漏れの可能性があります（当期の数字が実際より少ない可能性）。</InfoNote>
@@ -4939,6 +4975,10 @@ function DataCheckCard({ rows, data, meta, goTab }) {
       <div className="font-bold text-sm text-slate-800 mb-0.5">データ確認</div>
       <div className="text-[11px] text-slate-600 mb-2">取込済みデータ {dataRangeLabel(data)}・明細 {num(rows.length)}行。売上の成果とは別に、数字の確からしさに関わる件数を示します。</div>
       <ul className="divide-y divide-slate-100">
+        {data.thinLatest && (
+          <Row label="一番新しい月の明細がわずか" value={num(data.thinLatest.rows) + '行'} warn
+            sub={idxLabel(data.thinLatest.idx) + 'は ' + dateLabel(data.latestDate.idx, data.latestDate.d) + ' までで ' + num(data.thinLatest.rows) + '行（得意先' + num(data.thinLatest.customers) + '件）。この日までの目安は約' + num(data.thinLatest.expectedRows) + '行（ふだんの月は' + num(data.thinLatest.medianRows) + '行ほど）。基準月は自動で' + idxLabel(data.thinLatest.prevIdx) + 'にしています。最新のCSVを取り込むと解消します。'} />
+        )}
         <Row label="明細が1件もない月（取り込み漏れの可能性）" value={num(c.gapMonths.length) + 'か月'} warn={c.gapMonths.length > 0}
           sub={c.gapMonths.length ? c.gapMonths.map(idxLabel).join('・') + '。この月を含む前年比較は「比較データ不足」になります。その月のCSVを取り込んでください。' : '取込済みの期間に、明細のない月はありません。'} />
         <Row label="粗利額・仕入単価のない明細（粗利が未確定）" value={num(c.grossNull) + '行'} warn={c.grossNull > 0}
@@ -8114,31 +8154,43 @@ function App() {
           <div className="md:hidden px-5 pt-3">
             <a href="https://akamar08taiyo-bot.github.io/taiyo-portal/" className="taiyo-portal-back">← 業務アプリポータルへ戻る</a>
           </div>
-          {/* スマホ幅では、取込ボタンと基準月を2行目に下ろす（1行に並べると横にはみ出し、ページ名も消える） */}
-          <div className="px-5 md:px-8 py-4 flex items-center gap-3 flex-wrap md:flex-nowrap">
-            <div className="md:hidden inline-flex items-center justify-center w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 shrink-0">
-              <Sun size={16} className="text-white" />
+          {/* 取込ボタンと基準月は画面上部の中央に大きく出す。
+              横幅1280px以上は「ページ名｜ボタンと基準月｜空き」の3列で、ボタンと基準月をちょうど真ん中に置く。
+              それより狭い画面ではページ名の下の行に中央そろえで並べる（1024px前後で3列にするとページ名が切れる。
+              スマホでは2つを横幅いっぱいに） */}
+          {/* 中央の基準は、下の中身（main）と同じ最大幅の中の真ん中。広い画面でも中身のカードの真上に来る */}
+          <div className={"px-5 md:px-8 py-4 flex flex-wrap items-center gap-3 xl:grid xl:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] xl:gap-6 " +
+            (['order', 'quote', 'pricerevision'].includes(tab) ? 'max-w-[100rem]' : 'max-w-6xl')}>
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="md:hidden inline-flex items-center justify-center w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 shrink-0">
+                <Sun size={16} className="text-white" />
+              </div>
+              <div className="min-w-0">
+                <h1 className="font-extrabold text-slate-800 text-lg leading-tight truncate">{labelOf(current)}</h1>
+                <div className="text-[11px] text-slate-600 truncate">{current.sub}</div>
+              </div>
             </div>
-            <div className="flex-1 min-w-[10rem]">
-              <h1 className="font-extrabold text-slate-800 text-lg leading-tight truncate">{labelOf(current)}</h1>
-              <div className="text-[11px] text-slate-600 truncate">{current.sub}</div>
-            </div>
-            <div className="flex gap-2 w-full md:w-auto">
+            <div className="flex gap-3 w-full xl:w-auto justify-center">
             {tab !== 'import' && (
               <button onClick={() => setTab('import')}
-                className="h-10 px-3.5 rounded-xl border border-emerald-300 bg-white hover:bg-emerald-50 hover:border-emerald-400 active:scale-[.98] text-emerald-700 text-sm shadow-sm font-bold shrink-0 flex-1 md:flex-none justify-center transition inline-flex items-center gap-1.5">
-                <FileUp size={15} /> <span><span className="hidden sm:inline">最新データを</span>取り込む</span>
+                className="h-12 px-4 sm:px-6 rounded-2xl border-2 border-emerald-400 bg-white hover:bg-emerald-50 hover:border-emerald-500 active:scale-[.98] text-emerald-700 text-base shadow-md font-extrabold shrink-0 justify-center transition inline-flex items-center gap-2 whitespace-nowrap">
+                <FileUp size={18} /> <span><span className="hidden sm:inline">最新データを</span>取り込む</span>
               </button>
             )}
             {monthsDesc.length > 0 && (
-              <select value={data.baseIdx} onChange={e => setBaseSel(+e.target.value)}
-                className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-600 flex-1 min-w-0 md:flex-none md:shrink-0">
-                {monthsDesc.map(idx => (
-                  <option key={idx} value={idx}>基準月: {idxLabel(idx)}{idx === data.maxIdx ? '（最新）' : ''}</option>
-                ))}
-              </select>
+              // 「基準月」は選択欄の外の見出しにする（中に入れるとスマホ幅で月の部分が切れる）。スマホ幅では見出しを省く
+              <label className="flex items-center gap-2 flex-1 min-w-0 sm:flex-none">
+                <span className="hidden sm:inline text-base font-extrabold text-slate-600 whitespace-nowrap">基準月</span>
+                <select value={data.baseIdx} onChange={e => setBaseSel(+e.target.value)} aria-label="基準月"
+                  className="h-12 px-4 rounded-2xl border-2 border-slate-300 bg-white text-base shadow-md font-extrabold text-slate-700 w-full min-w-0 sm:w-auto">
+                  {monthsDesc.map(idx => (
+                    <option key={idx} value={idx}>{idxLabel(idx)}{data.thinLatest && idx === data.thinLatest.idx ? '（明細わずか）' : idx === data.maxIdx ? '（最新）' : ''}</option>
+                  ))}
+                </select>
+              </label>
             )}
             </div>
+            <div className="hidden xl:block" />
           </div>
           {/* モバイル用タブ */}
           <nav className="md:hidden px-3 pb-2 flex gap-1 overflow-x-auto">
@@ -8159,6 +8211,7 @@ function App() {
         <main className={"px-5 md:px-8 py-6 " + (['order', 'quote', 'pricerevision'].includes(tab) ? 'max-w-[100rem]' : 'max-w-6xl')}>
           {needData ? <EmptyState goImport={() => setTab('import')} /> : (
             <>
+              {['dash', 'fac', 'factrend', 'rep', 'prod', 'stock'].includes(tab) && <ThinMonthNote data={data} className="mb-4" />}
               {tab === 'dash' && <DashboardView data={data} rows={rows} masters={masters} meta={meta} jumpToFacility={jumpToFacility} openPrint={setPrintHtml} office={masters.settings.office} showToast={showToast} goTab={setTab} />}
               {tab === 'fac' && <FacilitiesView data={data} openId={openFacId} setOpenId={setOpenFacId} repFilter={repFilter} setRepFilter={setRepFilter} showToast={showToast} openPrint={setPrintHtml} startDoc={startDoc} office={masters.settings.office} />}
               {tab === 'factrend' && <FacilityTrendView data={data} jumpToFacility={jumpToFacility} showToast={showToast} />}
