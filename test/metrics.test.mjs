@@ -1,0 +1,252 @@
+// 「指標の修正案・確認基準」（2026-10-28）の計算ルールと受け入れ条件のテスト。
+// 計算確認用の例（第9節）と、受け入れ条件（第10節）のうちデータで確かめられるものを並べている。
+//
+// このアプリは単一HTMLのため import できない。src/index.html から集計の関数をそのまま取り出して動かす。
+// 「今日」で月途中かを決めるので、Date を差し替えて日付を固定する。
+
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+
+const src = fs.readFileSync(new URL('../src/index.html', import.meta.url), 'utf8')
+const slice = (from, to) => src.slice(src.indexOf(from), src.indexOf(to))
+const code = slice('const yen = ', 'function Segmented(') + '\n' + slice('function buyerBreakdown(', 'function BuyersModal(')
+const NAMES = ['comparisonWindow', 'buildPeriodReport', 'buildAnalytics', 'decomposeSalesChange', 'mergeImportRows',
+  'analyzeCsv', 'buyerBreakdown', 'pctChange', 'withinCut']
+const load = (y, mo, d) => {
+  class FixedDate extends Date {
+    constructor(...a) { if (a.length) super(...a); else super(y, mo - 1, d, 10, 0, 0) }
+  }
+  return new Function('zipSync', 'strToU8', 'Date', code + '\nreturn {' + NAMES.join(',') + '}')((f) => f, (s) => s, FixedDate)
+}
+const L = load(2026, 10, 28)
+
+const facility = (rep = '見本') => ({ type: 'facility', rep })
+const masters = (customers) => ({ customers, catOverrides: {}, catRules: [], settings: {} })
+// [売上番号, 売上日, 得意先, 商品, 数量, 単位, 単価, 金額, 粗利額, 仕入先, 仕入単価, 売上時点の担当者]
+const row = (no, date, cust, prod, qty, unit, price, amount, gross, cost = null, rep = '') =>
+  [no, date, cust, prod, qty, unit, price, amount, gross, '見本商事', cost, rep]
+const idx = (y, mo) => y * 12 + mo - 1
+
+test('第9節：売上が増えても粗利が減る例（売上 +1,000円・+10%、粗利 −1,000円・約−33%）', () => {
+  const rows = [
+    row('1', '2025/9/10', 'A施設', '見本の品', 100, '個', 100, 10000, 3000, 70),
+    row('2', '2026/9/10', 'A施設', '見本の品', 100, '個', 110, 11000, 2000, 90),
+  ]
+  const m = masters({ A施設: facility() })
+  const cur = L.buildPeriodReport(rows, m, idx(2026, 9), idx(2026, 9)).kpi
+  const prev = L.buildPeriodReport(rows, m, idx(2025, 9), idx(2025, 9)).kpi
+  assert.equal(cur.sales - prev.sales, 1000)
+  assert.equal(L.pctChange(cur.sales, prev.sales), 10)
+  assert.equal(cur.gross - prev.gross, -1000)
+  assert.equal(L.pctChange(cur.gross, prev.gross), -33)
+  assert.equal(cur.rate, '18.2')
+  assert.equal(prev.rate, '30.0')
+})
+
+test('第9節：返品・値引きの例（合計 売上5,700円・粗利1,800円・粗利率31.6%、ケースと本は数量を合計しない）', () => {
+  const rows = [
+    row('1', '2026/9/1', 'A施設', '紙製品', 2, 'ケース', 3000, 6000, 1800, 2100),
+    row('2', '2026/9/2', 'A施設', '洗剤', 3, '本', 900, 2700, 900, 600),
+    row('3', '2026/9/5', 'A施設', '紙製品', -1, 'ケース', 3000, -3000, -900, 2100),
+  ]
+  const k = L.buildPeriodReport(rows, masters({ A施設: facility() }), idx(2026, 9), idx(2026, 9)).kpi
+  assert.equal(k.sales, 5700)
+  assert.equal(k.gross, 1800)
+  assert.equal(k.rate, '31.6')
+  assert.equal(k.returnAmt, -3000)
+  assert.equal(k.returnCount, 1)
+})
+
+test('第9節：継続購入率の例（A・B・C → B・C・D は 2/3 ＝ 66.7%）', () => {
+  const cust = (names) => names.map(name => ({ name, type: 'facility', sales: 1000, gross: 100 }))
+  const b = L.buyerBreakdown(cust(['B', 'C', 'D']), cust(['A', 'B', 'C']), new Map([['D', 20260905]]), 20260901)
+  assert.deepEqual(b.both.map(c => c.name), ['B', 'C'])
+  assert.deepEqual(b.curOnly.map(c => c.name), ['D'])
+  assert.deepEqual(b.prevOnly.map(c => c.name), ['A'])
+  assert.equal(b.rate, 66.7)
+  // D は取り込んだ明細の中で最初の購入が当期にある（それ以前の履歴が取り込まれていれば新規と判断できる）
+  assert.deepEqual(b.firstInData.map(c => c.name), ['D'])
+})
+
+test('粗利率は合計粗利÷合計売上（商品別の粗利率を単純平均しない）', () => {
+  const rows = [
+    row('1', '2026/9/1', 'A施設', '高粗利品', 1, '個', 1000, 1000, 500),
+    row('2', '2026/9/1', 'A施設', '低粗利品', 1, '個', 9000, 9000, 900),
+  ]
+  const k = L.buildPeriodReport(rows, masters({ A施設: facility() }), idx(2026, 9), idx(2026, 9)).kpi
+  assert.equal(k.rate, '14.0') // 単純平均なら 30.0%
+})
+
+test('月途中は前年の同じ月・同じ日までと比べ、比較日付を両方出す', () => {
+  const latest = { y: 2026, mo: 10, d: 27, idx: idx(2026, 10), sort: 20261027 }
+  const first = { y: 2025, mo: 4, d: 1, idx: idx(2025, 4), sort: 20250401 }
+  const w = L.comparisonWindow(idx(2026, 10), idx(2026, 10), latest, first)
+  assert.equal(w.inProgress, true)
+  assert.equal(w.curRange, '2026/10/1〜2026/10/27')
+  assert.equal(w.prevRange, '2025/10/1〜2025/10/27')
+  assert.equal(w.prevCovered, true)
+  // 前年10/28以降の明細は前年同期に入らない
+  const rows = [
+    row('1', '2025/10/20', 'A施設', '見本の品', 1, '個', 1000, 1000, 200),
+    row('2', '2025/10/30', 'A施設', '見本の品', 1, '個', 5000, 5000, 1000),
+    row('3', '2026/10/27', 'A施設', '見本の品', 1, '個', 1200, 1200, 240),
+  ]
+  const m = masters({ A施設: facility() })
+  const prev = L.buildPeriodReport(rows, m, w.prev.from, w.prev.to, false, w.prev.cutoff).kpi
+  assert.equal(prev.sales, 1000)
+  // 年度（4月〜翌3月）も、前年度は前年の同じ日まで
+  const fy = L.comparisonWindow(idx(2026, 4), idx(2027, 3), latest, first)
+  assert.equal(fy.curRange, '2026/4/1〜2026/10/27')
+  assert.equal(fy.prevRange, '2025/4/1〜2025/10/27')
+})
+
+test('前年に同じ日がない（2/29）ときは前年の月末にそろえ、そのことを示す', () => {
+  const W = load(2028, 2, 29)
+  const latest = { y: 2028, mo: 2, d: 29, idx: idx(2028, 2), sort: 20280229 }
+  const w = W.comparisonWindow(idx(2028, 2), idx(2028, 2), latest, { idx: idx(2026, 1) })
+  assert.equal(w.prevRange, '2027/2/1〜2027/2/28')
+  assert.equal(w.dayAdjusted, true)
+})
+
+test('締め済みの月は月全体で比べる。最終売上日が期間末より4日以上前なら取得不足の可能性を示す', () => {
+  const W = load(2026, 11, 5)
+  const first = { idx: idx(2025, 1) }
+  const full = W.comparisonWindow(idx(2026, 10), idx(2026, 10), { y: 2026, mo: 10, d: 30, idx: idx(2026, 10) }, first)
+  assert.equal(full.inProgress, false)
+  assert.equal(full.prevRange, '2025/10/1〜2025/10/31')
+  assert.equal(full.short, false) // 10/31が休みで10/30までのこともある
+  const short = W.comparisonWindow(idx(2026, 10), idx(2026, 10), { y: 2026, mo: 10, d: 15, idx: idx(2026, 10) }, first)
+  assert.equal(short.short, true)
+})
+
+test('前年データ未取得と、確認済みの0円を区別する', () => {
+  const latest = { y: 2026, mo: 10, d: 27, idx: idx(2026, 10) }
+  // 取込が2026年4月からなら、前年同月は未取得
+  assert.equal(L.comparisonWindow(idx(2026, 10), idx(2026, 10), latest, { idx: idx(2026, 4) }).prevCovered, false)
+  // 前年も取り込まれていて、その施設の前年同期の売上がない → 差額は出す（当期－0）、増減率は算出対象外
+  const rows = [
+    row('1', '2025/4/3', 'B施設', '見本の品', 1, '個', 500, 500, 100),
+    row('2', '2026/10/5', 'A施設', '見本の品', 1, '個', 3000, 3000, 600),
+  ]
+  const data = L.buildAnalytics(rows, masters({ A施設: facility(), B施設: facility() }))
+  const a = data.facByName.get('A施設')
+  assert.equal(a.yoyDiff, 3000)
+  assert.equal(a.yoyPct, null)
+  // 前年データ自体がない場合は差額も出さない
+  const onlyNow = L.buildAnalytics([rows[1]], masters({ A施設: facility() }))
+  assert.equal(onlyNow.facByName.get('A施設').yoyDiff, null)
+  assert.equal(onlyNow.hasYoy, false)
+})
+
+test('施設・担当の前年差は月途中なら前年同月も同じ日まで。担当の合計＋施設以外＝ダッシュボードの売上', () => {
+  const rows = [
+    row('1', '2025/10/10', 'A施設', '見本の品', 1, '個', 100000, 100000, 20000, null, '山田'),
+    row('2', '2025/10/29', 'A施設', '見本の品', 1, '個', 50000, 50000, 10000, null, '山田'), // 前年の10/28以降
+    row('3', '2026/10/27', 'A施設', '見本の品', 1, '個', 40000, 40000, 8000, null, '佐藤'),
+    row('4', '2026/10/12', '見本 太郎', '見本の品', 1, '個', 3000, 3000, 600),
+  ]
+  const m = masters({ A施設: facility('佐藤'), '見本 太郎': { type: 'person' } })
+  const data = L.buildAnalytics(rows, m)
+  const a = data.facByName.get('A施設')
+  assert.equal(data.cmp.prevRange, '2025/10/1〜2025/10/27')
+  assert.equal(a.yoyBase, 100000)
+  assert.equal(a.yoyDiff, -60000)
+  assert.equal(a.yoyPct, -60)
+  // 現在の担当者対応表では佐藤、売上時点の担当者では佐藤（今月）・山田（前年）に分かれる
+  assert.equal(data.reps[0].rep, '佐藤')
+  assert.equal(data.reps[0].yoyDiff, -60000)
+  const sale = Object.fromEntries(data.repsSale.map(r => [r.rep, r]))
+  assert.equal(sale['佐藤'].sales, 40000)
+  assert.equal(sale['山田'].yoy, 100000)
+  const dash = L.buildPeriodReport(rows, m, idx(2026, 10), idx(2026, 10), false, data.cmp.cur.cutoff).kpi.sales
+  const facTotal = data.reps.reduce((t, r) => t + r.sales, 0)
+  assert.equal(facTotal + data.others.sales, dash)
+})
+
+test('原価不明を0円にしない：粗利額も仕入単価もない明細は粗利「未確定」、仕入単価があれば 金額－仕入単価×数量', () => {
+  const csvNoCost = '売上番号,売上日,お客様名,商品名,数量,金額\n1,2026/9/1,A施設,見本の品,2,1000\n'
+  const r1 = L.analyzeCsv(csvNoCost, 'a.csv')
+  assert.equal(r1.rowsParsed[0].arr[8], null)
+  assert.equal(r1.rowsParsed[0].arr[10], null)
+  assert.equal(r1.grossUnknown, 1)
+  const k = L.buildPeriodReport(r1.rowsParsed.map(x => x.arr), masters({ A施設: facility() }), idx(2026, 9), idx(2026, 9)).kpi
+  assert.equal(k.grossUnknown, 1)
+  assert.equal(k.rateOk, false)
+
+  const csvCost = '売上番号,売上日,お客様名,商品名,数量,金額,仕入単価\n1,2026/9/1,A施設,見本の品,2,1000,350\n'
+  const r2 = L.analyzeCsv(csvCost, 'b.csv')
+  assert.equal(r2.rowsParsed[0].arr[8], 300)
+  assert.equal(r2.grossFromCost, 1)
+  // 確認済みの原価0円は「不明」ではない
+  const csvZero = '売上番号,売上日,お客様名,商品名,数量,金額,粗利額\n1,2026/9/1,A施設,見本の品,2,1000,0\n'
+  assert.equal(L.analyzeCsv(csvZero, 'c.csv').rowsParsed[0].arr[8], 0)
+})
+
+test('同じCSVの再取込で売上が増えない。CSVの金額合計＝新規追加＋重複スキップ', () => {
+  const csv = '売上番号,売上日,お客様名,商品名,数量,金額,粗利額,営業担当名\n' +
+    '1,2026/9/1,A施設,見本の品,2,1000,200,山田\n' +
+    '1,2026/9/1,A施設,見本の品,2,1000,200,山田\n' + // 同じ伝票内の正当な同一明細
+    '2,2026/9/3,A施設,見本の品,-1,-500,-100,山田\n'
+  const parsed = L.analyzeCsv(csv, 'a.csv')
+  assert.equal(parsed.fileTotal, 1500)
+  const first = L.mergeImportRows([], parsed.rowsParsed)
+  assert.equal(first.added.length, 3)
+  assert.equal(first.addedTotal + first.skippedTotal, parsed.fileTotal)
+  const again = L.mergeImportRows(first.next, parsed.rowsParsed)
+  assert.equal(again.added.length, 0)
+  assert.equal(again.skipped, 3)
+  assert.equal(again.next.length, 3)
+  assert.equal(again.addedTotal + again.skippedTotal, parsed.fileTotal)
+  // 担当者列のない古い明細に、再取込で担当者だけ補う（金額は変えない）
+  const old = first.next.map(r => r.slice(0, 11))
+  const filled = L.mergeImportRows(old, parsed.rowsParsed)
+  assert.equal(filled.repFilled, 3)
+  assert.equal(filled.next[0][11], '山田')
+  assert.equal(filled.next[0][7], 1000)
+})
+
+test('ケースと袋など単位が違う同じ商品は数量を合計しない', () => {
+  const rows = [
+    row('1', '2026/9/1', 'A施設', '見本パッド', 2, 'ケース', 6000, 12000, 2400),
+    row('2', '2026/9/8', 'A施設', '見本パッド', 5, '袋', 800, 4000, 800),
+  ]
+  const p = L.buildPeriodReport(rows, masters({ A施設: facility() }), idx(2026, 9), idx(2026, 9)).topProducts[0]
+  assert.equal(p.mixedUnit, true)
+  assert.deepEqual(p.units.sort(), ['ケース', '袋'])
+})
+
+test('売上差の内訳：数量分＋価格分＋新しい商品＋なくなった商品＋返品等＝売上差額', () => {
+  const prev = [
+    row('1', '2025/9/1', 'A施設', '手袋', 10, '箱', 500, 5000, 1000),
+    row('2', '2025/9/1', 'A施設', 'パッド', 4, '袋', 1000, 4000, 800),
+    row('3', '2025/9/9', 'A施設', '旧洗剤', 2, '本', 700, 1400, 300),
+  ]
+  const cur = [
+    row('4', '2026/9/1', 'A施設', '手袋', 12, '箱', 550, 6600, 1300),
+    row('5', '2026/9/1', 'A施設', 'パッド', 2, 'ケース', 6000, 12000, 2000), // 単位が違う → 別の商品
+    row('6', '2026/9/9', 'A施設', '手袋', -1, '箱', 550, -550, -110),
+  ]
+  const d = L.decomposeSalesChange(cur, prev)
+  assert.equal(d.diff, 18050 - 10400)
+  // 手袋：数量分 (12-10)×500=1000、価格分 (550-500)×12=600
+  assert.equal(d.volume, 1000)
+  assert.equal(d.price, 600)
+  assert.equal(d.added, 12000) // パッド（ケース）
+  assert.equal(d.ended, -4000 - 1400) // パッド（袋）・旧洗剤
+  assert.equal(d.adj, -550)
+  assert.equal(d.check, true)
+})
+
+test('購入得意先数は返品・値引き後の売上がプラスの得意先。同じ得意先の複数伝票は1件', () => {
+  const rows = [
+    row('1', '2026/9/1', 'A施設', '見本の品', 1, '個', 1000, 1000, 200),
+    row('2', '2026/9/5', 'A施設', '見本の品', 1, '個', 1000, 1000, 200),
+    row('3', '2026/9/2', 'B施設', '見本の品', 1, '個', 1000, 1000, 200),
+    row('4', '2026/9/9', 'B施設', '見本の品', -1, '個', 1000, -1000, -200), // 全額返品 → 0円
+    row('5', '2026/9/3', '見本 花子', '見本の品', 1, '個', 500, 500, 100),
+  ]
+  const k = L.buildPeriodReport(rows, masters({ A施設: facility(), B施設: facility(), '見本 花子': { type: 'person' } }), idx(2026, 9), idx(2026, 9)).kpi
+  assert.equal(k.buyers, 2)
+  assert.equal(k.buyersFacility, 1)
+})

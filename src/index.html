@@ -272,19 +272,40 @@ const todayLabel = () => { const t = todayParts(); return t.y + '年' + t.mo + '
 const todayCompact = () => { const t = todayParts(); return '' + t.y + String(t.mo).padStart(2, '0') + String(t.d).padStart(2, '0'); };
 const todayISO = () => { const t = todayParts(); return t.y + '-' + String(t.mo).padStart(2, '0') + '-' + String(t.d).padStart(2, '0'); };
 const daysInMonthIdx = (idx) => new Date(Math.floor(idx / 12), (idx % 12) + 1, 0).getDate();
-// 月途中の判定。今月を含む期間はまだ締まっておらず、売上は取り込んだ最終売上日までしかない。
-// これを締まった前月・前年同月などと増減率で比べると、まだ注文が来ていないだけの施設が
-// 「減少」「離脱」に見えてしまうため、その場合は「比較先の何％まで来たか」（進捗率）で表す。
-// 戻り値: 締まった期間 → null ／ 月途中 → { asOf: 最終売上日, asOfLabel: '10/27', pace: 期間の経過割合(%) }
-const periodProgress = (fromIdx, toIdx, latest, today = todayParts()) => {
-  if (!latest || toIdx < today.y * 12 + today.mo - 1) return null;
-  const elapsed = latest.idx < fromIdx ? 0
-    : latest.idx > toIdx ? toIdx - fromIdx + 1
-    : (latest.idx - fromIdx) + latest.d / daysInMonthIdx(latest.idx);
-  return { asOf: latest, asOfLabel: latest.mo + '/' + latest.d, pace: Math.round(elapsed / (toIdx - fromIdx + 1) * 100) };
-};
-// 進捗率（％）＝ 当期 ÷ 比較先。比較先が0以下（実績なし・返品超過）のときは出せない
-const progressPct = (now, base, ok = true) => (ok && base > 0 ? Math.round(now / base * 100) : null);
+const dateLabel = (idx, d) => Math.floor(idx / 12) + '/' + ((idx % 12) + 1) + '/' + d;
+// cutoff（{idx, d}）までに入る日付か。cutoff がなければ常に true
+const withinCut = (d, cutoff) => !cutoff || d.idx < cutoff.idx || (d.idx === cutoff.idx && d.d <= cutoff.d);
+// 増減率（％）。比較対象が0以下（実績なし・返品超過）のときは算出しない
+const pctChange = (now, base) => (base > 0 ? Math.round((now - base) / base * 100) : null);
+// 当期と前年同期の比較条件をそろえる。
+// ・今日の月を含む期間は月途中。当期は取り込んだ最終売上日まで、前年も同じ月・同じ日までで比べる
+//   （前年の月全体と比べると、まだ注文が来ていないだけの得意先が減少に見える）。
+//   前年に同じ日がない（2/29）ときは前年の月末にそろえ、dayAdjusted で知らせる
+// ・前年の期間が取込範囲（最初の売上日の月）より前なら prevCovered=false（前年データ未取得。0円とは区別する）
+// ・締まった期間なのに最終売上日が期間末より4日以上前なら short=true（取得不足の可能性）
+function comparisonWindow(fromIdx, toIdx, latest, first, today = todayParts()) {
+  if (!latest) return null;
+  const inProgress = toIdx >= today.y * 12 + today.mo - 1;
+  let curCut = null, prevCut = null, dayAdjusted = false;
+  if (inProgress && latest.idx >= fromIdx && latest.idx <= toIdx) {
+    curCut = { idx: latest.idx, d: latest.d };
+    const pIdx = latest.idx - 12, pd = Math.min(latest.d, daysInMonthIdx(latest.idx - 12));
+    dayAdjusted = pd !== latest.d;
+    prevCut = { idx: pIdx, d: pd };
+  }
+  const curEnd = curCut || { idx: toIdx, d: daysInMonthIdx(toIdx) };
+  const prevEnd = prevCut || { idx: toIdx - 12, d: daysInMonthIdx(toIdx - 12) };
+  const toDate = (e) => new Date(Math.floor(e.idx / 12), e.idx % 12, e.d);
+  const gapDays = Math.round((toDate(curEnd) - toDate(latest)) / 86400000);
+  return {
+    inProgress, short: !inProgress && gapDays > 3, dayAdjusted, asOf: latest,
+    cur: { from: fromIdx, to: toIdx, cutoff: curCut },
+    prev: { from: fromIdx - 12, to: toIdx - 12, cutoff: prevCut },
+    curRange: dateLabel(fromIdx, 1) + '〜' + dateLabel(curEnd.idx, curEnd.d),
+    prevRange: dateLabel(fromIdx - 12, 1) + '〜' + dateLabel(prevEnd.idx, prevEnd.d),
+    prevCovered: !!first && fromIdx - 12 >= first.idx,
+  };
+}
 // 保存日時は new Date().toISOString()（UTC）で持っている。これを先頭10文字で切ると
 // 日本時間の朝9時前が前日付で表示されてしまうため、ローカル日付に直してから表示する。
 // （CSVの日付文字列と違い自分で作ったISO-8601なので new Date() で解釈して問題ない）
@@ -357,7 +378,8 @@ const OPTIONAL_COLS = [
 ];
 const colLabel = (names) => names[0];
 
-// 明細行スキーマ: [売上番号, 売上日, お客様名, 商品名, 数量, 単位名, 単価, 金額, 粗利額, 仕入先名, 仕入単価]
+// 明細行スキーマ: [売上番号, 売上日, お客様名, 商品名, 数量, 単位名, 単価, 金額, 粗利額, 仕入先名, 仕入単価, 売上時点の担当者]
+// 粗利額・仕入単価は不明なら null（確認済みの0円と区別する）。売上時点の担当者は担当者列のあるCSVから取り込んだ明細だけが持つ
 const rowKey = (a) => a[0] + '' + a[3] + '' + a[4] + '' + a[7];
 
 // 同一キーの出現回数マップ。同じ売上番号内に正当な同一明細が複数ある場合があるため、
@@ -370,6 +392,30 @@ const rowKeyCounts = (rowsArr) => {
   }
   return m;
 };
+
+// 取込の重複処理。保存済みの明細をキーごとに並べ、同じキーは「保存済みの出現回数まで」スキップする
+// （同じ売上番号内に正当な同一明細が複数ある場合があるため）。スキップした明細に売上時点の担当者がなく、
+// 今回のCSVにあれば担当者だけ補う（金額などは変えない）。同じCSVを何度取り込んでも売上は増えない。
+function mergeImportRows(existing, parsed) {
+  const idxByKey = new Map();
+  existing.forEach((r, i) => { const k = rowKey(r); const a = idxByKey.get(k); if (a) a.push(i); else idxByKey.set(k, [i]); });
+  const repFill = new Map();
+  const added = [];
+  let skipped = 0, addedTotal = 0, skippedTotal = 0;
+  for (const pr of parsed) {
+    const same = idxByKey.get(rowKey(pr.arr));
+    if (same && same.length) {
+      const j = same.shift();
+      skipped++; skippedTotal += pr.arr[7];
+      if (pr.rep && !existing[j][11]) repFill.set(j, pr.rep);
+      continue;
+    }
+    added.push(pr.arr);
+    addedTotal += pr.arr[7];
+  }
+  const base = repFill.size ? existing.map((r, i) => (repFill.has(i) ? [...r.slice(0, 11), repFill.get(i)] : r)) : existing;
+  return { next: added.length ? [...base, ...added] : base, added, skipped, addedTotal, skippedTotal, repFilled: repFill.size };
+}
 
 function analyzeCsv(rawText, fileName, encoding) {
   const text = String(rawText || '').replace(/^﻿/, '');
@@ -395,6 +441,8 @@ function analyzeCsv(rawText, fileName, encoding) {
   }
   const rowsParsed = [], badRows = [];
   let minD = null, maxD = null;
+  // 照合用：取り込める行の金額合計と、読み飛ばす行のうち金額が読めたものの合計
+  let fileTotal = 0, badTotal = 0, grossUnknown = 0, grossFromCost = 0;
   for (let i = hi + 1; i < grid.length; i++) {
     const g = grid[i];
     if (g.every(c => String(c).trim() === '')) continue;
@@ -410,16 +458,28 @@ function analyzeCsv(rawText, fileName, encoding) {
     else if (!product) reason = '商品名が空';
     else if (qty === null) reason = '数量が数値でない（' + cell('qty') + '）';
     else if (amount === null) reason = '金額が数値でない（' + cell('amount') + '）';
-    if (reason) { badRows.push({ line, reason }); continue; }
+    if (reason) { badRows.push({ line, reason }); if (amount !== null) badTotal += amount; continue; }
+    // 粗利は販売管理システムの粗利額（その明細の売上－売れた数量の原価）をそのまま使う。粗利額が空で
+    // 仕入単価があれば 金額－仕入単価×数量 で求め、どちらもなければ不明（null）。不明を0円にすると
+    // 粗利・粗利率が実際と違う数字になるため、確認済みの0円とは区別して持つ。
+    const grossV = toNum(cell('gross')), costV = toNum(cell('cost'));
+    let gross = grossV;
+    if (gross === null) {
+      if (costV !== null) { gross = Math.round((amount - costV * qty) * 100) / 100; grossFromCost++; }
+      else grossUnknown++;
+    }
+    const rep = cell('rep');
     const arr = [saleNo, d.y + '/' + d.mo + '/' + d.d, customer, product, qty,
-      cell('unit'), toNum(cell('price')) ?? 0, amount, toNum(cell('gross')) ?? 0,
-      cell('supplier'), toNum(cell('cost')) ?? 0];
-    rowsParsed.push({ arr, rep: cell('rep'), sort: d.sort });
+      cell('unit'), toNum(cell('price')) ?? 0, amount, gross,
+      cell('supplier'), costV, rep];
+    rowsParsed.push({ arr, rep, sort: d.sort });
+    fileTotal += amount;
     if (!minD || d.sort < minD.sort) minD = d;
     if (!maxD || d.sort > maxD.sort) maxD = d;
   }
   return {
     fileName, encoding: encoding || '—', delim, header, col, found, rowsParsed, badRows,
+    fileTotal, badTotal, grossUnknown, grossFromCost,
     period: minD ? minD.y + '/' + minD.mo + '/' + minD.d + ' 〜 ' + maxD.y + '/' + maxD.mo + '/' + maxD.d : '—',
   };
 }
@@ -564,32 +624,42 @@ function buildAnalytics(rows, masters, baseSel) {
   }
   const custStats = { facCount, perCount, uncertain, unassigned };
 
-  const emptyKpi = { sales: 0, gross: 0, rate: '0.0', ratePrev: '0.0', momSales: null, momGross: null, count: 0,
-    yoySales: 0, hasYoy: false, yoyPctSales: null, fySales: 0, fyPrevSales: 0, hasFyPrev: false, fyPct: null };
   // 月インデックス収集
   const monthSet = new Set();
-  let maxIdx = -1, latest = null;
+  let maxIdx = -1, latest = null, first = null;
   for (let i = 0; i < rows.length; i++) {
     const d = parseDateStr(rows[i][1]);
     if (d) {
       monthSet.add(d.idx); if (d.idx > maxIdx) maxIdx = d.idx;
       if (!latest || d.sort > latest.sort) latest = d;
+      if (!first || d.sort < first.sort) first = d;
     }
   }
   const monthsAll = [...monthSet].sort((a, b) => a - b);
   if (monthsAll.length === 0) {
     return {
       empty: true, monthsAll: [], baseIdx: null, maxIdx: null, baseLabel: '', win: [], winShort: [], winKeys: [],
-      totals: zeros12(), totalsGross: zeros12(), kpi: emptyKpi, facilities: [], facByName: new Map(),
+      totals: zeros12(), totalsGross: zeros12(), facilities: [], facByName: new Map(),
       products: [], prodByName: new Map(), categories: [],
       growth: [], dead: [], deadTotal: 0, lowMargin: [], lowMarginTotal: 0, reps: [], custStats, settings: st,
       fyLabel: '', fyRangeLabel: '', hasYoy: false, hasFyPrev: false,
-      latestDate: null, progress: null, fyProgress: null,
+      latestDate: null, firstDate: null, cmp: null, fyCmp: null, repsSale: [], repSaleRows: 0, others: null,
     };
   }
   const baseIdx = (baseSel != null && monthSet.has(baseSel)) ? baseSel : maxIdx;
-  // 基準月が月途中なら、前月比・前年同月比などは増減率でなく進捗率（*Prog）で見せる
-  const progress = periodProgress(baseIdx, baseIdx, latest);
+  // 基準月が月途中なら、前月・前年同月も同じ日までの明細で比べる（inCmp）
+  const cmp = comparisonWindow(baseIdx, baseIdx, latest, first);
+  const cutDay = cmp.cur.cutoff ? cmp.cur.cutoff.d : null;
+  const inCmp = (d, monthIdx) => d.idx === monthIdx && (cutDay === null || d.d <= Math.min(cutDay, daysInMonthIdx(monthIdx)));
+  const fyStart = fiscalStartIdx(baseIdx);
+  // 前年度同期：前年度の4月〜前年同月の前月は全部、前年同月は同じ日まで
+  const inFyPrev = (d) => (d.idx >= fyStart - 12 && d.idx < baseIdx - 12) || inCmp(d, baseIdx - 12);
+  const gKnownOf = (r) => r[8] !== null && r[8] !== undefined && r[8] !== '';
+  // 施設以外（個人など）の売上。担当別の合計をダッシュボードの売上と突き合わせるために持つ
+  const others = { sales: 0, prev: 0, yoy: 0, fy: 0, fyPrev: 0 };
+  // 売上時点の担当者（明細の12列目）での集計
+  const repSaleMap = new Map();
+  let repSaleRows = 0;
   const winStart = baseIdx - 11;
   const win = [];
   for (let i = 0; i < 12; i++) win.push(winStart + i);
@@ -601,34 +671,58 @@ function buildAnalytics(rows, masters, baseSel) {
     const r = rows[i];
     const name = r[2];
     const c = custs[name] || classifyCustomerName(name);
-    if (c.type !== 'facility') continue;              // 集計対象は施設のみ（個人は除外）
     const d = parseDateStr(r[1]);
     if (!d) continue;
+    const qty = +r[4] || 0, amt = +r[7] || 0, gross = +r[8] || 0;
+    const gKnown = gKnownOf(r);
+    if (c.type !== 'facility') {                      // 集計対象は施設のみ（個人は除外）。合計の突き合わせ用に額だけ持つ
+      if (d.idx === baseIdx) others.sales += amt;
+      if (inCmp(d, baseIdx - 1)) others.prev += amt;
+      if (inCmp(d, baseIdx - 12)) others.yoy += amt;
+      if (d.idx >= fyStart && d.idx <= baseIdx) others.fy += amt;
+      if (inFyPrev(d)) others.fyPrev += amt;
+      continue;
+    }
 
     let f = facMap.get(name);
     if (!f) {
       f = { name, rep: c.rep || '', repName: c.rep || '未設定', direct: !!c.direct,
-            monthly: zeros12(), gross12: zeros12(), byMonth: new Map(), rows: [], pairs: [], returns3: 0, orderNos: new Set() };
+            monthly: zeros12(), gross12: zeros12(), byMonth: new Map(), rows: [], pairs: [], returns3: 0, orderNos: new Set(),
+            prevCmp: 0, yoyCmp: 0, yoyCmpGross: 0, fyPrevCmp: 0, guWin: 0, guBase: 0, guYoy: 0 };
       facMap.set(name, f);
     }
     f.rows.push(r);
-    const qty = +r[4] || 0, amt = +r[7] || 0, gross = +r[8] || 0;
     const price = +r[6] || 0, cost = +r[10] || 0;
+    if (inCmp(d, baseIdx - 1)) f.prevCmp += amt;
+    if (inCmp(d, baseIdx - 12)) { f.yoyCmp += amt; f.yoyCmpGross += gross; if (!gKnown) f.guYoy++; }
+    if (inFyPrev(d)) f.fyPrevCmp += amt;
+    if (!gKnown && d.idx === baseIdx) f.guBase++;
+    if (r[11]) repSaleRows++;
+    {
+      const key = r[11] || '';
+      let rs = repSaleMap.get(key);
+      if (!rs) { rs = { rep: key || '担当不明（明細に担当者なし）', unknown: !key, facs: new Set(), sales: 0, prev: 0, yoy: 0, fy: 0, fyPrev: 0, gross: 0, gu: 0 }; repSaleMap.set(key, rs); }
+      if (d.idx === baseIdx) { rs.sales += amt; rs.gross += gross; rs.facs.add(name); if (!gKnown) rs.gu++; }
+      if (inCmp(d, baseIdx - 1)) rs.prev += amt;
+      if (inCmp(d, baseIdx - 12)) rs.yoy += amt;
+      if (d.idx >= fyStart && d.idx <= baseIdx) rs.fy += amt;
+      if (inFyPrev(d)) rs.fyPrev += amt;
+    }
     // 全期間の月別（CSV出力の期間選択で使う）
     const bm = f.byMonth.get(d.idx);
-    if (bm) { bm.sales += amt; bm.gross += gross; }
-    else f.byMonth.set(d.idx, { sales: amt, gross });
+    if (bm) { bm.sales += amt; bm.gross += gross; if (!gKnown) bm.gu++; }
+    else f.byMonth.set(d.idx, { sales: amt, gross, gu: gKnown ? 0 : 1 });
 
     const slot = d.idx - winStart;
     const inWin = slot >= 0 && slot <= 11;
-    if (inWin) { f.monthly[slot] += amt; f.gross12[slot] += gross; totals[slot] += amt; totalsGross[slot] += gross; f.orderNos.add(r[0]); }
+    if (inWin) { f.monthly[slot] += amt; f.gross12[slot] += gross; totals[slot] += amt; totalsGross[slot] += gross; f.orderNos.add(r[0]); if (!gKnown) f.guWin++; }
     if (amt < 0 && d.idx >= baseIdx - 2) f.returns3++;
 
     const pname = r[3];
     let p = prodMap.get(pname);
     if (!p) {
-      p = { name: pname, unit: '', unitSort: -1, supplier: '', supSort: -1, cost: 0, costSort: -1,
-            lastPrice: 0, lpSort: -1,
+      p = { name: pname, unit: '', unitSort: -1, units: new Set(), supplier: '', supSort: -1, cost: 0, costSort: -1,
+            lastPrice: 0, lpSort: -1, momCmp: 0, guWin: 0, guBase: 0,
             qty12: zeros12(), qtyND12: zeros12(), sales12: zeros12(), gross12: zeros12(), lastSale: null, pairs: [] };
       prodMap.set(pname, p);
     }
@@ -637,7 +731,10 @@ function buildAnalytics(rows, masters, baseSel) {
     if (r[9] && d.sort > p.supSort) { p.supplier = r[9]; p.supSort = d.sort; }
     if (cost > 0 && d.sort > p.costSort) { p.cost = cost; p.costSort = d.sort; }
     if (!p.lastSale || d.sort > p.lastSale.sort) p.lastSale = d;
+    if (inCmp(d, baseIdx - 1)) p.momCmp += amt;
     if (inWin) {
+      p.units.add(r[5] || '');
+      if (!gKnown) { p.guWin++; if (slot === 11) p.guBase++; }
       p.qty12[slot] += qty; p.sales12[slot] += amt; p.gross12[slot] += gross;
       if (!f.direct) p.qtyND12[slot] += qty;
     }
@@ -645,17 +742,18 @@ function buildAnalytics(rows, masters, baseSel) {
     const pkey = name + '' + pname;
     let pair = pairMap.get(pkey);
     if (!pair) {
-      pair = { fac: name, prod: pname, direct: f.direct, qty12: zeros12(), sales12: zeros12(),
+      pair = { fac: name, prod: pname, direct: f.direct, qty12: zeros12(), sales12: zeros12(), units: new Set(),
                lastDate: null, lastPrice: 0, priceSort: -1, unit: '', unitSort: -1, baseAmt: 0, baseGross: 0,
-               lastQty: 0, lastAmt: 0, lastCostTotal: 0,
+               lastQty: 0, lastAmt: 0, lastCostTotal: 0, guBase: 0,
                orders: [] };
       pairMap.set(pkey, pair);
       f.pairs.push(pair);
       p.pairs.push(pair);
     }
     if (inWin) {
+      pair.units.add(r[5] || '');
       pair.qty12[slot] += qty; pair.sales12[slot] += amt;
-      if (slot === 11) { pair.baseAmt += amt; pair.baseGross += gross; }
+      if (slot === 11) { pair.baseAmt += amt; pair.baseGross += gross; if (!gKnown) pair.guBase++; }
       pair.orders.push({ idx: d.idx, no: r[0] });
     }
     // 「最終売上」の実績（同日に複数明細があれば合算）。1回の取引としての数量・金額を
@@ -669,10 +767,9 @@ function buildAnalytics(rows, masters, baseSel) {
     if (r[5] && d.sort > pair.unitSort) { pair.unit = r[5]; pair.unitSort = d.sort; }
   }
 
-  // 施設ごとの派生値（減少アラート等）
-  const hasPrevMonth = monthSet.has(baseIdx - 1);
-  const hasYoyMonth = monthSet.has(baseIdx - 12);
-  const pctDelta = (now, base, ok) => (ok && base !== 0 ? Math.round((now - base) / Math.abs(base) * 100) : null);
+  // 施設ごとの派生値。比較先の月が取込範囲より前なら「前年データ未取得」として null（0円とは区別）
+  const hasPrevMonth = baseIdx - 1 >= first.idx;
+  const hasYoyMonth = baseIdx - 12 >= first.idx;
   const facilities = [...facMap.values()];
   for (const f of facilities) {
     f.winSum = sum12(f.monthly);
@@ -683,46 +780,14 @@ function buildAnalytics(rows, masters, baseSel) {
     f.prev3 = (f.monthly[8] + f.monthly[9] + f.monthly[10]) / 3;
     f.pct = f.prev3 > 0 ? Math.round((f.last - f.prev3) / f.prev3 * 100) : 0;
     f.ordersPerMonth = f.orderNos.size / 12;
-    const yoyM = f.byMonth.get(baseIdx - 12);
-    f.mom = pctDelta(f.last, f.monthly[10], hasPrevMonth);
-    f.yoyPct = pctDelta(f.last, yoyM ? yoyM.sales : 0, hasYoyMonth);
-    f.pctProg = progressPct(f.last, f.prev3);
-    f.momProg = progressPct(f.last, f.monthly[10], hasPrevMonth);
-    f.yoyProg = progressPct(f.last, yoyM ? yoyM.sales : 0, hasYoyMonth);
+    // 粗利額が不明な明細を含む施設は粗利率を出さない（marginOk=false）
+    f.marginOk = f.winSum > 0 && f.guWin === 0;
+    f.mom = hasPrevMonth ? pctChange(f.last, f.prevCmp) : null;
+    f.yoyBase = hasYoyMonth ? f.yoyCmp : null;
+    f.yoyDiff = hasYoyMonth ? f.last - f.yoyCmp : null;
+    f.yoyPct = hasYoyMonth ? pctChange(f.last, f.yoyCmp) : null;
+    f.yoyGrossDiff = hasYoyMonth && f.guBase === 0 && f.guYoy === 0 ? f.gross12[11] - f.yoyCmpGross : null;
   }
-
-  // 全体の前年同月比・年度内前年比較（例: 2026年度4〜7月 と 2025年度4〜7月）
-  const fyStartForKpi = fiscalStartIdx(baseIdx);
-  let yoySales = 0, yoyGross = 0, fySales = 0, fyPrevSales = 0;
-  // 前年度同期比は「前年度の同期間が丸ごと取り込まれている」ときだけ出す。
-  // 1ヶ月でもあれば true にすると、例えば13ヶ月だけ取り込んだ場合に
-  // 「今年度5ヶ月分 vs 前年度1ヶ月分」を比較して +400% のような嘘の成長率が出る。
-  // 売上ゼロの月は monthSet に入らないため、月の有無ではなく取込範囲の下限で判定する。
-  const hasFyPrevMonth = (fyStartForKpi - 12) >= monthsAll[0];
-  for (const f of facilities) {
-    const yoyM = f.byMonth.get(baseIdx - 12);
-    if (yoyM) { yoySales += yoyM.sales; yoyGross += yoyM.gross; }
-    for (let i = fyStartForKpi; i <= baseIdx; i++) { const m = f.byMonth.get(i); if (m) fySales += m.sales; }
-    for (let i = fyStartForKpi - 12; i <= baseIdx - 12; i++) { const m = f.byMonth.get(i); if (m) fyPrevSales += m.sales; }
-  }
-
-  // KPI
-  const sales = totals[11], prev = totals[10];
-  const grossB = totalsGross[11], grossPrev = totalsGross[10];
-  const kpi = {
-    sales, gross: grossB,
-    rate: sales !== 0 ? (grossB / sales * 100).toFixed(1) : '0.0',
-    ratePrev: prev !== 0 ? (grossPrev / prev * 100).toFixed(1) : '0.0',
-    momSales: prev !== 0 ? Math.round((sales - prev) / Math.abs(prev) * 100) : null,
-    momGross: grossPrev !== 0 ? Math.round((grossB - grossPrev) / Math.abs(grossPrev) * 100) : null,
-    count: facilities.reduce((s, f) => s + (f.monthly[11] !== 0 ? 1 : 0), 0),
-    // 前年同月比（例: 2026年8月 vs 2025年8月）
-    yoySales, hasYoy: hasYoyMonth,
-    yoyPctSales: hasYoyMonth && yoySales !== 0 ? Math.round((sales - yoySales) / Math.abs(yoySales) * 100) : null,
-    // 年度内前年比較（例: 2026年度4〜8月 vs 2025年度4〜8月）
-    fySales, fyPrevSales, hasFyPrev: hasFyPrevMonth,
-    fyPct: hasFyPrevMonth && fyPrevSales !== 0 ? Math.round((fySales - fyPrevSales) / Math.abs(fyPrevSales) * 100) : null,
-  };
 
   // 商品 → 分類
   const products = [...prodMap.values()];
@@ -732,33 +797,40 @@ function buildAnalytics(rows, masters, baseSel) {
     p.catSrc = rc.src;
     p.winQty = sum12(p.qty12);
     p.winSales = sum12(p.sales12);
+    p.mixedUnit = p.units.size > 1;
+    p.winGross = sum12(p.gross12);
   }
 
   // 分類別サマリー
   const catAgg = new Map();
   for (const p of products) {
     let c = catAgg.get(p.cat);
-    if (!c) { c = { name: p.cat, sales12: zeros12(), gross12: zeros12(), items: [] }; catAgg.set(p.cat, c); }
+    if (!c) { c = { name: p.cat, sales12: zeros12(), gross12: zeros12(), momCmp: 0, guBase: 0, items: [] }; catAgg.set(p.cat, c); }
     for (let i = 0; i < 12; i++) { c.sales12[i] += p.sales12[i]; c.gross12[i] += p.gross12[i]; }
+    c.momCmp += p.momCmp; c.guBase += p.guBase;
     c.items.push(p);
   }
   const categories = [...catAgg.values()].map(c => {
-    const s = c.sales12[11], pv = c.sales12[10], g = c.gross12[11];
+    const s = c.sales12[11], g = c.gross12[11];
+    const sales = totals[11];
     return {
       name: c.name, sales: s,
       // マイナス分類(返品が売上を上回った分類)を0%に潰すと、他分類は純額で割られたままなので
       // 構成比の合計が100%を超える。実態どおりマイナスで出す。
       share: sales > 0 ? Math.round(s / sales * 100) : 0,
-      mom: pv !== 0 ? Math.round((s - pv) / Math.abs(pv) * 100) : 0,
-      momProg: progressPct(s, pv),
+      // 前月比（基準月が月途中なら前月も同じ日まで）。前月が0以下なら出さない
+      mom: hasPrevMonth ? pctChange(s, c.momCmp) : null,
       margin: s !== 0 ? Math.round(g / s * 1000) / 10 : 0,
+      marginOk: s > 0 && c.guBase === 0,   // 粗利額が不明な明細を含む分類は粗利率を出さない
       top: c.items.slice().sort((a, b) => b.winSales - a.winSales).slice(0, 6).map(p => p.name),
     };
     // 「その他」は売上に関係なく常に一番下に表示する
   }).sort((a, b) => (a.name === 'その他') - (b.name === 'その他') || b.sales - a.sales);
 
   // 売れ筋: 基準月数量 vs 直近3ヶ月平均の伸び率
+  // 単位が混在する商品は数量を比べられないので対象外
   const growth = products.map(p => {
+    if (p.units.size > 1) return null;
     const base = p.qty12[11], prev3 = (p.qty12[8] + p.qty12[9] + p.qty12[10]) / 3;
     if (!(prev3 > 0) || base <= 0) return null;
     const g = Math.round((base - prev3) / prev3 * 100);
@@ -774,7 +846,7 @@ function buildAnalytics(rows, masters, baseSel) {
   // 粗利率チェック: 基準月の施設×商品で 15% 未満
   const lowAll = [];
   pairMap.forEach(pair => {
-    if (pair.baseAmt <= 0) return;
+    if (pair.baseAmt <= 0 || pair.guBase > 0) return;   // 粗利額が不明な明細を含む組み合わせは判定しない
     const m = pair.baseGross / pair.baseAmt * 100;
     if (m >= 15) return;
     const q = pair.qty12[11];
@@ -786,113 +858,189 @@ function buildAnalytics(rows, masters, baseSel) {
   });
   lowAll.sort((a, b) => a.margin - b.margin);
 
-  // 担当別（前月比・前年同月比・今年度累計とその前年度同期比）
-  const fyStart = fiscalStartIdx(baseIdx);
-  const hasPrev = monthSet.has(baseIdx - 1);
-  const hasYoy = monthSet.has(baseIdx - 12);
+  // 担当別（前月比・前年同月差・今年度累計とその前年度同期差）。基準月が月途中なら比較先も同じ日まで
   // 全体KPIと同じ理由で、前年度同期が丸ごと取り込まれているときだけ比較する
-  const hasFyPrev = (fyStart - 12) >= monthsAll[0];
+  const hasFyPrev = (fyStart - 12) >= first.idx;
   const repAgg = new Map();
   for (const f of facilities) {
     let r = repAgg.get(f.repName);
-    if (!r) { r = { rep: f.repName, count: 0, sales: 0, prev: 0, yoy: 0, fy: 0, fyPrev: 0, avg: 0, gross: 0 }; repAgg.set(f.repName, r); }
-    const at = (i) => { const m = f.byMonth.get(i); return m ? m.sales : 0; };
-    r.count++; r.avg += f.avg; r.gross += f.gross12[11];
+    if (!r) { r = { rep: f.repName, unknown: f.repName === '未設定', count: 0, sales: 0, prev: 0, yoy: 0, fy: 0, fyPrev: 0, avg: 0, gross: 0, gu: 0 }; repAgg.set(f.repName, r); }
+    r.count++; r.avg += f.avg; r.gross += f.gross12[11]; r.gu += f.guBase;
     r.sales += f.monthly[11];
-    r.prev += f.monthly[10];
-    r.yoy += at(baseIdx - 12);
-    for (let i = fyStart; i <= baseIdx; i++) r.fy += at(i);
-    for (let i = fyStart - 12; i <= baseIdx - 12; i++) r.fyPrev += at(i);
+    r.prev += f.prevCmp;
+    r.yoy += f.yoyCmp;
+    for (let i = fyStart; i <= baseIdx; i++) { const m = f.byMonth.get(i); if (m) r.fy += m.sales; }
+    r.fyPrev += f.fyPrevCmp;
   }
-  const pctOf = (now, base, ok) => (ok && base !== 0 ? Math.round((now - base) / Math.abs(base) * 100) : null);
-  const reps = [...repAgg.values()]
-    .map(r => ({
-      ...r,
-      rate: r.sales !== 0 ? (r.gross / r.sales * 100).toFixed(1) : '0.0',
-      mom: pctOf(r.sales, r.prev, hasPrev),
-      yoyPct: pctOf(r.sales, r.yoy, hasYoy),
-      fyPct: pctOf(r.fy, r.fyPrev, hasFyPrev),
-      momProg: progressPct(r.sales, r.prev, hasPrev),
-      yoyProg: progressPct(r.sales, r.yoy, hasYoy),
-      fyProg: progressPct(r.fy, r.fyPrev, hasFyPrev),
-    }))
-    .sort((a, b) => b.sales - a.sales);
+  const finishRep = (r) => ({
+    ...r,
+    rateOk: r.sales > 0 && r.gu === 0,
+    rate: r.sales !== 0 ? (r.gross / r.sales * 100).toFixed(1) : '0.0',
+    mom: hasPrevMonth ? pctChange(r.sales, r.prev) : null,
+    yoyDiff: hasYoyMonth ? r.sales - r.yoy : null,
+    yoyPct: hasYoyMonth ? pctChange(r.sales, r.yoy) : null,
+    fyDiff: hasFyPrev ? r.fy - r.fyPrev : null,
+    fyPct: hasFyPrev ? pctChange(r.fy, r.fyPrev) : null,
+  });
+  // 不明行（担当未設定・担当不明）は消さずに一番下へ
+  const repOrder = (a, b) => (a.unknown - b.unknown) || b.sales - a.sales;
+  const reps = [...repAgg.values()].map(finishRep).sort(repOrder);
+  const repsSale = [...repSaleMap.values()].map(r => finishRep({ ...r, count: r.facs.size, avg: 0 })).sort(repOrder);
+  const othersOut = finishRep({ ...others, gross: 0, gu: 0 });
   const fyLabel = Math.floor(fyStart / 12) + '年度';
   const fyRangeLabel = idxLabel(fyStart) + '〜' + idxLabel(baseIdx);
 
   return {
     empty: false, monthsAll, baseIdx, maxIdx, baseLabel: idxLabel(baseIdx),
     win, winShort: win.map(idxShort), winKeys: win.map(idxKey),
-    totals, totalsGross, kpi, facilities, facByName: facMap,
+    totals, totalsGross, facilities, facByName: facMap,
     products, prodByName: prodMap, categories, growth,
     dead: deadAll.slice(0, 30), deadTotal: deadAll.length,
     lowMargin: lowAll.slice(0, 30), lowMarginTotal: lowAll.length,
-    reps, custStats, settings: st,
-    fyLabel, fyRangeLabel, hasYoy, hasFyPrev,
-    latestDate: latest, progress, fyProgress: periodProgress(fyStart, baseIdx, latest),
+    reps, repsSale, repSaleRows, others: othersOut, custStats, settings: st,
+    fyLabel, fyRangeLabel, hasYoy: hasYoyMonth, hasFyPrev,
+    latestDate: latest, firstDate: first, cmp, fyCmp: comparisonWindow(fyStart, baseIdx, latest, first),
   };
 }
 
 /* ============================================================
    任意期間のレポート集計（明細を範囲で走査。12ヶ月窓に依存しない）
 ============================================================ */
-function buildPeriodReport(rows, masters, fromIdx, toIdx, consumableOnly) {
+// cutoff（{idx, d}）を渡すと、その日までの明細だけを集計する（月途中の前年同期比較用）。
+// 粗利は明細の粗利額の合計。粗利額が不明（null）の明細は grossUnknown に数え、0円としては足さない。
+function buildPeriodReport(rows, masters, fromIdx, toIdx, consumableOnly, cutoff) {
   const custs = masters.customers, catOv = masters.catOverrides, catRules = masters.catRules;
-  const facMap = new Map(), prodMap = new Map(), monMap = new Map();
-  let sales = 0, gross = 0;
+  const facMap = new Map(), prodMap = new Map(), monMap = new Map(), custMap = new Map();
+  let sales = 0, gross = 0, grossUnknown = 0, grossUnknownSales = 0;
+  let returnAmt = 0, returnCount = 0, discountAmt = 0, discountCount = 0;
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
     const name = r[2];
     const c = custs[name] || classifyCustomerName(name);
     const d = parseDateStr(r[1]);
-    if (!d || d.idx < fromIdx || d.idx > toIdx) continue;
+    if (!d || d.idx < fromIdx || d.idx > toIdx || !withinCut(d, cutoff)) continue;
     const pn = r[3];
     const cat = categoryOf(pn, catOv, catRules);
     // 正確な売上把握のため施設・個人・事業者を問わず集計する。
     // 「消耗品のみ」表示のときだけ、消耗品以外の分類と、個人受給者向けとみられる売上を除外する。
     if (consumableOnly && (NON_CONSUMABLE_CATS.has(cat) || looksLikeIndividualRecipient(name))) continue;
-    const amt = +r[7] || 0, g = +r[8] || 0, qty = +r[4] || 0;
+    const amt = +r[7] || 0, qty = +r[4] || 0;
+    const gKnown = r[8] !== null && r[8] !== undefined && r[8] !== '';
+    const g = gKnown ? (+r[8] || 0) : 0;
     sales += amt; gross += g;
+    if (!gKnown) { grossUnknown++; grossUnknownSales += amt; }
+    // 区分列がないため符号で分ける：数量マイナス＝返品、数量0以上で金額マイナス＝値引き等
+    if (amt < 0) { if (qty < 0) { returnAmt += amt; returnCount++; } else { discountAmt += amt; discountCount++; } }
+
+    let cu = custMap.get(name);
+    if (!cu) { cu = { name, type: c.type, sales: 0, gross: 0 }; custMap.set(name, cu); }
+    cu.sales += amt; cu.gross += g;
 
     // 施設別ランキング等が個人客で長くならないよう、施設のみに限定する
     if (c.type === 'facility') {
       let f = facMap.get(name);
-      if (!f) { f = { name, repName: c.rep || '未設定', sales: 0, gross: 0, months: new Set() }; facMap.set(name, f); }
+      if (!f) { f = { name, repName: c.rep || '未設定', sales: 0, gross: 0, grossUnknown: 0, months: new Set() }; facMap.set(name, f); }
       f.sales += amt; f.gross += g; f.months.add(d.idx);
+      if (!gKnown) f.grossUnknown++;
     }
 
     let p = prodMap.get(pn);
-    if (!p) { p = { name: pn, cat, unit: r[5] || '', unitSort: -1, qty: 0, sales: 0, gross: 0 }; prodMap.set(pn, p); }
+    if (!p) { p = { name: pn, cat, unit: r[5] || '', unitSort: -1, units: new Set(), qty: 0, sales: 0, gross: 0, grossUnknown: 0 }; prodMap.set(pn, p); }
     if (r[5] && d.sort > p.unitSort) { p.unit = r[5]; p.unitSort = d.sort; }
+    p.units.add(r[5] || '');
     p.qty += qty; p.sales += amt; p.gross += g;
+    if (!gKnown) p.grossUnknown++;
 
     let mo = monMap.get(d.idx);
-    if (!mo) { mo = { idx: d.idx, sales: 0, gross: 0, facs: new Set() }; monMap.set(d.idx, mo); }
+    if (!mo) { mo = { idx: d.idx, sales: 0, gross: 0, grossUnknown: 0, facs: new Set() }; monMap.set(d.idx, mo); }
     mo.sales += amt; mo.gross += g; mo.facs.add(name);
+    if (!gKnown) mo.grossUnknown++;
   }
   const rate = (g2, s2) => (s2 !== 0 ? Math.round(g2 / s2 * 1000) / 10 : 0);
   const catAgg = new Map();
   prodMap.forEach(p => {
     let c = catAgg.get(p.cat);
-    if (!c) { c = { name: p.cat, sales: 0, gross: 0 }; catAgg.set(p.cat, c); }
-    c.sales += p.sales; c.gross += p.gross;
+    if (!c) { c = { name: p.cat, sales: 0, gross: 0, grossUnknown: 0 }; catAgg.set(p.cat, c); }
+    c.sales += p.sales; c.gross += p.gross; c.grossUnknown += p.grossUnknown;
   });
   const monthly = [...monMap.values()].sort((a, b) => a.idx - b.idx)
-    .map(m => ({ idx: m.idx, label: idxLabel(m.idx), sales: m.sales, gross: m.gross, rate: rate(m.gross, m.sales), count: m.facs.size }));
+    .map(m => ({ idx: m.idx, label: idxLabel(m.idx), sales: m.sales, gross: m.gross, grossUnknown: m.grossUnknown, rate: rate(m.gross, m.sales), count: m.facs.size }));
   // 月平均は「売上のあった月数」ではなく「対象期間の月数」で割る。
   // 前者だと、期間内に売上ゼロの月があるとその月が分母から抜けて平均が過大になり、
   // 見出しの期間（例: 4月〜8月の5ヶ月）と計算が食い違う。
   const nMonths = Math.max(1, toIdx - fromIdx + 1);
+  const customers = [...custMap.values()];
+  const buyers = customers.filter(c => c.sales > 0);
+  // 単位が2種類以上ある商品（ケースと袋など）は数量を合計しない（mixedUnit）
+  const prodOut = (p) => ({ name: p.name, cat: p.cat, qty: p.qty, unit: p.unit, units: [...p.units], mixedUnit: p.units.size > 1,
+    sales: p.sales, gross: p.gross, grossUnknown: p.grossUnknown, margin: rate(p.gross, p.sales) });
   return {
-    kpi: { sales, gross, rate: rate(gross, sales).toFixed(1), count: facMap.size, months: monthly.length },
+    kpi: {
+      sales, gross, rate: rate(gross, sales).toFixed(1), count: facMap.size, months: monthly.length,
+      grossUnknown, grossUnknownSales,
+      // 粗利率は売上が正で、粗利額の不明な明細がないときだけ出す
+      rateOk: sales > 0 && grossUnknown === 0,
+      buyers: buyers.length, buyersFacility: buyers.filter(c => c.type === 'facility').length,
+      returnAmt, returnCount, discountAmt, discountCount,
+    },
     monthly,
+    customers,
     categories: [...catAgg.values()].sort((a, b) => (a.name === 'その他') - (b.name === 'その他') || b.sales - a.sales)
       // 上と同じ理由でマイナスを潰さない（潰すと印刷帳票の構成比が合計100%を超える）
-      .map(c => ({ name: c.name, sales: c.sales, share: sales > 0 ? Math.round(c.sales / sales * 100) : 0, margin: rate(c.gross, c.sales) })),
-    topProducts: [...prodMap.values()].filter(p => p.sales > 0).sort((a, b) => b.sales - a.sales).slice(0, 10)
-      .map(p => ({ name: p.name, cat: p.cat, qty: p.qty, unit: p.unit, sales: p.sales })),
+      .map(c => ({ name: c.name, sales: c.sales, share: sales > 0 ? Math.round(c.sales / sales * 100) : 0, margin: rate(c.gross, c.sales), grossUnknown: c.grossUnknown })),
+    topProducts: [...prodMap.values()].filter(p => p.sales > 0).sort((a, b) => b.sales - a.sales).slice(0, 10).map(prodOut),
+    topProductsGross: [...prodMap.values()].filter(p => p.gross > 0).sort((a, b) => b.gross - a.gross).slice(0, 10).map(prodOut),
     ranking: [...facMap.values()].sort((a, b) => b.sales - a.sales)
-      .map(f => ({ name: f.name, repName: f.repName, sales: f.sales, avg: f.sales / nMonths, margin: rate(f.gross, f.sales) })),
+      .map(f => ({ name: f.name, repName: f.repName, sales: f.sales, gross: f.gross, grossUnknown: f.grossUnknown, avg: f.sales / nMonths, margin: rate(f.gross, f.sales) })),
+  };
+}
+
+// 前年同期との売上差を、数量・価格・商品の入れ替わり・返品等に分ける（同じ得意先の明細どうしで使う）。
+// ・比較の単位は「商品名＋単位」。同じ商品でも単位が違えば別物として扱い、数量・単価を混ぜない
+// ・金額がマイナスの明細（返品・値引き等）は「返品・値引き等」にまとめ、数量・価格には配分しない
+// ・両期間に販売がある商品：数量分＝(当期数量－前年数量)×前年平均単価、
+//   価格分＝その商品の売上差－数量分＝(当期平均単価－前年平均単価)×当期数量（交差項は価格分に含める）
+// ・当期だけ／前年だけの商品は「前年同期になかった商品」「当期に販売のない商品」
+// ・どちらかの期間の数量が0以下で単価が出せない商品は「比較できない明細」
+// 各区分の合計は売上差額と一致する（check=true）。一致しなければ計算の誤りとして画面に出す
+function decomposeSalesChange(curRows, prevRows) {
+  const agg = (list) => {
+    const m = new Map();
+    let adj = 0, total = 0;
+    for (const r of list) {
+      const amt = +r[7] || 0, qty = +r[4] || 0;
+      total += amt;
+      if (amt < 0) { adj += amt; continue; }
+      const key = r[3] + '\u0001' + (r[5] || '');
+      let e = m.get(key);
+      if (!e) { e = { name: r[3], unit: r[5] || '', qty: 0, sales: 0 }; m.set(key, e); }
+      e.qty += qty; e.sales += amt;
+    }
+    return { m, adj, total };
+  };
+  const c = agg(curRows), p = agg(prevRows);
+  let volume = 0, price = 0, added = 0, ended = 0, other = 0;
+  const items = [];
+  for (const key of new Set([...c.m.keys(), ...p.m.keys()])) {
+    const a = c.m.get(key), b = p.m.get(key);
+    const base = a || b;
+    const it = { name: base.name, unit: base.unit, cur: a ? a.sales : 0, prev: b ? b.sales : 0, q1: a ? a.qty : 0, q0: b ? b.qty : 0 };
+    it.diff = it.cur - it.prev;
+    if (a && b && a.qty > 0 && b.qty > 0) {
+      it.kind = 'both';
+      it.volume = (a.qty - b.qty) * (b.sales / b.qty);
+      it.price = it.diff - it.volume;
+      volume += it.volume; price += it.price;
+    } else if (a && !b) { it.kind = 'new'; added += it.diff; }
+    else if (!a && b) { it.kind = 'ended'; ended += it.diff; }
+    else { it.kind = 'other'; other += it.diff; }
+    items.push(it);
+  }
+  const adj = c.adj - p.adj, diff = c.total - p.total;
+  return {
+    cur: c.total, prev: p.total, diff, volume, price, added, ended, adj, other,
+    check: Math.abs(diff - (volume + price + added + ended + adj + other)) < 0.5,
+    items: items.sort((x, y) => Math.abs(y.diff) - Math.abs(x.diff)),
   };
 }
 
@@ -922,6 +1070,12 @@ const csvEsc = (v) => {
   return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 };
 const buildCsv = (rows2d) => '﻿' + rows2d.map(r => r.map(csvEsc).join(',')).join('\r\n');
+// 分析CSVの先頭に集計条件（対象期間・金額の種類・絞り込み・集計時点）を入れ、1行空けて表を続ける
+const buildCsvWithConditions = (conds, table) => buildCsv([...conds.filter(c => c && c[1] !== '' && c[1] != null), [], ...table]);
+const dataRangeLabel = (data) => (data.firstDate ? dateLabel(data.firstDate.idx, data.firstDate.d) + '〜' + dateLabel(data.latestDate.idx, data.latestDate.d) : '—');
+// 月インデックスの範囲を日付で（最終月が取込済みの最終売上日の月なら、その日まで）
+const idxRangeDates = (fromIdx, toIdx, latest) => dateLabel(fromIdx, 1) + '〜' +
+  (latest && latest.idx === toIdx ? dateLabel(toIdx, latest.d) : dateLabel(toIdx, daysInMonthIdx(toIdx)));
 // 印刷用HTMLをそのままA4のPDFにする（画面外に実寸で描画 → html2canvas → jsPDF）
 async function exportPdf(html, fileName) {
   const holder = document.createElement('div');
@@ -1459,6 +1613,14 @@ function buildReportHtml(m) {
   const emptyRow = (n) => `<tr><td colspan="${n}" style="${td}text-align:center;color:#6b7280;">該当はありません</td></tr>`;
   const zebra = (i) => (i % 2 === 1 ? '#f8fbff' : '#fff');
   const multi = m.monthly && m.monthly.length > 1;
+  const kp = m.kpi, cp = m.compare, grossOk = !(kp.grossUnknown > 0);
+  // 比較なし：前年データ未取得なら「比較データ不足」、全期間など比較しない帳票は「—」
+  const noCmp = m.compareMissing ? '比較データ不足' : '—';
+  const marginCell = (unknown, sales, margin) => (unknown ? '未確定' : sales > 0 ? margin + '%' : '—');
+  // 前年差のセル：差額（主）と増減率（補助）。比較できないときは理由を出す
+  const cmpCell = (diff, rate, reason) => diff === null
+    ? (reason || '—')
+    : (diff > 0 ? '+' : diff < 0 ? '−' : '±') + yen(Math.abs(diff)) + (rate === null ? '' : `<br><span style="font-size:8pt;color:#6b7280;">${rate > 0 ? '+' : ''}${rate}%</span>`);
   let sec = 0;
   const secTitle = (t) => `<div style="margin-top:7mm;color:#1e3a8a;font-weight:bold;font-size:10.5pt;border-left:3px solid #2563eb;padding-left:2mm;">${++sec}．${t}</div>`;
 
@@ -1466,8 +1628,8 @@ function buildReportHtml(m) {
     <tr style="background:${zebra(i)}">
       <td style="${td}">${escapeHTML(x.label)}</td>
       <td style="${tdR}">${yen(x.sales)}</td>
-      <td style="${tdR}">${yen(x.gross)}</td>
-      <td style="${tdR}">${x.rate}%</td>
+      <td style="${tdR}">${x.grossUnknown ? '未確定' : yen(x.gross)}</td>
+      <td style="${tdR}">${marginCell(x.grossUnknown, x.sales, x.rate)}</td>
       <td style="${tdR}">${x.count}件</td>
     </tr>`).join('') : '';
   const catRows = m.categories.length ? m.categories.map((c, i) => `
@@ -1475,14 +1637,14 @@ function buildReportHtml(m) {
       <td style="${td}">${escapeHTML(c.name)}</td>
       <td style="${tdR}">${yen(c.sales)}</td>
       <td style="${tdR}">${c.share}%</td>
-      <td style="${tdR}">${c.margin}%</td>
+      <td style="${tdR}">${marginCell(c.grossUnknown, c.sales, c.margin)}</td>
     </tr>`).join('') : emptyRow(4);
   const prodRows = m.topProducts.length ? m.topProducts.map((p, i) => `
     <tr style="background:${zebra(i)}">
       <td style="${tdR}">${i + 1}</td>
       <td style="${td}overflow-wrap:anywhere;">${escapeHTML(p.name)}</td>
       <td style="${td}">${escapeHTML(p.cat)}</td>
-      <td style="${tdR}">${escapeHTML(String(fmtQty(p.qty)))} ${escapeHTML(p.unit || '')}</td>
+      <td style="${tdR}">${p.mixedUnit ? '単位混在' : escapeHTML(String(fmtQty(p.qty))) + ' ' + escapeHTML(p.unit || '')}</td>
       <td style="${tdR}">${yen(p.sales)}</td>
     </tr>`).join('') : emptyRow(5);
   const rank = m.ranking.slice(0, 20);
@@ -1492,7 +1654,7 @@ function buildReportHtml(m) {
       <td style="${td}">${escapeHTML(f.name)}</td>
       <td style="${tdR}">${yen(f.sales)}</td>
       <td style="${tdR}">${yen(f.avg)}</td>
-      <td style="${tdR}">${f.margin}%</td>
+      <td style="${tdR}">${marginCell(f.grossUnknown, f.sales, f.margin)}</td>
       <td style="${td}">${escapeHTML(f.repName)}</td>
     </tr>`).join('') : emptyRow(6);
 
@@ -1502,6 +1664,9 @@ function buildReportHtml(m) {
       <div style="flex:1;">
         <div style="font-size:20pt;letter-spacing:0.4em;color:#1e3a8a;border-bottom:1.5px solid #3b82f6;padding-bottom:2mm;display:inline-block;">${escapeHTML(m.title)}</div>
         <div style="margin-top:4mm;font-size:13pt;color:#1e40af;font-weight:bold;">${escapeHTML(m.periodLabel)}</div>
+        ${m.conditions ? `<table style="margin-top:2mm;border-collapse:collapse;font-size:8pt;color:#374151;">
+          ${m.conditions.map(([k2, v2]) => `<tr><td style="padding:0.3mm 2mm 0.3mm 0;white-space:nowrap;color:#1e3a8a;font-weight:bold;">${escapeHTML(k2)}</td><td style="padding:0.3mm 0;">${escapeHTML(v2)}</td></tr>`).join('')}
+        </table>` : ''}
       </div>
       <div style="width:70mm;font-size:8.5pt;color:#4b5563;">
         <div style="text-align:right;">発行日：${escapeHTML(m.issued)}</div>
@@ -1512,27 +1677,31 @@ function buildReportHtml(m) {
     ${secTitle(multi ? '期間サマリー' : '当月サマリー')}
     <table style="width:100%;border-collapse:collapse;margin-top:2mm;table-layout:fixed;">
       <tr>
-        <th style="${th}">純売上</th><th style="${th}">粗利額</th><th style="${th}">粗利率</th><th style="${th}">取引施設数</th>${multi ? `<th style="${th}">月平均売上</th>` : ''}
+        <th style="${th}">売上</th><th style="${th}">粗利</th><th style="${th}">粗利率</th>
+        <th style="${th}">前年より増えた・減った売上</th><th style="${th}">前年より増えた・減った粗利</th><th style="${th}">購入得意先数</th>
       </tr>
       <tr>
-        <td style="${tdR}font-size:11pt;">${yen(m.kpi.sales)}</td>
-        <td style="${tdR}font-size:11pt;">${yen(m.kpi.gross)}</td>
-        <td style="${tdR}font-size:11pt;">${m.kpi.rate}%</td>
-        <td style="${tdR}font-size:11pt;">${m.kpi.count}件</td>
-        ${multi ? `<td style="${tdR}font-size:11pt;">${yen(m.kpi.sales / m.monthly.length)}</td>` : ''}
+        <td style="${tdR}font-size:10.5pt;">${yen(kp.sales)}</td>
+        <td style="${tdR}font-size:10.5pt;">${grossOk ? yen(kp.gross) : '未確定'}</td>
+        <td style="${tdR}font-size:10.5pt;">${kp.rateOk ? kp.rate + '%' : (kp.sales > 0 ? '未確定' : '算出対象外')}</td>
+        <td style="${tdR}font-size:10.5pt;">${cmpCell(cp ? kp.sales - cp.sales : null, cp ? pctChange(kp.sales, cp.sales) : null, noCmp)}</td>
+        <td style="${tdR}font-size:10.5pt;">${cmpCell(cp && grossOk && cp.grossOk ? kp.gross - cp.gross : null, cp && grossOk && cp.grossOk ? pctChange(kp.gross, cp.gross) : null, cp ? '未確定' : noCmp)}</td>
+        <td style="${tdR}font-size:10.5pt;">${num(kp.buyers)}件${cp ? `<br><span style="font-size:8pt;color:#6b7280;">前年同期 ${num(cp.buyers)}件</span>` : ''}</td>
       </tr>
+      ${cp ? `<tr><td colspan="6" style="${td}font-size:8pt;color:#4b5563;">前年同期：売上 ${yen(cp.sales)} ／ 粗利 ${cp.grossOk ? yen(cp.gross) : '未確定'}。増減率は補助表示で、前年同期が0円以下なら算出しません。</td></tr>` : ''}
+      ${!grossOk ? `<tr><td colspan="6" style="${td}font-size:8pt;color:#92400e;">粗利額が不明な明細 ${num(kp.grossUnknown)}行（売上 ${yen(kp.grossUnknownSales)}）を含むため、粗利・粗利率は未確定です（確認済み分 ${yen(kp.gross)}）。</td></tr>` : ''}
     </table>
 
     ${multi ? `${secTitle('月別の推移')}
     <table style="width:100%;border-collapse:collapse;margin-top:2mm;table-layout:fixed;">
       <colgroup><col style="width:22%"><col style="width:22%"><col style="width:20%"><col style="width:16%"><col style="width:20%"></colgroup>
-      <tr><th style="${th}">月</th><th style="${th}">純売上</th><th style="${th}">粗利額</th><th style="${th}">粗利率</th><th style="${th}">取引施設数</th></tr>
+      <tr><th style="${th}">月</th><th style="${th}">売上</th><th style="${th}">粗利</th><th style="${th}">粗利率</th><th style="${th}">取引施設数</th></tr>
       ${monthRows}
       <tr>
         <td style="${td}font-weight:bold;color:#1e3a8a;background:#eff6ff;">合計</td>
         <td style="${tdR}font-weight:bold;background:#eff6ff;">${yen(m.kpi.sales)}</td>
-        <td style="${tdR}font-weight:bold;background:#eff6ff;">${yen(m.kpi.gross)}</td>
-        <td style="${tdR}font-weight:bold;background:#eff6ff;">${m.kpi.rate}%</td>
+        <td style="${tdR}font-weight:bold;background:#eff6ff;">${grossOk ? yen(m.kpi.gross) : '未確定'}</td>
+        <td style="${tdR}font-weight:bold;background:#eff6ff;">${m.kpi.rateOk ? m.kpi.rate + '%' : '—'}</td>
         <td style="${tdR}font-weight:bold;background:#eff6ff;">${m.kpi.count}件</td>
       </tr>
     </table>` : ''}
@@ -1559,8 +1728,9 @@ function buildReportHtml(m) {
     </table>
 
     <div style="margin-top:8mm;border:1px solid #bfdbfe;background:#eff6ff;padding:3mm;font-size:8.5pt;color:#4b5563;">
-      ※ 本レポートは売上分析ダッシュボードから自動生成されています。金額はすべて税抜・返品相殺後の純売上です。<br>
-      ※ 純売上・分類別売上・商品別ランキングは施設・個人を問わず全売上を集計しています。施設別ランキングのみ施設に限定しています。
+      ※ 本レポートは売上分析ダッシュボードから自動生成されています。金額はすべて税抜・返品／値引き反映後の売上です。<br>
+      ※ 売上・分類別売上・商品別ランキングは施設・個人を問わず全売上を集計しています。施設別ランキングのみ施設に限定しています。<br>
+      ※ 粗利は明細ごとの粗利額（売上－売れた数量の原価）の合計、粗利率は合計粗利÷合計売上です。単位が混在する商品の数量は合計していません。
     </div>
   </div>`;
 }
@@ -1874,7 +2044,7 @@ function buildSalesSearchHtml(m) {
   const thCost = 'background:#fef3c7;color:#92400e;font-size:8pt;padding:1.5mm 1.1mm;border:1px solid #fcd34d;font-weight:bold;';
   const tdCost = 'padding:1.4mm 1.1mm;border:1px solid #fde68a;background:#fffbeb;font-size:8.5pt;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;color:#92400e;font-weight:bold;';
   const body = m.rows.length ? m.rows.map((r, i) => {
-    const marginPct = r.amount > 0 ? Math.round(r.gross / r.amount * 1000) / 10 : null;
+    const marginPct = r.amount > 0 && r.gross !== null ? Math.round(r.gross / r.amount * 1000) / 10 : null;
     return `
     <tr style="background:${i % 2 === 1 ? '#f8fbff' : '#fff'}">
       <td style="${td}white-space:nowrap;">${escapeHTML(r.date)}</td>
@@ -1885,7 +2055,7 @@ function buildSalesSearchHtml(m) {
       <td style="${tdR}">${yen(r.amount)}</td>
       <td style="${tdCost}">${r.costPrice > 0 ? yen(r.costPrice) : '—'}</td>
       <td style="${tdCost}">${r.costPrice > 0 ? yen(r.qty * r.costPrice) : '—'}</td>
-      <td style="${tdR}">${yen(r.gross)}</td>
+      <td style="${tdR}">${r.gross === null ? '未取得' : yen(r.gross)}</td>
       <td style="${tdR}">${marginPct === null ? '—' : marginPct + '%'}</td>
     </tr>`;
   }).join('') : `<tr><td colspan="10" style="${td}text-align:center;color:#6b7280;">該当する取引はありません</td></tr>`;
@@ -1900,10 +2070,10 @@ function buildSalesSearchHtml(m) {
       </tr>
       <tr>
         <td style="${tdR}font-size:10.5pt;">${num(m.summary.count)}件</td>
-        <td style="${tdR}font-size:10.5pt;">${num(m.summary.qty)}</td>
+        <td style="${tdR}font-size:10.5pt;">${m.summary.mixedUnit ? '単位混在' : num(m.summary.qty)}</td>
         <td style="${tdR}font-size:10.5pt;">${yen(m.summary.sales)}</td>
         <td style="${tdR}font-size:10.5pt;">${yen(m.summary.cost)}</td>
-        <td style="${tdR}font-size:10.5pt;">${yen(m.summary.gross)}（${m.summary.rate}%）</td>
+        <td style="${tdR}font-size:10.5pt;">${m.summary.grossUnknown ? '未確定（粗利額のない明細 ' + num(m.summary.grossUnknown) + '件）' : yen(m.summary.gross) + '（' + m.summary.rate + '%）'}</td>
       </tr>
     </table>
 
@@ -2142,31 +2312,37 @@ function DeltaPill({ v, suffix }) {
   return <span className="bg-slate-100 text-slate-700 text-xs font-bold px-2 py-0.5 rounded-full tabular-nums">±0{suffix || '%'}</span>;
 }
 
-// 月途中の比較に使う進捗率（比較先の何％まで来たか）。比較先をもう超えた100%以上だけ緑にする。
-// 施設の注文は月1〜2回のまとめ買いが多く、日数の経過と比べて遅れ・進みの色を付けると誤解を招くため付けない
-function ProgressPill({ v }) {
-  return <span className={"inline-flex items-center text-xs font-bold px-2 py-0.5 rounded-full tabular-nums " + (v >= 100 ? 'bg-emerald-50 text-emerald-700' : 'bg-sky-50 text-sky-700')}>{v}%</span>;
+// 差額の表示。色だけに頼らないよう、符号と矢印も付ける
+function DiffText({ v, unit, className }) {
+  const cls = v > 0 ? 'text-emerald-700' : v < 0 ? 'text-rose-600' : 'text-slate-600';
+  const Icon = v > 0 ? ArrowUpRight : v < 0 ? ArrowDownRight : null;
+  const body = unit === 'pt' ? Math.abs(v).toFixed(1) + 'pt' : unit === '件' ? num(Math.abs(v)) + '件' : yen(Math.abs(v));
+  return (
+    <span className={"inline-flex items-center gap-0.5 tabular-nums font-bold " + cls + ' ' + (className || '')}>
+      {Icon && <Icon size={14} />}{v > 0 ? '+' : v < 0 ? '−' : '±'}{body}
+    </span>
+  );
 }
 
-// 締まった月どうしなら増減率、月途中なら進捗率を出す。値がなければ「—」
-function ComparePill({ delta, progress, inProgress, dashCls }) {
-  const v = inProgress ? progress : delta;
-  if (v === null || v === undefined) return <span className={dashCls || 'text-xs text-slate-400 font-bold'}>—</span>;
-  return inProgress ? <ProgressPill v={v} /> : <DeltaPill v={v} />;
+// 増減率は差額の補助として出す。比較対象が0以下・未取得なら「—」
+function RateSub({ v, className }) {
+  if (v === null || v === undefined) return <span className={"text-[11px] text-slate-500 font-bold " + (className || '')}>—</span>;
+  return <DeltaPill v={v} />;
 }
 
-// 月途中のため進捗率で表示していることを、表やカードの上で知らせる
-function ProgressNote({ children, className }) {
-  return <div className={"text-[11px] text-sky-800 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2 leading-relaxed " + (className || '')}>{children}</div>;
+// 集計条件や注意を表やカードの上で知らせる（tone: info=青 / warn=黄）
+function InfoNote({ children, className, tone }) {
+  const t = tone === 'warn' ? 'text-amber-900 bg-amber-50 border-amber-200' : 'text-sky-800 bg-sky-50 border-sky-200';
+  return <div className={"text-[11px] border rounded-lg px-3 py-2 leading-relaxed " + t + ' ' + (className || '')}>{children}</div>;
 }
 
-function KpiCard({ icon: Icon, tint, label, value, delta, deltaSuffix, progress, note, extra, onClick, emphasize }) {
+function KpiCard({ icon: Icon, tint, label, value, delta, deltaSuffix, note, extra, onClick, emphasize, title, linkLabel }) {
   return (
     <div onClick={onClick}
       className={"bg-white rounded-2xl p-4 flex-1 min-w-[160px] transition " +
         (emphasize ? 'border-2 border-teal-300 shadow-md ring-1 ring-teal-100' : 'border border-slate-200/70 shadow-sm hover:shadow-md') +
         (onClick ? ' cursor-pointer hover:border-sky-300 active:scale-[.99]' : '')}
-      title={onClick ? '施設別の内訳を見る' : undefined}>
+      title={title || (onClick ? '施設別の内訳を見る' : undefined)}>
       <div className="flex items-center justify-between gap-2">
         <span className={"inline-flex items-center justify-center w-9 h-9 rounded-xl shrink-0 " + tint}>
           <Icon size={17} />
@@ -2174,21 +2350,22 @@ function KpiCard({ icon: Icon, tint, label, value, delta, deltaSuffix, progress,
         <div className="flex items-center flex-wrap justify-end gap-1.5 min-w-0">
           {note && <span className="text-[10px] text-slate-600 font-bold text-right">{note}</span>}
           {delta !== undefined && <DeltaPill v={delta} suffix={deltaSuffix} />}
-          {progress !== undefined && <ProgressPill v={progress} />}
         </div>
       </div>
       <div className="text-2xl font-extrabold text-slate-800 tabular-nums mt-2.5 leading-none">{value}</div>
       <div className="text-xs text-slate-700 font-bold mt-1.5 flex items-center gap-1 flex-wrap">
         {label}
-        {onClick && <span className="text-[11px] text-sky-600 font-bold whitespace-nowrap">（施設別を見る）</span>}
+        {onClick && <span className="text-[11px] text-sky-600 font-bold whitespace-nowrap">（{linkLabel || '施設別を見る'}）</span>}
       </div>
       {extra && <div className="mt-2 pt-2 border-t border-slate-100">{extra}</div>}
     </div>
   );
 }
 
-// 施設別ランキング(buildPeriodReportのranking)2本を突き合わせ、当期・前期・差分を施設ごとに算出する。
-// metric: 'sales' | 'gross' | 'margin'。取引施設カード用に新規/離脱施設も判定できるようnameのSetも返す。
+// 施設別ランキング(buildPeriodReportのranking)2本を突き合わせ、当期・前年同期・差分を施設ごとに算出する。
+// metric: 'sales' | 'gross' | 'margin'。片方の期間にしか購入がない施設は onlyCur / onlyPrev で示す
+// （「新規」「離脱」とは断定しない。取引開始・終了かどうかは過去の履歴や事情の確認が要る）。
+// 粗利額が不明な明細を含む施設の粗利・粗利率は unknown=true にして差額を出さない。
 function buildFacilityComparison(curRanking, prevRanking, metric) {
   const curMap = new Map((curRanking || []).map(f => [f.name, f]));
   const prevMap = new Map((prevRanking || []).map(f => [f.name, f]));
@@ -2197,68 +2374,58 @@ function buildFacilityComparison(curRanking, prevRanking, metric) {
     const c = curMap.get(name), p = prevMap.get(name);
     const curVal = c ? (c[metric] ?? 0) : 0;
     const prevVal = p ? (p[metric] ?? 0) : 0;
+    const unknown = metric !== 'sales' && ((c && c.grossUnknown > 0) || (p && p.grossUnknown > 0));
     return {
       name,
       repName: (c || p).repName,
-      curVal, prevVal,
-      diff: curVal - prevVal,
-      isNew: !!c && !p,
-      isGone: !c && !!p,
+      curVal, prevVal, unknown,
+      diff: unknown ? null : curVal - prevVal,
+      pct: unknown || metric === 'margin' ? null : pctChange(curVal, prevVal),
+      onlyCur: !!c && !p,
+      onlyPrev: !c && !!p,
     };
   });
   // 粗利率は片方の期間に実績がない施設を除外する（存在しない側が便宜上0%扱いになり、
-  // 「0%→20%」のような取引実態のない変化が紛れ込んでしまうため。前年度・今年度の
-  // 両方に数字がある施設のみを比較対象とする）。
-  if (metric === 'margin') {
-    rows = rows.filter(r => !r.isNew && !r.isGone);
-  }
-  rows.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+  // 「0%→20%」のような取引実態のない変化が紛れ込んでしまうため。両方に数字がある施設のみ比較する）。
+  if (metric === 'margin') rows = rows.filter(r => !r.onlyCur && !r.onlyPrev);
+  // 金額は減少額が大きい施設から（率だけで重要度を決めない）。粗利率は差の大きい順。未確定は最後
+  rows.sort((a, b) => (a.diff === null) - (b.diff === null)
+    || (metric === 'margin' ? Math.abs(b.diff) - Math.abs(a.diff) : a.diff - b.diff));
   return rows;
 }
 
-// progress: 当期が月途中のとき { label: '前年進捗率' など, note: 月途中である旨の文 }。
-// 月途中の当期を締まった比較先と差額で比べると、まだ注文が来ていないだけの施設が「減少」「離脱」に
-// 見えるため、差額の代わりに進捗率（比較先の何％まで来たか）を出す。粗利率は率どうしの比較なので対象外
-function KpiDrilldownModal({ title, curLabel, prevLabel, curRanking, prevRanking, metric, unit, progress, onClose }) {
-  const prog = progress && metric !== 'margin' ? progress : null;
-  const rows = React.useMemo(() => {
-    const list = buildFacilityComparison(curRanking, prevRanking, metric);
-    // 月途中は、比較先に届いていない額が大きい施設から並べる
-    return prog ? list.slice().sort((a, b) => a.diff - b.diff) : list;
-  }, [curRanking, prevRanking, metric, prog]);
+// KPIカードの施設別内訳。curLabel/prevLabel は日付の範囲（例: 2026/10/1〜2026/10/27）。
+// note: 月途中などの注意文。prevCovered=false なら前年データ未取得として差額を出さない。
+function KpiDrilldownModal({ title, curLabel, prevLabel, curRanking, prevRanking, metric, unit, note, inProgress, prevCovered, onJump, onClose }) {
+  const rows = React.useMemo(() => buildFacilityComparison(curRanking, prevCovered ? prevRanking : [], metric), [curRanking, prevRanking, metric, prevCovered]);
   const fmt = (v) => unit === '%' ? v.toFixed(1) + '%' : yen(v);
-  const fmtDiff = (v) => unit === '%' ? (v > 0 ? '+' : '') + v.toFixed(1) + 'pt' : (v > 0 ? '+' : '') + yen(v);
   const increased = rows.filter(r => r.diff > 0).length;
   const decreased = rows.filter(r => r.diff < 0).length;
-  const reached = rows.filter(r => r.prevVal > 0 && r.curVal >= r.prevVal).length;
-  const notYet = rows.filter(r => r.isGone).length;
+  const decTotal = rows.reduce((t, r) => t + (r.diff < 0 ? r.diff : 0), 0);
   return (
     <div className="fixed inset-0 z-40 bg-slate-600/50 backdrop-blur-sm overflow-auto py-8 px-4 no-print" onClick={onClose}>
-      <div className="max-w-2xl mx-auto bg-white rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+      <div className="max-w-3xl mx-auto bg-white rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
         <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-3 bg-gradient-to-r from-sky-50 to-blue-50">
           <span className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-sky-100 text-sky-600"><Building2 size={17} /></span>
           <div className="flex-1 min-w-0">
-            <div className="font-extrabold text-slate-800">{title}：施設別の{prog ? '進捗' : '増減'}</div>
-            <div className="text-[11px] text-slate-600">{prevLabel} → {curLabel}</div>
+            <div className="font-extrabold text-slate-800">{title}：施設別の前年同期比較</div>
+            <div className="text-[11px] text-slate-600">当期 {curLabel} ／ 前年同期 {prevLabel}（税抜）</div>
           </div>
           <button onClick={onClose} className="text-slate-600 hover:text-slate-800 transition"><X size={20} /></button>
         </div>
-        {prog ? (
-          <div className="px-6 pt-4 space-y-2">
-            <div className="flex gap-4 text-xs font-bold">
-              <span className="text-emerald-600">100%以上 {reached}施設</span>
-              <span className="text-slate-600">まだ売上なし {notYet}施設</span>
+        <div className="px-6 pt-4 space-y-2">
+          {prevCovered ? (
+            <div className="flex gap-4 text-xs font-bold flex-wrap">
+              <span className="text-emerald-700">増加 {increased}施設</span>
+              <span className="text-rose-600">減少 {decreased}施設</span>
+              {unit !== '%' && decreased > 0 && <span className="text-slate-700">減少額の合計 <DiffText v={decTotal} /></span>}
             </div>
-            <ProgressNote>
-              {prog.note}{prevLabel}の売上に対して何％まで来たかを「{prog.label}」で表示しています。
-            </ProgressNote>
-          </div>
-        ) : (
-          <div className="px-6 pt-4 flex gap-4 text-xs text-slate-600 font-bold">
-            <span className="text-emerald-600">増加 {increased}施設</span>
-            <span className="text-rose-600">減少 {decreased}施設</span>
-          </div>
-        )}
+          ) : (
+            <InfoNote tone="warn">前年同期（{prevLabel}）の明細が取り込まれていないため、比較できません。当期の数字だけを表示しています。</InfoNote>
+          )}
+          {note && <InfoNote>{note}</InfoNote>}
+          {onJump && <div className="text-[11px] text-slate-600">施設名を押すと、その施設の明細・内訳へ進みます。</div>}
+        </div>
         <div className="max-h-[60vh] overflow-auto px-6 py-4">
           {rows.length === 0 ? (
             <div className="text-sm text-slate-600 text-center py-6">比較できるデータがありません。</div>
@@ -2267,30 +2434,107 @@ function KpiDrilldownModal({ title, curLabel, prevLabel, curRanking, prevRanking
               <thead>
                 <tr className="text-slate-600 border-b border-slate-200">
                   <th className="text-left font-bold py-2">施設名</th>
-                  <th className="text-right font-bold py-2">{prevLabel}</th>
-                  <th className="text-right font-bold py-2">{curLabel}</th>
-                  <th className="text-right font-bold py-2">{prog ? prog.label : '増減'}</th>
+                  {prevCovered && <th className="text-right font-bold py-2 whitespace-nowrap">前年同期</th>}
+                  <th className="text-right font-bold py-2 whitespace-nowrap">当期</th>
+                  {prevCovered && <th className="text-right font-bold py-2 whitespace-nowrap">差額</th>}
+                  {prevCovered && unit !== '%' && <th className="text-right font-bold py-2 whitespace-nowrap">増減率</th>}
                 </tr>
               </thead>
               <tbody>
                 {rows.map(r => (
                   <tr key={r.name} className="border-b border-slate-100">
                     <td className="py-2 text-slate-800 font-bold">
-                      {r.name}
-                      {r.isNew && <span className="ml-1.5 text-[10px] text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-full font-bold">新規</span>}
-                      {r.isGone && <span className="ml-1.5 text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-full font-bold">{prog ? '未購入' : '離脱'}</span>}
+                      {onJump ? <button onClick={() => onJump(r.name)} className="text-left hover:text-sky-700 hover:underline">{r.name}</button> : r.name}
+                      {prevCovered && r.onlyCur && <span className="ml-1.5 text-[10px] text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-full font-bold whitespace-nowrap">前年同期は購入なし</span>}
+                      {r.onlyPrev && <span className="ml-1.5 text-[10px] text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-full font-bold whitespace-nowrap">{inProgress ? '当期はまだ購入なし' : '当期は購入なし'}</span>}
                     </td>
-                    <td className="py-2 text-right text-slate-600 tabular-nums">{fmt(r.prevVal)}</td>
-                    <td className="py-2 text-right text-slate-800 tabular-nums font-bold">{fmt(r.curVal)}</td>
-                    {prog ? (
-                      <td className="py-2 text-right"><ComparePill progress={progressPct(r.curVal, r.prevVal)} inProgress /></td>
-                    ) : (
-                      <td className={"py-2 text-right tabular-nums font-bold " + (r.diff > 0 ? 'text-emerald-600' : r.diff < 0 ? 'text-rose-600' : 'text-slate-500')}>{fmtDiff(r.diff)}</td>
-                    )}
+                    {prevCovered && <td className="py-2 text-right text-slate-600 tabular-nums">{r.unknown ? '未確定' : fmt(r.prevVal)}</td>}
+                    <td className="py-2 text-right text-slate-800 tabular-nums font-bold">{r.unknown ? '未確定' : fmt(r.curVal)}</td>
+                    {prevCovered && <td className="py-2 text-right">{r.diff === null ? <span className="text-slate-500">—</span> : <DiffText v={r.diff} unit={unit === '%' ? 'pt' : undefined} />}</td>}
+                    {prevCovered && unit !== '%' && <td className="py-2 text-right"><RateSub v={r.pct} /></td>}
                   </tr>
                 ))}
               </tbody>
             </table>
+          )}
+        </div>
+        <div className="px-6 py-4 flex justify-end border-t border-slate-100">
+          <button onClick={onClose} className="bg-slate-100 hover:bg-slate-200 active:scale-[.98] text-slate-700 px-4 py-2.5 rounded-xl text-sm font-bold transition">閉じる</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 購入得意先の内訳：前年同期と当期の両方に購入（継続）／当期だけ／前年同期だけ。
+// 「取得データ内で初購入」は、取り込んだ全明細の中で最初の購入が当期にある得意先（それ以前の履歴が
+// 取り込まれていなければ、営業所としての新規取引とは断定できない）。継続購入率は締め済みの期間だけで出す。
+// curCustomers/prevCustomers は buildPeriodReport の customers。firstBuy は得意先→最初の購入日（sort値）。
+// rate は比較元（前年同期）の購入先のうち当期も購入した割合（％、比較元0件なら null）
+function buyerBreakdown(curCustomers, prevCustomers, firstBuy, curStartSort) {
+  const curB = curCustomers.filter(c => c.sales > 0);
+  const prevB = prevCustomers.filter(c => c.sales > 0);
+  const prevSet = new Set(prevB.map(c => c.name)), curSet = new Set(curB.map(c => c.name));
+  const both = curB.filter(c => prevSet.has(c.name));
+  const curOnly = curB.filter(c => !prevSet.has(c.name));
+  const prevOnly = prevB.filter(c => !curSet.has(c.name));
+  const firstInData = curOnly.filter(c => (firstBuy.get(c.name) || 0) >= curStartSort);
+  return { curB, prevB, both, curOnly, prevOnly, firstInData, rate: prevB.length ? Math.round(both.length / prevB.length * 1000) / 10 : null };
+}
+
+function BuyersModal({ curRep, prevRep, win, firstBuy, dataFrom, onJump, onClose }) {
+  const curStartSort = Math.floor(win.cur.from / 12) * 10000 + (win.cur.from % 12 + 1) * 100 + 1;
+  const { prevB, both, curOnly, prevOnly, firstInData, rate } = buyerBreakdown(curRep.customers, prevRep ? prevRep.customers : [], firstBuy, curStartSort);
+  // 継続購入率は締め済みの同じ長さの期間どうしで出す（月途中の「まだ購入なし」を離脱と数えない）
+  const rateOk = !!prevRep && !win.inProgress && rate !== null;
+  const Group = ({ title, list, hint }) => {
+    const facs = list.filter(c => c.type === 'facility').sort((a, b) => b.sales - a.sales);
+    const others = list.length - facs.length;
+    return (
+      <div>
+        <div className="text-xs font-bold text-slate-800 mb-1">{title}：{num(list.length)}件 <span className="text-slate-600 font-normal">（施設 {num(facs.length)}・個人ほか {num(others)}）</span></div>
+        {hint && <div className="text-[11px] text-slate-600 mb-1">{hint}</div>}
+        <div className="flex flex-wrap gap-1.5">
+          {facs.slice(0, 40).map(c => (
+            <button key={c.name} onClick={() => onJump(c.name)} className="text-[11px] font-bold bg-slate-100 hover:bg-sky-100 text-slate-700 px-2 py-1 rounded-lg">
+              {c.name}{firstInData.includes(c) ? '（取得データ内で初購入）' : ''}
+            </button>
+          ))}
+          {facs.length > 40 && <span className="text-[11px] text-slate-600">…他 {num(facs.length - 40)}施設</span>}
+        </div>
+      </div>
+    );
+  };
+  return (
+    <div className="fixed inset-0 z-40 bg-slate-600/50 backdrop-blur-sm overflow-auto py-8 px-4 no-print" onClick={onClose}>
+      <div className="max-w-3xl mx-auto bg-white rounded-2xl shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-3 bg-gradient-to-r from-sky-50 to-blue-50">
+          <span className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-sky-100 text-sky-600"><Users size={17} /></span>
+          <div className="flex-1 min-w-0">
+            <div className="font-extrabold text-slate-800">購入得意先の内訳</div>
+            <div className="text-[11px] text-slate-600">当期 {win.curRange} ／ 前年同期 {win.prevRange}</div>
+          </div>
+          <button onClick={onClose} className="text-slate-600 hover:text-slate-800 transition"><X size={20} /></button>
+        </div>
+        <div className="px-6 py-4 space-y-4 max-h-[65vh] overflow-auto">
+          <InfoNote>購入得意先＝期間内の売上（返品・値引き後）がプラスの得意先（お客様名）の数。同じ得意先の複数伝票は1件と数えます。</InfoNote>
+          {!prevRep ? (
+            <InfoNote tone="warn">前年同期の明細が取り込まれていないため、継続・当期のみの区別はできません。</InfoNote>
+          ) : (
+            <>
+              <div className="text-sm font-bold text-slate-800">
+                継続購入率：{rateOk ? rate.toFixed(1) + '%' : '—'}
+                <span className="text-[11px] text-slate-600 font-normal ml-2">
+                  {rateOk ? '（前年同期の購入先 ' + num(prevB.length) + '件のうち、当期も購入 ' + num(both.length) + '件）'
+                    : win.inProgress ? '（月途中のため算出しません。締め済みの月で確認してください）' : '（前年同期の購入先がないため算出対象外）'}
+                </span>
+              </div>
+              <Group title="前年同期・当期とも購入" list={both} />
+              <Group title="当期だけ購入" list={curOnly}
+                hint={'うち取得データ内で初購入：' + num(firstInData.length) + '件（取込済みデータは ' + dataFrom + ' から。それ以前の取引は分からないため「新規」とは断定しません）'} />
+              <Group title={win.inProgress ? '前年同期だけ購入（当期はまだ購入なし）' : '前年同期だけ購入（当期は購入なし）'} list={prevOnly}
+                hint={win.inProgress ? '月の途中です。これから購入される場合があり、取引終了とは判定しません。' : '購入がなかった事実だけを示します。理由（購入時期の変更・利用量など）は確認が必要です。'} />
+            </>
           )}
         </div>
         <div className="px-6 py-4 flex justify-end border-t border-slate-100">
@@ -2583,10 +2827,12 @@ function EmptyState({ goImport }) {
 /* ============================================================
    画面1: ダッシュボード
 ============================================================ */
-function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office, showToast }) {
+function DashboardView({ data, rows, masters, meta, jumpToFacility, openPrint, office, showToast, goTab }) {
   const [repType, setRepType] = useState('month');
   const [consumableOnly, setConsumableOnly] = useState(false);
   const [drilldown, setDrilldown] = useState(null); // KPIカードの施設別内訳モーダル
+  const [buyersOpen, setBuyersOpen] = useState(false);
+  const [prodSort, setProdSort] = useState('sales'); // 商品TOP10：売上順／粗利順
   const [repMonth, setRepMonth] = useState(data.baseIdx);
   const [repFy, setRepFy] = useState(Math.floor(fiscalStartIdx(data.baseIdx) / 12));
   const [customFrom, setCustomFrom] = useState(data.monthsAll[0] ?? data.baseIdx);
@@ -2603,59 +2849,48 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
   const fiscalYears = useMemo(() =>
     [...new Set(data.monthsAll.map(i => Math.floor(fiscalStartIdx(i) / 12)))].sort((a, b) => b - a), [data]);
 
-  // 選んだ期間と、その1つ前の期間（前期比の計算用）
+  // 選んだ期間。比較はどの種類も「前年の同じ期間」（月途中なら同じ日まで）
   const spec = useMemo(() => {
     if (repType === 'fy') {
-      return { from: repFy * 12 + 3, to: repFy * 12 + 14, prevFrom: (repFy - 1) * 12 + 3, prevTo: (repFy - 1) * 12 + 14,
-        title: '年度売上レポート', label: repFy + '年度（' + repFy + '年4月〜' + (repFy + 1) + '年3月）', short: repFy + '年度', file: repFy + '年度', prevName: '前年度' };
+      return { from: repFy * 12 + 3, to: repFy * 12 + 14,
+        title: '年度売上レポート', label: repFy + '年度（' + repFy + '年4月〜' + (repFy + 1) + '年3月）', short: repFy + '年度', file: repFy + '年度' };
     }
     if (repType === 'trend') {
       const a = data.monthsAll[0] ?? 0, b = data.monthsAll[data.monthsAll.length - 1] ?? 0;
-      return { from: a, to: b, prevFrom: null, prevTo: null,
-        title: '月別推移レポート', label: idxLabel(a) + ' 〜 ' + idxLabel(b) + '（全期間）', short: '全期間', file: '全期間', prevName: '' };
+      return { from: a, to: b, noCompare: true,
+        title: '月別推移レポート', label: idxLabel(a) + ' 〜 ' + idxLabel(b) + '（全期間）', short: '全期間', file: '全期間' };
     }
     if (repType === 'custom') {
       const from = Math.min(customFrom, customTo), to = Math.max(customFrom, customTo);
-      const span = to - from + 1;
-      return { from, to, prevFrom: from - span, prevTo: from - 1,
+      return { from, to,
         title: '期間指定レポート', label: idxLabel(from) + ' 〜 ' + idxLabel(to), short: idxLabel(from) + '〜' + idxLabel(to),
-        file: idxLabel(from) + '-' + idxLabel(to), prevName: '前期' };
+        file: idxLabel(from) + '-' + idxLabel(to) };
     }
-    return { from: repMonth, to: repMonth, prevFrom: repMonth - 1, prevTo: repMonth - 1,
-      title: '月次売上レポート', label: idxLabel(repMonth), short: idxLabel(repMonth), file: idxLabel(repMonth), prevName: '前月' };
+    return { from: repMonth, to: repMonth,
+      title: '月次売上レポート', label: idxLabel(repMonth), short: idxLabel(repMonth), file: idxLabel(repMonth) };
   }, [repType, repMonth, repFy, customFrom, customTo, data]);
 
+  // 比較条件（当期・前年同期の日付範囲、月途中、前年データの有無）
+  const win = useMemo(() => comparisonWindow(spec.from, spec.to, data.latestDate, data.firstDate), [spec, data.latestDate, data.firstDate]);
   // 画面表示・帳票の両方がこの集計を参照する
-  const rep = useMemo(() => buildPeriodReport(rows, masters, spec.from, spec.to, consumableOnly), [rows, masters, spec, consumableOnly]);
-  const prevRep = useMemo(() => (spec.prevFrom === null ? null : buildPeriodReport(rows, masters, spec.prevFrom, spec.prevTo, consumableOnly)), [rows, masters, spec, consumableOnly]);
-  const hasPrev = !!(prevRep && prevRep.kpi.count > 0);
-  const pct = (now, base) => (hasPrev && base !== 0 ? Math.round((now - base) / Math.abs(base) * 100) : null);
-  const momSales = prevRep ? pct(rep.kpi.sales, prevRep.kpi.sales) : null;
-  const momGross = prevRep ? pct(rep.kpi.gross, prevRep.kpi.gross) : null;
-  // 選んだ期間が月途中なら、締まった前期・前年との比較は増減率でなく進捗率で表す
-  const prog = useMemo(() => periodProgress(spec.from, spec.to, data.latestDate), [spec, data.latestDate]);
-  const curLabel = prog ? spec.label + '（' + prog.asOfLabel + 'まで）' : spec.label;
-  const progSales = prevRep ? progressPct(rep.kpi.sales, prevRep.kpi.sales, hasPrev) : null;
-  const progGross = prevRep ? progressPct(rep.kpi.gross, prevRep.kpi.gross, hasPrev) : null;
-  const progNote = !prog || repType === 'trend' ? '' :
-    (repType === 'month' ? idxLabel(spec.from) + 'はまだ月の途中です' : repType === 'fy' ? spec.short + 'はまだ途中です' : '選んだ期間はまだ途中です') +
-    '（データは' + prog.asOfLabel + 'まで・' + (repType === 'month' ? '月' : repType === 'fy' ? '年度' : '期間') + 'の経過 ' + prog.pace + '%）。';
-
-  // 前年同月比（月次モードのときだけ意味を持つ）
-  const yoyRep = useMemo(() => (repType === 'month' ? buildPeriodReport(rows, masters, repMonth - 12, repMonth - 12, consumableOnly) : null), [repType, repMonth, rows, masters, consumableOnly]);
-  const hasYoy = !!(yoyRep && yoyRep.kpi.count > 0);
-  const pctYoy = (now, base) => (hasYoy && base !== 0 ? Math.round((now - base) / Math.abs(base) * 100) : null);
-  const yoyPctSales = yoyRep ? pctYoy(rep.kpi.sales, yoyRep.kpi.sales) : null;
-  const yoyPctGross = yoyRep ? pctYoy(rep.kpi.gross, yoyRep.kpi.gross) : null;
-  const yoyProgSales = yoyRep ? progressPct(rep.kpi.sales, yoyRep.kpi.sales, hasYoy) : null;
-  const yoyProgGross = yoyRep ? progressPct(rep.kpi.gross, yoyRep.kpi.gross, hasYoy) : null;
-  const yoyLabel = repType === 'month' ? idxLabel(repMonth - 12) : '';
-  // KPIカードの施設別ドリルダウン用：月次モードは前年同月、それ以外は選択期間の直前と比較する
-  const compareRep = repType === 'month' ? yoyRep : prevRep;
-  const compareLabel = repType === 'month' ? (yoyLabel + '（前年同月）') : (spec.prevName || '前期');
-  const compareProgress = progNote ? { label: repType === 'month' ? '前年進捗率' : spec.prevName + '進捗率', note: progNote } : null;
-  const drill = (title, metric, unit) => setDrilldown({ title, curLabel, prevLabel: compareLabel,
-    curRanking: rep.ranking, prevRanking: compareRep ? compareRep.ranking : [], metric, unit, progress: compareProgress });
+  const rep = useMemo(() => buildPeriodReport(rows, masters, spec.from, spec.to, consumableOnly, win && win.cur.cutoff), [rows, masters, spec, consumableOnly, win]);
+  const prevRep = useMemo(() => (!win || spec.noCompare || !win.prevCovered ? null
+    : buildPeriodReport(rows, masters, win.prev.from, win.prev.to, consumableOnly, win.prev.cutoff)), [rows, masters, spec, consumableOnly, win]);
+  const k = rep.kpi, pk = prevRep ? prevRep.kpi : null;
+  const grossOk = k.grossUnknown === 0;
+  const prevGrossOk = !!pk && pk.grossUnknown === 0;
+  const salesDiff = pk ? k.sales - pk.sales : null;
+  const grossDiff = pk && grossOk && prevGrossOk ? k.gross - pk.gross : null;
+  // 得意先ごとの最初の購入日（取得データ内での初購入の判定用）
+  const firstBuy = useMemo(() => {
+    const m = new Map();
+    for (const r of rows) {
+      if (!((+r[7] || 0) > 0)) continue;
+      const d = parseDateStr(r[1]);
+      if (d && (!m.has(r[2]) || d.sort < m.get(r[2]))) m.set(r[2], d.sort);
+    }
+    return m;
+  }, [rows]);
 
   // 推移グラフ: 月次は選んだ月までの12ヶ月、それ以外は期間内の各月
   const chartRep = useMemo(() => (repType === 'month' ? buildPeriodReport(rows, masters, repMonth - 11, repMonth, consumableOnly) : rep),
@@ -2667,31 +2902,45 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
 
   const facTop = rep.ranking.filter(f => f.sales > 0).slice(0, 10);
   const facMax = facTop.length ? facTop[0].sales : 1;
-  const topProducts = rep.topProducts;
+  // 上位得意先（施設）への集中：上位1・5施設の売上 ÷ 施設売上の合計（合計が正のときだけ）
+  const conc = useMemo(() => {
+    const total = rep.ranking.reduce((t, f) => t + f.sales, 0);
+    if (!(total > 0)) return null;
+    const top = rep.ranking.filter(f => f.sales > 0);
+    const share = (n) => Math.round(top.slice(0, n).reduce((t, f) => t + f.sales, 0) / total * 1000) / 10;
+    return { total, top1: share(1), top5: share(5), n: top.length };
+  }, [rep]);
+  const topProducts = prodSort === 'gross' ? rep.topProductsGross : rep.topProducts;
 
-  // 今年度累計（期間の選択とは別に、常に4月〜基準月で表示）。全売上ベースなので data.reps（施設のみ）ではなく
-  // buildPeriodReport を年度範囲で直接呼び出す。
-  const fyRepCur = useMemo(() => (data.baseIdx == null ? null :
-    buildPeriodReport(rows, masters, fiscalStartIdx(data.baseIdx), data.baseIdx, consumableOnly)), [rows, masters, data.baseIdx, consumableOnly]);
-  const fyRepPrev = useMemo(() => (data.baseIdx == null ? null :
-    buildPeriodReport(rows, masters, fiscalStartIdx(data.baseIdx) - 12, data.baseIdx - 12, consumableOnly)), [rows, masters, data.baseIdx, consumableOnly]);
-  const fyHasPrev = !!(fyRepPrev && fyRepPrev.monthly.length > 0);
-  const fyTotal = useMemo(() => {
-    const s = fyRepCur ? fyRepCur.kpi.sales : 0, p = fyRepPrev ? fyRepPrev.kpi.sales : 0;
-    return { sales: s, prevSales: p, pct: fyHasPrev && p !== 0 ? Math.round((s - p) / Math.abs(p) * 100) : null,
-      prog: progressPct(s, p, fyHasPrev) };
-  }, [fyRepCur, fyRepPrev, fyHasPrev]);
-  const fyProg = data.fyProgress;   // 今年度累計（4月〜基準月）が月途中を含むか
-  const fyPrevLabel = data.fyLabel ? (parseInt(data.fyLabel, 10) - 1) + '年度' : '';
-  const fyPrevRangeLabel = useMemo(() => {
-    if (data.baseIdx == null) return '';
-    const fyStart = fiscalStartIdx(data.baseIdx);
-    return idxLabel(fyStart - 12) + '〜' + idxLabel(data.baseIdx - 12);
-  }, [data.baseIdx]);
+  const curRange = win ? win.curRange : spec.label;
+  const prevRange = win ? win.prevRange : '';
+  const dataRange = data.firstDate ? dateLabel(data.firstDate.idx, data.firstDate.d) + '〜' + dateLabel(data.latestDate.idx, data.latestDate.d) : '—';
+  const lastImport = meta && meta.lastImport ? stampToLocalDate(meta.lastImport) : '—';
+  const scopeLabel = consumableOnly ? '消耗品のみ（住宅改修・器具本体・部材と個人受給者向けを除く）' : '全売上（施設・個人を含む）';
+  const showCompare = !spec.noCompare;
+  const inProgNote = win && win.inProgress && showCompare
+    ? '月の途中です。前年も同じ日（' + dateLabel(win.prev.cutoff ? win.prev.cutoff.idx : win.prev.to, win.prev.cutoff ? win.prev.cutoff.d : 1) + '）までで比べています' +
+      (win.dayAdjusted ? '（前年に同じ日がないため前年は月末まで）' : '') + '。'
+    : '';
+
+  const drill = (title, metric, unit) => setDrilldown({ title, metric, unit, curLabel: curRange, prevLabel: prevRange,
+    curRanking: rep.ranking, prevRanking: prevRep ? prevRep.ranking : [], prevCovered: !!prevRep, inProgress: !!(win && win.inProgress),
+    note: inProgNote });
+  const jumpFromModal = (name) => { setDrilldown(null); setBuyersOpen(false); jumpToFacility(name); };
 
   const buildHtml = () => {
-    if (rep.kpi.count === 0) return null;
-    return buildReportHtml({ ...rep, title: spec.title, periodLabel: curLabel, issued: todayLabel(), office });
+    if (rep.kpi.sales === 0 && rep.monthly.length === 0) return null;
+    return buildReportHtml({ ...rep, title: spec.title, periodLabel: spec.label, issued: todayLabel(), office,
+      conditions: [
+        ['対象期間', curRange],
+        ['比較期間', showCompare ? (prevRep ? '前年同期 ' + prevRange : '前年同期 ' + prevRange + '（データ未取得のため比較なし）') : 'なし'],
+        ['金額', '税抜（販売管理システムの「金額」。返品・値引きを反映）'],
+        ['集計対象', scopeLabel],
+        ['集計時点', todayLabel() + '（取込済みデータ ' + dataRange + '・最終取込 ' + lastImport + '）'],
+      ],
+      compare: showCompare && prevRep ? { sales: pk.sales, gross: pk.gross, grossOk: prevGrossOk, buyers: pk.buyers } : null,
+      compareMissing: showCompare && !prevRep,
+    });
   };
   const handlePrint = () => {
     const html = buildHtml();
@@ -2712,6 +2961,13 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
   };
 
   const selCls = 'h-10 w-full px-3 rounded-xl border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-600';
+  const notCovered = showCompare && win && !win.prevCovered;
+  const prevLine = (v) => (
+    <div className="flex items-center justify-between gap-2 text-[11px]">
+      <span className="text-slate-600 font-bold">前年同期</span>
+      <span className="text-slate-800 font-bold tabular-nums">{v}</span>
+    </div>
+  );
 
   return (
     <div className="space-y-5">
@@ -2759,17 +3015,27 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
             </button>
           </div>
         </div>
-        <div className="text-[11px] text-slate-600 mt-3 leading-relaxed">
-          選んだ期間は<b className="text-slate-600">この画面の数字とレポートの両方</b>に反映されます（対象: {spec.label}）。
-          月次＝選んだ1ヶ月分 ／ 年度＝4月〜翌3月 ／ 期間指定＝好きな月から月までを自由に選択 ／ 月別推移＝全期間。
+        {/* 集計条件：画面と帳票の数字がどの範囲のものかを常に示す */}
+        <dl className="mt-3 grid sm:grid-cols-2 lg:grid-cols-3 gap-x-5 gap-y-1 text-[11px] text-slate-700">
+          <div><dt className="inline font-bold text-slate-600">対象期間：</dt><dd className="inline tabular-nums">{curRange}</dd></div>
+          <div><dt className="inline font-bold text-slate-600">比較期間：</dt><dd className="inline tabular-nums">{showCompare ? '前年同期 ' + prevRange : 'なし（全期間）'}</dd></div>
+          <div><dt className="inline font-bold text-slate-600">金額：</dt><dd className="inline">税抜・返品／値引き反映後</dd></div>
+          <div><dt className="inline font-bold text-slate-600">営業所：</dt><dd className="inline">{office || '未設定'}</dd></div>
+          <div><dt className="inline font-bold text-slate-600">取込済みデータ：</dt><dd className="inline tabular-nums">{dataRange}</dd></div>
+          <div><dt className="inline font-bold text-slate-600">最終取込：</dt><dd className="inline tabular-nums">{lastImport}</dd></div>
+        </dl>
+        <div className="mt-2 space-y-1.5">
+          {inProgNote && <InfoNote>{inProgNote}当期は取り込んだ最終売上日（{dateLabel(win.asOf.idx, win.asOf.d)}）までの数字です。</InfoNote>}
+          {win && win.short && <InfoNote tone="warn">締め済みの期間ですが、取込済みデータは {dateLabel(win.asOf.idx, win.asOf.d)} までです。期間の最後まで取り込まれていない可能性があります（取得不足）。</InfoNote>}
+          {notCovered && <InfoNote tone="warn">前年同期（{prevRange}）の明細が取り込まれていないため、前年との比較は表示しません（取込済みデータは {dataRange}）。0円とは区別しています。</InfoNote>}
         </div>
       </Card>
 
-      {/* KPIカード */}
+      {/* 6指標 */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <h2 className="text-sm font-bold text-slate-700">
           {repType === 'month' ? '月次サマリー' : repType === 'trend' ? '全期間サマリー' : '期間サマリー'}
-          <span className="text-slate-600 font-normal">（{spec.label}{prog ? '・' + prog.asOfLabel + 'まで' : ''}）</span>
+          <span className="text-slate-600 font-normal tabular-nums">（{curRange}）</span>
         </h2>
         <button onClick={() => setConsumableOnly(v => !v)} title="住宅改修・器具本体等を除いた、消耗品の売上だけで集計します"
           className={"h-8 px-3 rounded-full text-xs font-bold border transition inline-flex items-center gap-1.5 shrink-0 " +
@@ -2777,62 +3043,85 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
           <Filter size={13} /> 消耗品のみ
         </button>
       </div>
-      {progNote && (
-        <ProgressNote className="-mt-2">
-          {progNote}{repType === 'month' ? '前月・前年同月' : spec.prevName}との比較は、増減率ではなく<b>何％まで来たか（進捗率）</b>で表示しています。
-        </ProgressNote>
-      )}
       {consumableOnly && (
         <div className="text-[11px] text-sky-700 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2 -mt-2">
           消耗品のみ表示中：住宅改修・車いす等の器具本体・部材と、個人（地域包括支援センター経由等）向けとみられる売上を除いて集計しています。
         </div>
       )}
-      <div className="flex gap-3 flex-wrap">
-        <KpiCard icon={JapaneseYen} tint="bg-blue-50 text-blue-600" label="純売上" value={yen(rep.kpi.sales)}
-          delta={prog || momSales === null ? undefined : momSales}
-          progress={prog && progSales !== null ? progSales : undefined}
-          note={spec.prevName ? spec.prevName + (prog ? '進捗率' : '比') : '全期間'}
-          onClick={() => drill('純売上', 'sales', '¥')}
-          extra={repType === 'month' && (
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <span className="text-[11px] text-slate-600 font-bold whitespace-nowrap">{prog ? '前年進捗率' : '前年同月比'}（{yoyLabel}）</span>
-              <ComparePill delta={yoyPctSales} progress={yoyProgSales} inProgress={!!prog} dashCls="text-[11px] text-slate-500 font-bold" />
+      <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3">
+        <KpiCard icon={JapaneseYen} tint="bg-blue-50 text-blue-600" label="売上" value={yen(k.sales)} note="税抜"
+          onClick={() => drill('売上', 'sales', '¥')}
+          extra={showCompare && pk ? prevLine(yen(pk.sales)) : null} />
+        <KpiCard icon={Coins} tint="bg-emerald-50 text-emerald-600" label="粗利（売上－売れた商品の原価）"
+          value={grossOk ? yen(k.gross) : '未確定'} note="税抜"
+          onClick={() => drill('粗利', 'gross', '¥')}
+          extra={!grossOk ? (
+            <div className="text-[11px] text-amber-800 leading-snug">粗利額が不明な明細 {num(k.grossUnknown)}行（売上 {yen(k.grossUnknownSales)}）を含むため未確定。確認済み分のみ：{yen(k.gross)}</div>
+          ) : showCompare && pk ? prevLine(prevGrossOk ? yen(pk.gross) : '未確定') : null} />
+        <KpiCard icon={Percent} tint="bg-violet-50 text-violet-600" label="粗利率（合計粗利 ÷ 合計売上）"
+          value={k.rateOk ? k.rate + '%' : (k.sales > 0 ? '未確定' : '算出対象外')}
+          onClick={() => drill('粗利率', 'margin', '%')}
+          extra={showCompare && pk ? prevLine(pk.rateOk ? pk.rate + '%' : (pk.sales > 0 ? '未確定' : '算出対象外')) : null} />
+        <KpiCard icon={TrendingUp} tint="bg-sky-50 text-sky-600" label="前年より増えた・減った売上"
+          value={!showCompare ? '比較なし' : salesDiff === null ? '比較データ不足' : <DiffText v={salesDiff} className="text-2xl" />}
+          delta={salesDiff !== null && pctChange(k.sales, pk.sales) !== null ? pctChange(k.sales, pk.sales) : undefined} note={salesDiff !== null ? '増減率' : undefined}
+          onClick={showCompare ? () => drill('売上', 'sales', '¥') : undefined}
+          extra={showCompare && (pk
+            ? <div className="text-[11px] text-slate-600 tabular-nums">当期 {yen(k.sales)} － 前年同期 {yen(pk.sales)}{pctChange(k.sales, pk.sales) === null ? '（前年同期が0円以下のため増減率は算出対象外）' : ''}</div>
+            : <div className="text-[11px] text-amber-800">前年同期の明細が未取得です</div>)} />
+        <KpiCard icon={TrendingUp} tint="bg-teal-50 text-teal-600" label="前年より増えた・減った粗利"
+          value={!showCompare ? '比較なし' : grossDiff === null ? (pk ? '未確定' : '比較データ不足') : <DiffText v={grossDiff} className="text-2xl" />}
+          delta={grossDiff !== null && pctChange(k.gross, pk.gross) !== null ? pctChange(k.gross, pk.gross) : undefined} note={grossDiff !== null ? '増減率' : undefined}
+          onClick={showCompare ? () => drill('粗利', 'gross', '¥') : undefined}
+          extra={showCompare && (grossDiff !== null
+            ? <div className="text-[11px] text-slate-600 tabular-nums">当期 {yen(k.gross)} － 前年同期 {yen(pk.gross)}{pctChange(k.gross, pk.gross) === null ? '（前年同期が0円以下のため増減率は算出対象外）' : ''}</div>
+            : <div className="text-[11px] text-amber-800">{pk ? '粗利額が不明な明細があるため差額を出しません' : '前年同期の明細が未取得です'}</div>)} />
+        <KpiCard icon={Users} tint="bg-amber-50 text-amber-600" label="購入得意先数" value={num(k.buyers) + '件'}
+          title="内訳（継続・当期だけ・前年同期だけ）を見る" linkLabel="内訳を見る"
+          onClick={() => setBuyersOpen(true)}
+          extra={(
+            <div className="space-y-0.5 text-[11px]">
+              <div className="text-slate-600">施設 {num(k.buyersFacility)}・個人ほか {num(k.buyers - k.buyersFacility)}</div>
+              {showCompare && pk && (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-600 font-bold">前年同期 {num(pk.buyers)}件</span>
+                  <DiffText v={k.buyers - pk.buyers} unit="件" className="text-[11px]" />
+                </div>
+              )}
             </div>
           )} />
-        <KpiCard icon={Coins} tint="bg-emerald-50 text-emerald-600" label="粗利額" value={yen(rep.kpi.gross)}
-          delta={prog || momGross === null ? undefined : momGross}
-          progress={prog && progGross !== null ? progGross : undefined}
-          note={spec.prevName ? spec.prevName + (prog ? '進捗率' : '比') : '全期間'}
-          onClick={() => drill('粗利額', 'gross', '¥')}
-          extra={repType === 'month' && (
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <span className="text-[11px] text-slate-600 font-bold whitespace-nowrap">{prog ? '前年進捗率' : '前年同月比'}（{yoyLabel}）</span>
-              <ComparePill delta={yoyPctGross} progress={yoyProgGross} inProgress={!!prog} dashCls="text-[11px] text-slate-500 font-bold" />
-            </div>
-          )} />
-        <KpiCard icon={Percent} tint="bg-violet-50 text-violet-600" label="粗利率" value={rep.kpi.rate + '%'}
-          note={hasPrev ? spec.prevName + ' ' + prevRep.kpi.rate + '%' : '—'}
-          onClick={() => drill('粗利率', 'margin', '%')} />
-        <KpiCard icon={Building2} tint="bg-amber-50 text-amber-600" label="取引施設" value={rep.kpi.count + '件'} note="施設のみ集計"
-          onClick={() => drill('取引施設', 'sales', '¥')} />
-        {repType === 'month' && (
-          <KpiCard icon={ClipboardList} tint="bg-teal-50 text-teal-600" label={data.fyLabel + '累計'} value={yen(fyTotal.sales)}
-            delta={fyProg || fyTotal.pct === null ? undefined : fyTotal.pct}
-            progress={fyProg && fyTotal.prog !== null ? fyTotal.prog : undefined}
-            note={fyPrevLabel + (fyProg ? '同期進捗率' : '比')}
-            emphasize
-            onClick={() => setDrilldown({ title: data.fyLabel + '累計', curLabel: data.fyLabel + (fyProg ? '（' + fyProg.asOfLabel + 'まで）' : ''),
-              prevLabel: fyPrevLabel + '同期', curRanking: fyRepCur ? fyRepCur.ranking : [], prevRanking: fyRepPrev ? fyRepPrev.ranking : [], metric: 'sales', unit: '¥',
-              progress: fyProg ? { label: '前年度同期進捗率', note: data.baseLabel + 'はまだ月の途中です（データは' + fyProg.asOfLabel + 'まで・' + data.fyRangeLabel + 'の経過 ' + fyProg.pace + '%）。' } : null })}
-            extra={(
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-slate-600 font-bold">{fyPrevLabel}同期（{fyPrevRangeLabel}）</span>
-                <span className="text-[10px] text-slate-800 font-extrabold tabular-nums">{fyHasPrev ? yen(fyTotal.prevSales) : '—'}</span>
-              </div>
-            )} />
-        )}
       </div>
-      {drilldown && <KpiDrilldownModal {...drilldown} onClose={() => setDrilldown(null)} />}
+      {drilldown && <KpiDrilldownModal {...drilldown} onJump={jumpFromModal} onClose={() => setDrilldown(null)} />}
+      {buyersOpen && win && <BuyersModal curRep={rep} prevRep={showCompare ? prevRep : null} win={win} firstBuy={firstBuy}
+        dataFrom={data.firstDate ? dateLabel(data.firstDate.idx, data.firstDate.d) : '—'} onJump={jumpFromModal} onClose={() => setBuyersOpen(false)} />}
+      {(k.returnCount > 0 || k.discountCount > 0) && (
+        <div className="text-[11px] text-slate-600 -mt-2">
+          売上に含まれるマイナスの明細：返品（数量マイナス）{num(k.returnCount)}行 {yen(k.returnAmt)} ／ 値引き等（数量0以上で金額マイナス）{num(k.discountCount)}行 {yen(k.discountAmt)}
+          （区分列がないため数量の符号で分けています）
+        </div>
+      )}
+      {(() => {
+        const unassigned = data.facilities.filter(f => !f.rep).length;
+        const other = data.products.filter(p => p.cat === 'その他' && p.winSales !== 0).length;
+        if (!(k.grossUnknown || unassigned || other)) return null;
+        return (
+          <div className="text-[11px] text-slate-700 -mt-2">
+            データ確認：{[k.grossUnknown ? 'この期間の粗利未確定の明細 ' + num(k.grossUnknown) + '行' : '', unassigned ? '担当未設定の施設 ' + num(unassigned) + '件' : '', other ? '分類「その他」の商品 ' + num(other) + '件' : ''].filter(Boolean).join(' ・ ')}
+            <button onClick={() => goTab('import')} className="ml-1.5 font-bold text-sky-700 hover:underline">データ取込画面の「データ確認」で見る</button>
+          </div>
+        );
+      })()}
+      <details className="bg-white border border-slate-200/70 rounded-2xl px-5 py-3 text-xs text-slate-700">
+        <summary className="font-bold text-slate-800 cursor-pointer">用語と計算方法</summary>
+        <ul className="mt-2 space-y-1 leading-relaxed list-disc pl-5">
+          <li><b>売上</b>：販売管理システムの「金額」（税抜）の合計。返品・値引きのマイナス明細を含めた純額です。</li>
+          <li><b>粗利</b>：明細ごとの粗利額（その明細の売上－売れた数量の原価）の合計。当月の仕入総額は引きません。粗利額が空の明細は「金額－仕入単価×数量」で求め、どちらもない明細があると「未確定」と表示します（0円としては扱いません）。</li>
+          <li><b>粗利率</b>：合計粗利 ÷ 合計売上 × 100。商品ごとの粗利率の平均ではありません。売上が0円以下なら算出対象外です。</li>
+          <li><b>前年より増えた・減った売上／粗利</b>：当期 － 前年同期（前年の同じ月・同じ範囲）。月の途中は前年も同じ日までで比べます。増減率は補助表示で、前年同期が0円以下なら算出しません。前年の明細が取り込まれていない期間は「比較データ不足」とし、0円とは区別します。</li>
+          <li><b>購入得意先数</b>：期間内の売上（返品・値引き後）がプラスの得意先（お客様名）の数。同じ得意先の複数伝票は1件です。請求先と納品先の区別はCSVにないため、お客様名ごとに数えています。</li>
+          <li>増減は色だけでなく「＋／−」と矢印でも示しています。</li>
+        </ul>
+      </details>
 
       {/* ランキング2枚 */}
       <div className="grid lg:grid-cols-2 gap-4">
@@ -2844,6 +3133,12 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
               <div className="text-[11px] text-slate-600">{spec.short} ・ クリックで施設の詳細分析へ</div>
             </div>
           </div>
+          {conc && (
+            <div className="px-5 py-2 border-b border-slate-50 text-[11px] text-slate-700 tabular-nums">
+              施設売上の合計 {yen(conc.total)} に占める割合：上位1施設 <b>{conc.top1}%</b> ・ 上位5施設 <b>{conc.top5}%</b>
+              <span className="text-slate-500">（施設のみ・個人は含めない）</span>
+            </div>
+          )}
           <div className="divide-y divide-slate-50">
             {facTop.map((f, i) => (
               <button key={f.name} onClick={() => jumpToFacility(f.name)}
@@ -2867,12 +3162,13 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
         </Card>
 
         <Card>
-          <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5">
+          <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5 flex-wrap">
             <span className="inline-flex items-center justify-center w-8 h-8 rounded-xl bg-emerald-50 text-emerald-500"><Package size={16} /></span>
             <div className="flex-1">
-              <div className="font-bold text-sm text-slate-800">商品別売上 TOP10</div>
-              <div className="text-[11px] text-slate-600">{spec.short} ・ 数量と売上金額</div>
+              <div className="font-bold text-sm text-slate-800">商品別 TOP10（{prodSort === 'gross' ? '粗利順' : '売上順'}）</div>
+              <div className="text-[11px] text-slate-600">{spec.short} ・ 売上・粗利・粗利率・数量</div>
             </div>
+            <Segmented value={prodSort} onChange={setProdSort} options={[['sales', '売上順'], ['gross', '粗利順']]} />
           </div>
           <div className="divide-y divide-slate-50">
             {topProducts.map((p, i) => (
@@ -2881,10 +3177,16 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
                   (i < 3 ? 'bg-emerald-500 text-white' : 'bg-emerald-50 text-emerald-600')}>{i + 1}</span>
                 <div className="flex-1 min-w-0">
                   <div className="font-bold text-xs text-slate-700 truncate">{p.name}</div>
-                  <div className="text-[10px] text-slate-600">{p.cat}</div>
+                  <div className="text-[10px] text-slate-600">
+                    {p.cat} ・ {p.mixedUnit ? <span title={p.units.join(' / ')}>数量は単位混在（{p.units.filter(Boolean).join('・') || '単位なし'}）</span> : fmtQty(p.qty) + (p.unit || '')}
+                  </div>
                 </div>
-                <span className="text-[11px] text-slate-700 tabular-nums shrink-0">{fmtQty(p.qty)}{p.unit || ''}</span>
-                <span className="text-xs font-extrabold tabular-nums text-slate-700 shrink-0 w-20 text-right">{yen(p.sales)}</span>
+                <div className="text-right shrink-0 tabular-nums">
+                  <div className={"text-xs " + (prodSort === 'sales' ? 'font-extrabold text-slate-800' : 'text-slate-600')}>売上 {yen(p.sales)}</div>
+                  <div className={"text-[11px] " + (prodSort === 'gross' ? 'font-extrabold text-slate-800' : 'text-slate-600')}>
+                    粗利 {p.grossUnknown ? '未確定' : yen(p.gross) + '（' + p.margin + '%）'}
+                  </div>
+                </div>
               </div>
             ))}
             {topProducts.length === 0 && (
@@ -2913,17 +3215,17 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
           <tbody className="divide-y divide-slate-50">
             {rep.categories.map(c => (
               <tr key={c.name} className="hover:bg-slate-50 transition">
-                <td className="px-5 py-2.5 font-bold text-slate-700">{c.name}</td>
+                <td className="px-5 py-2.5 font-bold text-slate-700">{c.name}{c.name === 'その他' && <span className="ml-1 text-[10px] text-slate-500 font-normal">（未分類を含む）</span>}</td>
                 <td className="px-2 py-2.5 pr-4 text-right tabular-nums font-bold text-slate-800">{yen(c.sales)}</td>
                 <td className="px-2 py-2.5">
                   <div className="flex items-center gap-2">
                     <div className="flex-1 bg-slate-100 rounded-full h-1.5 overflow-hidden">
-                      <div className="bg-sky-400 h-1.5 rounded-full" style={{ width: Math.min(100, c.share) + '%' }} />
+                      <div className="bg-sky-400 h-1.5 rounded-full" style={{ width: Math.min(100, Math.max(0, c.share)) + '%' }} />
                     </div>
                     <span className="text-[11px] text-slate-700 tabular-nums font-bold w-8 text-right">{c.share}%</span>
                   </div>
                 </td>
-                <td className="px-5 py-2.5 text-right tabular-nums text-slate-700">{c.margin}%</td>
+                <td className="px-5 py-2.5 text-right tabular-nums text-slate-700">{c.grossUnknown ? '未確定' : c.sales > 0 ? c.margin + '%' : '—'}</td>
               </tr>
             ))}
             {rep.categories.length === 0 && (
@@ -2939,7 +3241,7 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
         <div className="flex items-center justify-between mb-2">
           <div className="font-bold text-sm text-slate-800">月別売上推移</div>
           <span className="text-[11px] text-slate-600 font-bold">
-            {repType === 'month' ? '選んだ月までの12ヶ月' : spec.short} ・ 単位: 千円
+            {repType === 'month' ? '選んだ月までの12ヶ月' : spec.short} ・ 単位: 千円{win && win.inProgress ? ' ・ 最終月は ' + dateLabel(win.asOf.idx, win.asOf.d) + ' まで（月途中）' : ''}
           </span>
         </div>
         {chart.values.length > 1
@@ -2953,15 +3255,74 @@ function DashboardView({ data, rows, masters, jumpToFacility, openPrint, office,
 /* ============================================================
    画面2: 施設別
 ============================================================ */
-/* 増減率順で並べるときの対象条件（小さい取引の％は振れが大きく参考にならないため） */
-const DECLINE_MIN_BASE = 50000;   // 直近3ヶ月平均がこの金額以上の施設だけを見る
+/* 少額施設のノイズを除く目安（施設別推移の「少額施設を除く」で使う） */
+const DECLINE_MIN_BASE = 50000;
+
+// 施設詳細：前年同期との売上差の内訳（decomposeSalesChange の結果を表示）
+function DecompCard({ decomp, kind, setKind, fyLabel }) {
+  const d = decomp;
+  const parts = d && !d.none ? [
+    ['数量の変化分', d.volume, '同じ商品・単位で、数量が増減した分（前年の平均単価で計算）'],
+    ['価格の変化分', d.price, '同じ商品・単位で、平均単価が変わった分（数量と価格が同時に変わった分も含む）'],
+    ['前年同期になかった商品', d.added, '当期だけ売れた商品・単位'],
+    ['当期に販売のない商品', d.ended, '前年同期だけ売れた商品・単位'],
+    ['返品・値引き等の差', d.adj, '金額がマイナスの明細の差。数量・価格には配分しません'],
+    ['比較できない明細', d.other, '数量が0以下などで単価を出せない商品'],
+  ] : [];
+  return (
+    <Card className="p-4">
+      <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
+        <div className="text-[11px] font-bold text-slate-600 uppercase tracking-wide">前年同期との売上差の内訳</div>
+        <Segmented value={kind} onChange={setKind} options={[['month', '今月'], ['fy', fyLabel + '累計']]} />
+      </div>
+      {!d || d.none ? (
+        <div className="text-xs text-slate-600 py-3">前年同期{d && d.w ? '（' + d.w.prevRange + '）' : ''}の明細が取り込まれていないため、内訳を出せません。</div>
+      ) : (
+        <>
+          <div className="text-[11px] text-slate-600 mb-2 tabular-nums">当期 {d.w.curRange}：{yen(d.cur)} ／ 前年同期 {d.w.prevRange}：{yen(d.prev)}</div>
+          <div className="flex items-center justify-between text-sm font-bold text-slate-800 border-b border-slate-100 pb-1.5 mb-1.5">
+            <span>売上差額</span><DiffText v={d.diff} />
+          </div>
+          <ul className="space-y-1">
+            {parts.map(([label, v, hint]) => (
+              <li key={label} className="flex items-center justify-between text-xs gap-2" title={hint}>
+                <span className="text-slate-700">{label}</span>
+                {Math.abs(v) < 0.5 ? <span className="text-slate-400 tabular-nums">¥0</span> : <DiffText v={v} className="text-xs" />}
+              </li>
+            ))}
+          </ul>
+          <div className={"mt-2 text-[10px] " + (d.check ? 'text-slate-600' : 'text-rose-600 font-bold')}>
+            {d.check ? '内訳の合計は売上差額と一致しています。' : '内訳の合計が売上差額と一致しません（計算を確認してください）。'}
+            比較の単位は「商品名＋単位」。単位の違う同じ商品は混ぜずに別の商品として扱います。理由（購入時期・利用量など）は明細と施設の事情を確認してください。
+          </div>
+          {d.items.length > 0 && (
+            <div className="mt-2 pt-2 border-t border-slate-100">
+              <div className="text-[10px] font-bold text-slate-600 mb-1">差の大きい商品</div>
+              <ul className="space-y-0.5">
+                {d.items.slice(0, 5).map(it => (
+                  <li key={it.name + it.unit} className="flex items-center justify-between text-[11px] gap-2">
+                    <span className="text-slate-700 truncate">{it.name}{it.unit ? '（' + it.unit + '）' : ''}
+                      <span className="text-slate-500 ml-1">{it.kind === 'new' ? '前年なし' : it.kind === 'ended' ? '当期なし' : it.kind === 'both' ? fmtQty(it.q0) + '→' + fmtQty(it.q1) : ''}</span>
+                    </span>
+                    <DiffText v={it.diff} className="text-[11px]" />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
 
 /* CSV出力の対象期間 */
 const CSV_PERIODS = [['all', '全期間'], ['fy', '今年度'], ['month', '月を選ぶ']];
 
 function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, showToast, openPrint, startDoc, office }) {
-  const prog = data.progress;   // 今月が月途中なら前月比・前年同月比を進捗率で出す
+  const cmp = data.cmp;   // 基準月の比較条件（月途中なら前月・前年同月も同じ日まで）
   const [search, setSearch] = useState('');
+  const [decompKind, setDecompKind] = useState('month'); // 施設詳細の売上差の内訳：今月／今年度累計
   const [suggestOpen, setSuggestOpen] = useState(false);
   const [sortKey, setSortKey] = useState('sales');
   const [csvPeriod, setCsvPeriod] = useState('all');
@@ -2981,18 +3342,15 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
     let list = data.facilities;
     if (repFilter !== null) list = list.filter(f => f.repName === repFilter);
     if (search.trim()) list = list.filter(f => f.name.includes(search.trim()));
-    // 増減率順のときは、比較のもとが小さい施設（0円・少額）を除いて実質的な増減だけを見る
-    if (sortKey === 'decline') list = list.filter(f => f.monthly[11] !== 0 && f.prev3 >= DECLINE_MIN_BASE);
+    // 前年差額順：減少額が大きい施設から（率だけで順位を付けない）。前年データ未取得の施設は最後
     const sorters = {
       sales: (a, b) => b.monthly[11] - a.monthly[11],
       avg: (a, b) => b.avg - a.avg,
-      decline: (a, b) => a.pct - b.pct,
+      yoyDiff: (a, b) => (a.yoyDiff === null) - (b.yoyDiff === null) || a.yoyDiff - b.yoyDiff,
       name: (a, b) => a.name.localeCompare(b.name, 'ja'),
     };
     return list.slice().sort(sorters[sortKey]);
   }, [data, search, sortKey, repFilter]);
-  const declineHidden = sortKey === 'decline'
-    ? data.facilities.filter(f => repFilter === null || f.repName === repFilter).length - rows.length : 0;
 
   // 検索候補（入力に応じて最大8件）
   const suggests = useMemo(() => {
@@ -3017,9 +3375,11 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
     const qtyOf = (p) => sum12(p.qty12);
     const salesRank = f.pairs.filter(p => salesOf(p) > 0)
       .sort((a, b) => salesOf(b) - salesOf(a)).slice(0, 10)
-      .map(p => ({ prod: p.prod, sales: salesOf(p), qty: qtyOf(p), unit: p.unit || '' }));
+      .map(p => ({ prod: p.prod, sales: salesOf(p), qty: qtyOf(p), unit: p.unit || '', mixedUnit: p.units.size > 1 }));
     const salesMax = salesRank.length ? salesRank[0].sales : 1;
-    const qtyRank = f.pairs.filter(p => qtyOf(p) > 0)
+    // 単位が2種類以上ある商品（ケースと袋など）は数量を合計できないので個数ランキングから外す
+    const qtyMixed = f.pairs.filter(p => qtyOf(p) > 0 && p.units.size > 1).length;
+    const qtyRank = f.pairs.filter(p => qtyOf(p) > 0 && p.units.size <= 1)
       .sort((a, b) => qtyOf(b) - qtyOf(a)).slice(0, 10)
       .map(p => ({ prod: p.prod, qty: qtyOf(p), unit: p.unit || '', sales: salesOf(p) }));
     const qtyMax = qtyRank.length ? qtyRank[0].qty : 1;
@@ -3044,7 +3404,17 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
       const m = f.byMonth.get(idx - 12);
       return m ? m.sales : null;
     });
-    return { f, salesRank, salesMax, qtyRank, qtyMax, cats, catTotal, lastD, recent, prevMonthly };
+    // 営業所で直近12ヶ月に売れている分類のうち、この施設の購入がない分類（需要の有無は分からない）
+    const officeCats = new Set(data.products.filter(p => p.winSales > 0).map(p => p.cat));
+    const noBuyCats = [...officeCats].filter(c => !catAgg.has(c)).sort((a, b) => a.localeCompare(b, 'ja'));
+    // 前年同期との売上差の内訳（今月／今年度累計）
+    const decomp = {};
+    for (const [key, w] of [['month', data.cmp], ['fy', data.fyCmp]]) {
+      if (!w || !w.prevCovered) { decomp[key] = { w, none: true }; continue; }
+      const pick = (r, ww) => { const d = parseDateStr(r[1]); return d && d.idx >= ww.from && d.idx <= ww.to && withinCut(d, ww.cutoff); };
+      decomp[key] = { w, ...decomposeSalesChange(f.rows.filter(r => pick(r, w.cur)), f.rows.filter(r => pick(r, w.prev))) };
+    }
+    return { f, salesRank, salesMax, qtyRank, qtyMax, qtyMixed, cats, catTotal, lastD, recent, prevMonthly, noBuyCats, decomp };
   }, [data, openId]);
 
   const handleFacPrint = (f) => {
@@ -3096,20 +3466,28 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
     if (multi) head.push('月平均');
     idxs.forEach(i => head.push(idxLabel(i)));
     const lines = targets.map(f => {
-      let s = 0, g = 0;
+      let s = 0, g = 0, gu = 0;
       const cells = idxs.map(i => {
         const m = f.byMonth.get(i);
         const v = m ? m.sales : 0;
-        s += v; g += m ? m.gross : 0;
+        s += v; g += m ? m.gross : 0; gu += m ? m.gu : 0;
         return Math.round(v);
       });
-      const row = [f.name, f.repName, f.direct ? '直送' : '', Math.round(s), Math.round(g),
-        s !== 0 ? Math.round(g / s * 1000) / 10 : 0];
+      // 粗利額が不明な明細を含む施設は、粗利額・粗利率を「未確定」とする（0円として出さない）
+      const row = [f.name, f.repName, f.direct ? '直送' : '', Math.round(s), gu ? '未確定' : Math.round(g),
+        gu || !(s > 0) ? '' : Math.round(g / s * 1000) / 10];
       if (multi) row.push(Math.round(s / idxs.length));
       return row.concat(cells);
     });
     const name = (only ? only.name.replace(/[\\/:*?"<>|]/g, '') + '_' : '施設別売上_') + csvPeriodLabel + '_' + todayCompact() + '.csv';
-    downloadText(name, buildCsv([head, ...lines]), 'text/csv');
+    const conds = [
+      ['対象期間', csvPeriodLabel + '（' + idxRangeDates(idxs[0], idxs[idxs.length - 1], data.latestDate) + '）'],
+      ['金額', '税抜・返品／値引き反映後（販売管理システムの金額）'],
+      ['集計対象', '施設のみ（個人は含まない）'],
+      ['絞り込み', only ? '施設：' + only.name : [repFilter !== null ? '担当：' + repFilter : '', search.trim() ? '施設名：' + search.trim() : ''].filter(Boolean).join(' ／ ') || 'なし'],
+      ['集計時点', todayLabel() + '（取込済みデータ ' + dataRangeLabel(data) + '）'],
+    ];
+    downloadText(name, buildCsvWithConditions(conds, [head, ...lines]), 'text/csv');
     showToast(csvPeriodLabel + 'のCSVを出力しました（' + num(targets.length) + '施設）');
   };
 
@@ -3126,7 +3504,13 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
           p.lastDate ? p.lastDate.y + '/' + p.lastDate.mo + '/' + p.lastDate.d : ''];
       });
     downloadText(f.name.replace(/[\\/:*?"<>|]/g, '') + '_商品別_' + todayCompact() + '.csv',
-      buildCsv([head, ...lines]), 'text/csv');
+      buildCsvWithConditions([
+        ['施設', f.name],
+        ['対象期間', '直近12ヶ月（' + idxRangeDates(data.win[0], data.win[11], data.latestDate) + '）'],
+        ['金額', '税抜・返品／値引き反映後'],
+        ['数量', '単位ごとに集計（単位が途中で変わった商品は最新の単位を表示）'],
+        ['集計時点', todayLabel() + '（取込済みデータ ' + dataRangeLabel(data) + '）'],
+      ], [head, ...lines]), 'text/csv');
     showToast('商品別CSVを出力しました（直近12ヶ月）');
   };
 
@@ -3231,19 +3615,22 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
         {/* 基本指標 */}
         <div className="flex gap-3 flex-wrap">
           <KpiCard icon={JapaneseYen} tint="bg-blue-50 text-blue-600"
-            label={prog ? '今月売上（' + prog.asOfLabel + 'まで）' : '今月売上'} value={yen(f.monthly[11])}
-            delta={prog ? undefined : f.pct} deltaSuffix="%"
-            progress={prog && f.pctProg !== null ? f.pctProg : undefined}
-            note={prog ? '3ヶ月平均進捗率' : '直近3ヶ月平均比'}
+            label={cmp.inProgress ? '今月売上（' + dateLabel(cmp.asOf.idx, cmp.asOf.d) + 'まで）' : '今月売上'} value={yen(f.monthly[11])}
+            delta={cmp.inProgress ? undefined : f.pct} deltaSuffix="%"
+            note={cmp.inProgress ? '月途中のため3ヶ月平均とは比べません' : '直近3ヶ月平均比'}
             extra={(
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <span className="text-[11px] text-slate-600 font-bold whitespace-nowrap">{prog ? '前年進捗率' : '前年同月比'}（{idxLabel(data.baseIdx - 12)}）</span>
-                <ComparePill delta={f.yoyPct} progress={f.yoyProg} inProgress={!!prog} dashCls="text-[11px] text-slate-500 font-bold" />
+              <div className="space-y-0.5">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <span className="text-[11px] text-slate-600 font-bold whitespace-nowrap">前年同期差</span>
+                  {f.yoyDiff === null ? <span className="text-[11px] text-slate-500 font-bold">比較データ不足</span>
+                    : <span className="inline-flex items-center gap-1.5"><DiffText v={f.yoyDiff} className="text-xs" /><RateSub v={f.yoyPct} /></span>}
+                </div>
+                {f.yoyBase !== null && <div className="text-[10px] text-slate-600 tabular-nums">前年同期 {cmp.prevRange}：{yen(f.yoyBase)}</div>}
               </div>
             )} />
           <KpiCard icon={Coins} tint="bg-emerald-50 text-emerald-600" label="月平均" value={yen(f.avg)} note="12ヶ月" />
           <KpiCard icon={JapaneseYen} tint="bg-sky-50 text-sky-600" label="年間累計" value={yen(f.winSum)} note="12ヶ月" />
-          <KpiCard icon={Percent} tint="bg-violet-50 text-violet-600" label="粗利率" value={f.margin + '%'} note="12ヶ月" />
+          <KpiCard icon={Percent} tint="bg-violet-50 text-violet-600" label="粗利率" value={f.marginOk ? f.margin + '%' : f.winSum > 0 ? '未確定' : '算出対象外'} note="12ヶ月" />
           <KpiCard icon={ClipboardList} tint="bg-amber-50 text-amber-600" label="注文回数" value={fmtQty(f.ordersPerMonth) + '回/月'} note={'返品 ' + detail.f.returns3 + '件'} />
         </div>
 
@@ -3291,6 +3678,7 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
               ))}
               {detail.qtyRank.length === 0 && <li className="text-xs text-slate-600">直近12ヶ月の購入はありません</li>}
             </ul>
+            {detail.qtyMixed > 0 && <div className="mt-2 text-[10px] text-slate-600">単位が混在している商品（{num(detail.qtyMixed)}件）は数量を合計できないため、このランキングに入れていません。</div>}
           </Card>
         </div>
 
@@ -3327,6 +3715,20 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
             </ul>
           </Card>
         </div>
+
+        <div className="grid md:grid-cols-2 gap-4">
+          <DecompCard decomp={detail.decomp[decompKind]} kind={decompKind} setKind={setDecompKind} fyLabel={data.fyLabel} />
+          <Card className="p-4">
+            <div className="text-[11px] font-bold text-slate-600 uppercase tracking-wide mb-1">購入のない分類（直近12ヶ月）</div>
+            <div className="text-[11px] text-slate-600 mb-2.5 leading-relaxed">
+              営業所で直近12ヶ月に売れている分類のうち、この施設の購入がない分類です。購入実績の有無だけを示すもので、需要や切り替えの見込みを示すものではありません。
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {detail.noBuyCats.map(c => <span key={c} className="text-[11px] font-bold bg-slate-100 text-slate-700 px-2 py-1 rounded-lg">{c}</span>)}
+              {detail.noBuyCats.length === 0 && <span className="text-xs text-slate-600">営業所で売れている分類はすべて購入があります</span>}
+            </div>
+          </Card>
+        </div>
       </div>
     );
   }
@@ -3345,7 +3747,7 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
             className="h-11 px-3 rounded-xl border border-slate-200 text-sm bg-white shadow-sm font-bold text-slate-600">
             <option value="sales">今月売上順</option>
             <option value="avg">月平均順</option>
-            <option value="decline">増減率順</option>
+            <option value="yoyDiff">前年差額順（減少が大きい順）</option>
             <option value="name">名前順</option>
           </select>
         </div>
@@ -3364,27 +3766,24 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
       <Card className="overflow-x-auto">
         <div className="px-5 py-2.5 border-b border-slate-100 text-[11px] text-slate-600">
           行をクリックすると、その施設だけの詳細分析を表示します（全 {num(rows.length)}施設）
-          {sortKey === 'decline' && (
-            <span className="ml-2 text-amber-600 font-bold">
-              増減率順のため、3ヶ月平均が{num(DECLINE_MIN_BASE)}円未満・今月0円の施設は除いています{declineHidden > 0 ? '（非表示 ' + num(declineHidden) + '施設）' : ''}
-            </span>
+          <span className="ml-2">前年差は 当期 {cmp.curRange} と 前年同期 {cmp.prevRange} の差額（税抜）。増減率は補助表示です。</span>
+          {cmp.inProgress && (
+            <InfoNote className="mt-2">月の途中です。前月・前年同月も同じ日までの明細で比べています（今月はまだ購入のない施設も、減少・取引終了とは判定しません）。</InfoNote>
           )}
-          {prog && (
-            <ProgressNote className="mt-2">
-              {data.baseLabel}はまだ月の途中です（データは{prog.asOfLabel}まで・月の経過 {prog.pace}%）。
-              前月・前年同月との比較は、増減率ではなく<b>前月・前年同月の何％まで来たか（進捗率）</b>で表示しています。
-            </ProgressNote>
+          {!data.hasYoy && (
+            <InfoNote tone="warn" className="mt-2">前年同月の明細が取り込まれていないため、前年差は「—」と表示します（0円とは区別しています）。</InfoNote>
           )}
         </div>
         <div className="overflow-x-auto">
-        <table className="w-full text-sm min-w-[960px]">
+        <table className="w-full text-sm min-w-[1080px]">
           <thead>
             <tr className="text-[11px] uppercase tracking-wide text-slate-600 border-b border-slate-100">
               <th className="text-left font-bold px-5 py-3">施設名</th>
               <th className="text-center font-bold px-2 py-3 pr-4">今月売上</th>
               <th className="text-center font-bold px-2 py-3 pr-4">月平均</th>
-              <th className="text-center font-bold px-2 py-3">{prog ? '前月進捗率' : '前月比'}</th>
-              <th className="text-center font-bold px-2 py-3">{prog ? '前年進捗率' : '前年同月比'}</th>
+              <th className="text-center font-bold px-2 py-3">前年差（売上）</th>
+              <th className="text-center font-bold px-2 py-3">前年差（粗利）</th>
+              <th className="text-center font-bold px-2 py-3">前月比</th>
               <th className="text-center font-bold px-2 py-3 pr-4">粗利率</th>
               <th className="text-center font-bold px-2 py-3">担当</th>
               <th className="w-10"></th>
@@ -3401,9 +3800,16 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
                 </td>
                 <td className="px-2 py-3 pr-4 text-center tabular-nums font-bold text-slate-800">{yen(f.monthly[11])}</td>
                 <td className="px-2 py-3 pr-4 text-center tabular-nums text-slate-700">{yen(f.avg)}</td>
-                <td className="px-2 py-3.5 text-center"><ComparePill delta={f.mom} progress={f.momProg} inProgress={!!prog} /></td>
-                <td className="px-2 py-3.5 text-center"><ComparePill delta={f.yoyPct} progress={f.yoyProg} inProgress={!!prog} /></td>
-                <td className="px-2 py-3 pr-4 text-center tabular-nums text-slate-700">{f.margin}%</td>
+                <td className="px-2 py-3 text-center">
+                  {f.yoyDiff === null ? <span className="text-xs text-slate-400 font-bold">—</span> : (
+                    <div className="flex flex-col items-center gap-0.5"><DiffText v={f.yoyDiff} className="text-xs" /><RateSub v={f.yoyPct} /></div>
+                  )}
+                </td>
+                <td className="px-2 py-3 text-center">
+                  {f.yoyGrossDiff === null ? <span className="text-xs text-slate-400 font-bold">{data.hasYoy ? '未確定' : '—'}</span> : <DiffText v={f.yoyGrossDiff} className="text-xs" />}
+                </td>
+                <td className="px-2 py-3.5 text-center"><RateSub v={f.mom} /></td>
+                <td className="px-2 py-3 pr-4 text-center tabular-nums text-slate-700">{f.marginOk ? f.margin + '%' : f.winSum > 0 ? '未確定' : '—'}</td>
                 <td className="px-2 py-3">
                   <span className="inline-flex items-center justify-center gap-1.5 text-slate-600">
                     <span className="w-6 h-6 rounded-full bg-slate-100 text-slate-700 text-[10px] font-bold inline-flex items-center justify-center">{f.repName[0]}</span>
@@ -3414,7 +3820,7 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
               </tr>
             ))}
             {rows.length === 0 && (
-              <tr><td colSpan={9} className="px-5 py-10 text-center text-sm text-slate-600">該当する施設がありません</td></tr>
+              <tr><td colSpan={10} className="px-5 py-10 text-center text-sm text-slate-600">該当する施設がありません</td></tr>
             )}
           </tbody>
         </table>
@@ -3448,6 +3854,7 @@ function Sparkline({ values, width, height }) {
 }
 
 const FAC_TREND_SORTS = [
+  ['diff', '年度平均の差額順（減少が大きい順）'],
   ['growth', '伸び率順（年度平均比較）'],
   ['sales', '直近月売上順'],
   ['avg', '今年度平均順'],
@@ -3457,7 +3864,7 @@ const FAC_TREND_SORTS = [
 function FacilityTrendView({ data, jumpToFacility, showToast }) {
   const [search, setSearch] = useState('');
   const [repFilter, setRepFilter] = useState(null);
-  const [sortKey, setSortKey] = useState('growth');
+  const [sortKey, setSortKey] = useState('diff');
   const [minBase, setMinBase] = useState(true); // 少額施設のノイズを除くか
 
   const fyStart = data.baseIdx == null ? null : fiscalStartIdx(data.baseIdx);
@@ -3474,10 +3881,12 @@ function FacilityTrendView({ data, jumpToFacility, showToast }) {
       for (let i = fromIdx; i <= toIdx; i++) { const m = f.byMonth.get(i); if (m) sum += m.sales; }
       return sum / monthsElapsed;
     };
+    // 前年度同期は buildAnalytics の fyPrevCmp（基準月が月途中なら前年同月も同じ日まで）を使う。
+    // 前年度同期の明細が取り込まれていなければ比較しない（0円とは区別する）
     return data.facilities.map(f => {
       const fyAvg = periodAvg(f, fyStart, data.baseIdx);
-      const fyPrevAvg = periodAvg(f, fyStart - 12, data.baseIdx - 12);
-      const growth = fyPrevAvg !== 0 ? Math.round((fyAvg - fyPrevAvg) / Math.abs(fyPrevAvg) * 100) : (fyAvg > 0 ? null : 0);
+      const fyPrevAvg = data.hasFyPrev && monthsElapsed > 0 ? f.fyPrevCmp / monthsElapsed : null;
+      const growth = fyPrevAvg === null ? null : pctChange(fyAvg, fyPrevAvg);
       return { f, fyAvg, fyPrevAvg, growth };
     });
   }, [data, fyStart, monthsElapsed]);
@@ -3488,8 +3897,10 @@ function FacilityTrendView({ data, jumpToFacility, showToast }) {
     let list = trend;
     if (repFilter !== null) list = list.filter(t => t.f.repName === repFilter);
     if (search.trim()) list = list.filter(t => t.f.name.includes(search.trim()));
-    if (minBase) list = list.filter(t => t.fyPrevAvg >= DECLINE_MIN_BASE / 3 || t.fyAvg >= DECLINE_MIN_BASE / 3);
+    if (minBase) list = list.filter(t => (t.fyPrevAvg || 0) >= DECLINE_MIN_BASE / 3 || t.fyAvg >= DECLINE_MIN_BASE / 3);
     const sorters = {
+      // 差額順：月あたり平均の差が大きくマイナスの施設から。前年度同期の比較ができない施設は最後
+      diff: (a, b) => (a.fyPrevAvg === null) - (b.fyPrevAvg === null) || (a.fyAvg - (a.fyPrevAvg || 0)) - (b.fyAvg - (b.fyPrevAvg || 0)),
       growth: (a, b) => (b.growth ?? -999) - (a.growth ?? -999),
       sales: (a, b) => b.f.monthly[11] - a.f.monthly[11],
       avg: (a, b) => b.fyAvg - a.fyAvg,
@@ -3501,8 +3912,9 @@ function FacilityTrendView({ data, jumpToFacility, showToast }) {
   // 伸びている施設 / 減っている施設 TOP5（ノイズ除去のため一定額以上の施設のみ対象）
   const movers = useMemo(() => {
     const base = trend.filter(t => t.growth !== null && Math.max(t.fyAvg, t.fyPrevAvg) >= DECLINE_MIN_BASE / 3);
-    const up = base.filter(t => t.growth > 0).sort((a, b) => b.growth - a.growth).slice(0, 5);
-    const down = base.filter(t => t.growth < 0).sort((a, b) => a.growth - b.growth).slice(0, 5);
+    // 並びは平均の差額（月あたり）。率だけで順位を付けない
+    const up = base.filter(t => t.fyAvg > t.fyPrevAvg).sort((a, b) => (b.fyAvg - b.fyPrevAvg) - (a.fyAvg - a.fyPrevAvg)).slice(0, 5);
+    const down = base.filter(t => t.fyAvg < t.fyPrevAvg).sort((a, b) => (a.fyAvg - a.fyPrevAvg) - (b.fyAvg - b.fyPrevAvg)).slice(0, 5);
     return { up, down };
   }, [trend]);
 
@@ -3511,9 +3923,15 @@ function FacilityTrendView({ data, jumpToFacility, showToast }) {
     const head = ['施設名', '担当', ...data.win.map(idxLabel), fyLabel + '平均', fyPrevLabel + '平均', '増減率%'];
     const lines = filtered.map(t => ([
       t.f.name, t.f.repName, ...t.f.monthly.map(v => Math.round(v)),
-      Math.round(t.fyAvg), Math.round(t.fyPrevAvg), t.growth === null ? '' : t.growth,
+      Math.round(t.fyAvg), t.fyPrevAvg === null ? '' : Math.round(t.fyPrevAvg), t.growth === null ? '' : t.growth,
     ]));
-    downloadText('施設別売上推移_' + todayCompact() + '.csv', buildCsv([head, ...lines]), 'text/csv');
+    downloadText('施設別売上推移_' + todayCompact() + '.csv', buildCsvWithConditions([
+      ['当期', fyLabel + '（' + (data.fyCmp ? data.fyCmp.curRange : '') + '）'],
+      ['比較期間', data.hasFyPrev ? fyPrevLabel + '同期（' + data.fyCmp.prevRange + '）' : '前年度同期のデータ未取得のため比較なし'],
+      ['金額', '税抜・返品／値引き反映後。平均は経過月数で割った月あたり'],
+      ['絞り込み', [repFilter !== null ? '担当：' + repFilter : '', search.trim() ? '施設名：' + search.trim() : '', minBase ? '少額施設を除く' : ''].filter(Boolean).join(' ／ ') || 'なし'],
+      ['集計時点', todayLabel() + '（取込済みデータ ' + dataRangeLabel(data) + '）'],
+    ], [head, ...lines]), 'text/csv');
     showToast('施設別売上推移のCSVを出力しました（' + num(filtered.length) + '施設）');
   };
 
@@ -3525,7 +3943,7 @@ function FacilityTrendView({ data, jumpToFacility, showToast }) {
           <button key={t.f.name} onClick={() => jumpToFacility(t.f.name)}
             className="w-full flex items-center justify-between gap-2 text-left hover:bg-slate-50 rounded-lg px-2 py-1.5 -mx-2 transition">
             <span className="text-xs font-bold text-slate-700 truncate">{t.f.name}</span>
-            <DeltaPill v={t.growth} />
+            <span className="inline-flex items-center gap-1.5 shrink-0"><DiffText v={t.fyAvg - t.fyPrevAvg} className="text-xs" /><DeltaPill v={t.growth} /></span>
           </button>
         ))}
         {list.length === 0 && <div className="text-[11px] text-slate-600 py-2">{emptyText}</div>}
@@ -3569,7 +3987,11 @@ function FacilityTrendView({ data, jumpToFacility, showToast }) {
           </div>
         </div>
         <div className="text-[11px] text-slate-600 mt-3 leading-relaxed">
-          {fyLabel}平均・{fyPrevLabel}平均は、いずれも{data.baseLabel}までの経過月数（{monthsElapsed}ヶ月）で割った同期間比較です。
+          {fyLabel}平均・{fyPrevLabel}平均は、いずれも{data.baseLabel}までの経過月数（{monthsElapsed}ヶ月）で割った同期間比較です
+          （当期 {data.fyCmp ? data.fyCmp.curRange : ''} ／ 前年度同期 {data.fyCmp ? data.fyCmp.prevRange : ''}）。
+          {data.cmp && data.cmp.inProgress && '基準月は月途中のため、前年度同期も前年同月の同じ日までで比べています。'}
+          {!data.hasFyPrev && <b className="text-amber-700">前年度同期の明細が取り込まれていないため、増減は表示しません。</b>}
+          伸びている／減っている施設は、月あたりの平均の差額が大きい順です。
           直近12ヶ月推移は{idxLabel(data.win[0])} 〜 {idxLabel(data.win[11])}。
         </div>
       </Card>
@@ -3598,7 +4020,7 @@ function FacilityTrendView({ data, jumpToFacility, showToast }) {
               <th className="px-3 py-2.5 font-bold text-right whitespace-nowrap">{fyPrevLabel}平均/月</th>
               <th className="px-3 py-2.5 font-bold text-right whitespace-nowrap">増減率</th>
               <th className="px-3 py-2.5 font-bold text-right whitespace-nowrap">今月</th>
-              <th className="px-5 py-2.5 font-bold text-right whitespace-nowrap">{data.progress ? '前月進捗率' : '前月比'}</th>
+              <th className="px-5 py-2.5 font-bold text-right whitespace-nowrap">前月比</th>
               <th className="pr-4"></th>
             </tr>
           </thead>
@@ -3610,10 +4032,10 @@ function FacilityTrendView({ data, jumpToFacility, showToast }) {
                 <td className="px-3 py-3 text-slate-600">{t.f.repName}</td>
                 <td className="px-3 py-3"><Sparkline values={t.f.monthly} /></td>
                 <td className="px-3 py-3 text-right tabular-nums font-bold text-slate-700">{yen(t.fyAvg)}</td>
-                <td className="px-3 py-3 text-right tabular-nums text-slate-600">{yen(t.fyPrevAvg)}</td>
+                <td className="px-3 py-3 text-right tabular-nums text-slate-600">{t.fyPrevAvg === null ? '—' : yen(t.fyPrevAvg)}</td>
                 <td className="px-3 py-3 text-right">{t.growth === null ? <span className="text-slate-400 text-xs">—</span> : <DeltaPill v={t.growth} />}</td>
                 <td className="px-3 py-3 text-right tabular-nums font-bold text-slate-700">{yen(t.f.monthly[11])}</td>
-                <td className="px-5 py-3 text-right"><ComparePill delta={t.f.mom} progress={t.f.momProg} inProgress={!!data.progress} dashCls="text-slate-400 text-xs" /></td>
+                <td className="px-5 py-3 text-right"><RateSub v={t.f.mom} /></td>
                 <td className="pr-4 text-slate-400 group-hover:text-sky-500 group-hover:translate-x-0.5 transition"><ChevronRight size={16} /></td>
               </tr>
             ))}
@@ -3632,66 +4054,100 @@ function FacilityTrendView({ data, jumpToFacility, showToast }) {
    画面3: 担当別
 ============================================================ */
 function RepsView({ data, goFacilities }) {
-  const rows = data.reps;
-  const prog = data.progress;   // 今月が月途中なら前月比・前年同月比・前年度同期比を進捗率で出す
-  const pill = (delta, progress) => <ComparePill delta={delta} progress={progress} inProgress={!!prog} />;
+  // 集計の担当：現在の担当者対応表（施設→担当）／売上時点の担当者（明細の担当者列）
+  const [basis, setBasis] = useState('current');
+  const saleMode = basis === 'sale';
+  const rows = saleMode ? data.repsSale : data.reps;
+  const cmp = data.cmp;
+  const diffCell = (v, pct) => (v === null
+    ? <span className="text-xs text-slate-400 font-bold">—</span>
+    : <div className="flex flex-col items-center gap-0.5"><DiffText v={v} className="text-xs" /><RateSub v={pct} /></div>);
+  // 施設計・施設以外・合計（ダッシュボードの売上と突き合わせられるように）
+  const facTotal = rows.reduce((t, r) => ({ sales: t.sales + r.sales, yoy: t.yoy + r.yoy, fy: t.fy + r.fy, fyPrev: t.fyPrev + r.fyPrev }), { sales: 0, yoy: 0, fy: 0, fyPrev: 0 });
+  const o = data.others || { sales: 0, yoy: 0, fy: 0, fyPrev: 0 };
+  const totalRow = (label, t, cls) => (
+    <tr className={cls}>
+      <td className="px-5 py-2.5 font-bold text-slate-800">{label}</td>
+      <td></td>
+      <td className="px-2 py-2.5 pr-4 text-center tabular-nums font-bold text-slate-800">{yen(t.sales)}</td>
+      <td className="px-2 py-2.5 text-center">{diffCell(data.hasYoy ? t.sales - t.yoy : null, data.hasYoy ? pctChange(t.sales, t.yoy) : null)}</td>
+      <td></td>
+      <td className="px-2 py-2.5 pr-4 text-center tabular-nums font-bold text-slate-700">{yen(t.fy)}</td>
+      <td className="px-2 py-2.5 text-center">{diffCell(data.hasFyPrev ? t.fy - t.fyPrev : null, data.hasFyPrev ? pctChange(t.fy, t.fyPrev) : null)}</td>
+      <td></td><td></td>
+    </tr>
+  );
   return (
-    <Card className="overflow-x-auto">
-      <table className="w-full text-sm min-w-[980px]">
+    <div className="space-y-3">
+      <Card className="px-5 py-3 flex items-center gap-3 flex-wrap">
+        <span className="text-[11px] font-bold text-slate-600">担当の決め方</span>
+        <Segmented value={basis} onChange={setBasis} options={[['current', '現在の担当者対応表'], ['sale', '売上時点の担当者']]} />
+        <span className="text-[11px] text-slate-600 leading-relaxed">
+          {saleMode
+            ? '明細ごとにCSVの担当者列（売上時点の担当）で集計します。担当者列のない明細は「担当不明」の行に入れます（' + num(data.repSaleRows) + '行が担当者付き）。'
+            : '設定→担当者対応表の「施設→担当」で、過去の売上も今の担当に集計します。担当が替わった施設の過去分も今の担当に入ります。'}
+        </span>
+      </Card>
+      <Card className="overflow-x-auto">
+      <table className="w-full text-sm min-w-[1080px]">
         <thead>
           <tr className="text-[11px] uppercase tracking-wide text-slate-600 border-b border-slate-100">
             <th className="text-left font-bold px-5 py-3">担当者</th>
-            <th className="text-center font-bold px-2 py-3 pr-4">担当施設数</th>
+            <th className="text-center font-bold px-2 py-3 pr-4">施設数</th>
             <th className="text-center font-bold px-2 py-3 pr-4">今月売上</th>
-            <th className="text-center font-bold px-2 py-3">{prog ? '前月進捗率' : '前月比'}</th>
-            <th className="text-center font-bold px-2 py-3">{prog ? '前年進捗率' : '前年同月比'}</th>
+            <th className="text-center font-bold px-2 py-3">前年同期差</th>
+            <th className="text-center font-bold px-2 py-3">前月比</th>
             <th className="text-center font-bold px-2 py-3 pr-4">今年度累計</th>
-            <th className="text-center font-bold px-2 py-3">{prog ? '前年度同期進捗率' : '前年度同期比'}</th>
+            <th className="text-center font-bold px-2 py-3">前年度同期差</th>
             <th className="text-center font-bold px-2 py-3 pr-4">粗利率</th>
             <th className="w-10"></th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-50">
           {rows.map(r => (
-            <tr key={r.rep} onClick={() => goFacilities(r.rep)} className="cursor-pointer hover:bg-slate-50 transition group">
+            <tr key={r.rep} onClick={saleMode ? undefined : () => goFacilities(r.rep)} className={(saleMode ? '' : 'cursor-pointer ') + 'hover:bg-slate-50 transition group'}>
               <td className="px-5 py-3.5">
                 <span className="inline-flex items-center gap-2.5">
-                  <span className="w-9 h-9 rounded-full bg-gradient-to-br from-sky-400 to-teal-500 text-white text-sm font-bold inline-flex items-center justify-center shadow-sm">{r.rep[0]}</span>
+                  <span className={"w-9 h-9 rounded-full text-white text-sm font-bold inline-flex items-center justify-center shadow-sm " + (r.unknown ? 'bg-slate-400' : 'bg-gradient-to-br from-sky-400 to-teal-500')}>{r.unknown ? '?' : r.rep[0]}</span>
                   <span className="font-bold text-slate-800">{r.rep}</span>
                 </span>
               </td>
               <td className="px-2 py-3.5 pr-4 text-center tabular-nums text-slate-700">{r.count}件</td>
               <td className="px-2 py-3.5 pr-4 text-center tabular-nums font-bold text-slate-800">{yen(r.sales)}</td>
-              <td className="px-2 py-3.5 text-center">{pill(r.mom, r.momProg)}</td>
-              <td className="px-2 py-3.5 text-center">{pill(r.yoyPct, r.yoyProg)}</td>
+              <td className="px-2 py-3 text-center">{diffCell(r.yoyDiff, r.yoyPct)}</td>
+              <td className="px-2 py-3.5 text-center"><RateSub v={r.mom} /></td>
               <td className="px-2 py-3.5 pr-4 text-center tabular-nums font-bold text-slate-700">{yen(r.fy)}</td>
-              <td className="px-2 py-3.5 text-center">{pill(r.fyPct, r.fyProg)}</td>
-              <td className="px-2 py-3.5 pr-4 text-center tabular-nums text-slate-700">{r.rate}%</td>
-              <td className="pr-4 text-slate-400 group-hover:text-slate-700 transition"><ChevronRight size={16} /></td>
+              <td className="px-2 py-3 text-center">{diffCell(r.fyDiff, r.fyPct)}</td>
+              <td className="px-2 py-3.5 pr-4 text-center tabular-nums text-slate-700">{r.rateOk ? r.rate + '%' : r.sales > 0 ? '未確定' : '—'}</td>
+              <td className="pr-4 text-slate-400 group-hover:text-slate-700 transition">{!saleMode && <ChevronRight size={16} />}</td>
             </tr>
           ))}
           {rows.length === 0 && (
             <tr><td colSpan={9} className="px-5 py-10 text-center text-sm text-slate-600">データがありません</td></tr>
           )}
         </tbody>
+        {rows.length > 0 && (
+          <tfoot className="border-t-2 border-slate-200 bg-slate-50/60">
+            {totalRow('施設計', facTotal, '')}
+            {totalRow('施設以外（個人など）', o, 'text-slate-600')}
+            {totalRow('合計（ダッシュボードの売上と同じ範囲）', { sales: facTotal.sales + o.sales, yoy: facTotal.yoy + o.yoy, fy: facTotal.fy + o.fy, fyPrev: facTotal.fyPrev + o.fyPrev }, 'border-t border-slate-200')}
+          </tfoot>
+        )}
       </table>
       <div className="px-5 py-2.5 text-[11px] text-slate-600 border-t border-slate-50 leading-relaxed">
-        今年度累計＝{data.fyRangeLabel}（{data.fyLabel}・4月始まり）の合計。
-        前年度同期比＝その1年前の同じ期間との比較。
-        {prog && (
-          <span className="text-sky-700 font-bold">
-            {' '}※ {data.baseLabel}はまだ月の途中のため（データは{prog.asOfLabel}まで・月の経過 {prog.pace}%）、
-            比較は増減率ではなく比較先の何％まで来たか（進捗率）で表示しています。
-          </span>
-        )}
+        前年同期差＝今月（{cmp ? cmp.curRange : ''}）－ 前年同期（{cmp ? cmp.prevRange : ''}）。今年度累計＝{data.fyRangeLabel}（{data.fyLabel}・4月始まり）の合計、
+        前年度同期差＝その1年前の同じ期間との差額。増減率は補助表示で、比較対象が0円以下なら算出しません。
+        {cmp && cmp.inProgress && <span className="text-sky-700 font-bold"> 月の途中のため、前月・前年同月も同じ日までの明細で比べています。</span>}
         {(!data.hasYoy || !data.hasFyPrev) && (
           <span className="text-amber-600 font-bold">
             {' '}※ 前年のデータが取り込まれていない期間は「—」と表示されます（比較には前年分のCSVが必要です）
           </span>
         )}
-        <br />行をクリックすると、その担当者の施設一覧に移動します。担当者の設定は「設定→担当者対応表」で行えます
+        <br />担当別の数字は前後の担当変更や単発の大口取引の影響を受けます。担当者の成果と判断する前に、施設ごとの明細をご確認ください。
+        {!saleMode && <> 行をクリックすると、その担当者の施設一覧に移動します。担当者の設定は「設定→担当者対応表」で行えます</>}
       </div>
-    </Card>
+      </Card>
+    </div>
   );
 }
 
@@ -3699,12 +4155,13 @@ function RepsView({ data, goFacilities }) {
    画面4: 商品分析
 ============================================================ */
 function ProductsView({ data, rows, masters, setMasters, showToast, openPrint }) {
+  const [rankBy, setRankBy] = useState('sales'); // ランキング：売上金額順／粗利順
   const [sub, setSub] = useState('search');
   const [openCat, setOpenCat] = useState(null);
   const [catSort, setCatSort] = useState('sales');
   const [pillEdit, setPillEdit] = useState(null); // 分類変更中の商品名
   const catRows = useMemo(() => {
-    if (catSort === 'margin') return data.categories.filter(c => c.margin !== 0).slice().sort((a, b) => b.margin - a.margin);
+    if (catSort === 'margin') return data.categories.filter(c => c.marginOk && c.margin !== 0).slice().sort((a, b) => b.margin - a.margin);
     return data.categories;
   }, [data, catSort]);
   const setProdCat = (name, v) => setMasters(prev => {
@@ -3724,18 +4181,26 @@ function ProductsView({ data, rows, masters, setMasters, showToast, openPrint })
       {sub === 'rank' && (
         <div className="grid md:grid-cols-2 gap-4 [&>*]:min-w-0">
           <Card>
-            <div className="px-5 py-3.5 border-b border-slate-100 font-bold text-sm text-sky-700">💰 売上金額 TOP20（直近12ヶ月）</div>
+            <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between gap-2 flex-wrap">
+              <span className="font-bold text-sm text-sky-700">💰 {rankBy === 'gross' ? '粗利' : '売上金額'} TOP20（直近12ヶ月）</span>
+              <Segmented value={rankBy} onChange={setRankBy} options={[['sales', '売上順'], ['gross', '粗利順']]} />
+            </div>
             <div className="divide-y divide-slate-50">
-              {data.products.filter(p => p.winSales > 0).sort((a, b) => b.winSales - a.winSales).slice(0, 20).map((p, i) => (
+              {data.products.filter(p => (rankBy === 'gross' ? p.winGross : p.winSales) > 0)
+                .sort((a, b) => rankBy === 'gross' ? b.winGross - a.winGross : b.winSales - a.winSales).slice(0, 20).map((p, i) => (
                 <div key={p.name} className="px-5 py-2.5 flex items-center gap-3">
                   <span className={"w-7 h-7 rounded-lg text-xs font-bold inline-flex items-center justify-center shrink-0 " +
                     (i < 3 ? 'bg-sky-500 text-white' : 'bg-sky-50 text-sky-600')}>{i + 1}</span>
                   <div className="flex-1 min-w-0">
                     <div className="font-bold text-xs text-slate-700 truncate">{p.name}</div>
-                    <div className="text-[10px] text-slate-600">{p.cat}</div>
+                    <div className="text-[10px] text-slate-600">{p.cat} ・ {p.mixedUnit ? '数量は単位混在' : num(p.winQty) + (p.unit || '')}</div>
                   </div>
-                  <span className="text-[11px] text-slate-600 tabular-nums shrink-0">{num(p.winQty)}{p.unit || ''}</span>
-                  <span className="text-xs font-extrabold tabular-nums text-slate-700 shrink-0 w-24 text-right">{yen(p.winSales)}</span>
+                  <div className="text-right shrink-0 tabular-nums w-32">
+                    <div className={"text-xs " + (rankBy === 'sales' ? 'font-extrabold text-slate-800' : 'text-slate-600')}>売上 {yen(p.winSales)}</div>
+                    <div className={"text-[11px] " + (rankBy === 'gross' ? 'font-extrabold text-slate-800' : 'text-slate-600')}>
+                      粗利 {p.guWin ? '未確定' : yen(p.winGross) + (p.winSales > 0 ? '（' + (Math.round(p.winGross / p.winSales * 1000) / 10) + '%）' : '')}
+                    </div>
+                  </div>
                 </div>
               ))}
               {data.products.filter(p => p.winSales > 0).length === 0 && (
@@ -3745,8 +4210,11 @@ function ProductsView({ data, rows, masters, setMasters, showToast, openPrint })
           </Card>
           <Card>
             <div className="px-5 py-3.5 border-b border-slate-100 font-bold text-sm text-emerald-700">📦 販売個数 TOP20（直近12ヶ月）</div>
+            {data.products.some(p => p.winQty > 0 && p.mixedUnit) && (
+              <div className="px-5 py-2 text-[10px] text-slate-600 border-b border-slate-50">単位が混在している商品（ケースと袋など）は数量を合計できないため除いています。</div>
+            )}
             <div className="divide-y divide-slate-50">
-              {data.products.filter(p => p.winQty > 0).sort((a, b) => b.winQty - a.winQty).slice(0, 20).map((p, i) => (
+              {data.products.filter(p => p.winQty > 0 && !p.mixedUnit).sort((a, b) => b.winQty - a.winQty).slice(0, 20).map((p, i) => (
                 <div key={p.name} className="px-5 py-2.5 flex items-center gap-3">
                   <span className={"w-7 h-7 rounded-lg text-xs font-bold inline-flex items-center justify-center shrink-0 " +
                     (i < 3 ? 'bg-emerald-500 text-white' : 'bg-emerald-50 text-emerald-600')}>{i + 1}</span>
@@ -3782,7 +4250,7 @@ function ProductsView({ data, rows, masters, setMasters, showToast, openPrint })
                 <th className="text-left font-bold px-5 py-3">分類</th>
                 <th className="text-right font-bold px-2 py-3 pr-4">今月売上</th>
                 <th className="text-left font-bold px-2 py-3 w-40">構成比</th>
-                <th className="text-right font-bold px-2 py-3 pr-4">{data.progress ? '前月進捗率' : '前月比'}</th>
+                <th className="text-right font-bold px-2 py-3 pr-4">前月比{data.cmp && data.cmp.inProgress ? '（同じ日まで）' : ''}</th>
                 <th className="text-right font-bold px-2 py-3 pr-4">粗利率</th>
                 <th className="w-10"></th>
               </tr>
@@ -3802,8 +4270,8 @@ function ProductsView({ data, rows, masters, setMasters, showToast, openPrint })
                         <span className="text-[11px] text-slate-600 tabular-nums font-bold w-8 text-right">{c.share}%</span>
                       </div>
                     </td>
-                    <td className="px-2 py-3 pr-4 text-right"><ComparePill delta={c.mom} progress={c.momProg} inProgress={!!data.progress} /></td>
-                    <td className="px-2 py-3 pr-4 text-right tabular-nums text-slate-700">{c.margin}%</td>
+                    <td className="px-2 py-3 pr-4 text-right"><RateSub v={c.mom} /></td>
+                    <td className="px-2 py-3 pr-4 text-right tabular-nums text-slate-700">{c.marginOk ? c.margin + '%' : c.sales > 0 ? '未確定' : '—'}</td>
                     <td className="pr-4 text-slate-600">{openCat === c.name ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</td>
                   </tr>
                   {openCat === c.name && (
@@ -4372,7 +4840,89 @@ const PREVIEW_COLS = [
 ];
 const PREVIEW_ARR_IDX = { saleNo: 0, date: 1, customer: 2, product: 3, qty: 4, unit: 5, amount: 7, gross: 8 };
 
-function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs, showToast }) {
+// 取込の照合表示：CSVの金額合計 ＝ 新規追加 ＋ 重複スキップ。読み飛ばした行は合計に入らないので別に示す
+function ImportReconcile({ log }) {
+  if (!log || log.fileTotal == null) return null;
+  const diff = log.fileTotal - log.addedTotal - log.skippedTotal;
+  return (
+    <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs text-slate-700 tabular-nums space-y-0.5">
+      <div className="font-bold text-slate-800">金額の照合（税抜）</div>
+      <div>CSVの金額合計（取り込める行） {yen(log.fileTotal)} ＝ 新規追加 {yen(log.addedTotal)} ＋ 重複スキップ {yen(log.skippedTotal)}
+        {Math.abs(diff) >= 0.5
+          ? <b className="text-rose-600">（差額 {yen(diff)}：要確認）</b>
+          : <b className="text-emerald-700">（一致）</b>}
+      </div>
+      {log.bad > 0 && <div className="text-rose-700">読み飛ばした行 {num(log.bad)}行{log.badTotal ? '（金額が読めた分 ' + yen(log.badTotal) + '）' : ''}は上の合計に含まれていません</div>}
+      {log.repFilled > 0 && <div>保存済みの明細 {num(log.repFilled)}行に、売上時点の担当者を補いました（金額は変えていません）</div>}
+      {log.grossUnknown > 0 && <div>粗利額・仕入単価のない明細 {num(log.grossUnknown)}行は、粗利を「未確定」として扱います</div>}
+    </div>
+  );
+}
+
+// データ確認：売上の成果とは分けて、数字の確からしさに関わる件数を出す（点数にはまとめない）
+function DataCheckCard({ rows, data, meta, goTab }) {
+  const c = useMemo(() => {
+    let grossNull = 0, grossNullSales = 0, retN = 0, retAmt = 0, discN = 0, discAmt = 0;
+    const custs = data.custStats;
+    for (const r of rows) {
+      const amt = +r[7] || 0, qty = +r[4] || 0;
+      if (r[8] === null || r[8] === undefined || r[8] === '') { grossNull++; grossNullSales += amt; }
+      if (amt < 0) { if (qty < 0) { retN++; retAmt += amt; } else { discN++; discAmt += amt; } }
+    }
+    const other = data.products.filter(p => p.cat === 'その他' && p.winSales !== 0);
+    const mixed = data.products.filter(p => p.mixedUnit);
+    const unassigned = data.facilities.filter(f => !f.rep);
+    return {
+      grossNull, grossNullSales, retN, retAmt, discN, discAmt,
+      other, otherSales: other.reduce((t, p) => t + p.winSales, 0), mixed,
+      unassigned, unassignedSales: unassigned.reduce((t, f) => t + f.winSum, 0),
+      uncertain: custs.uncertain, noRepRows: data.facilities.reduce((t, f) => t + f.rows.length, 0) - data.repSaleRows,
+    };
+  }, [rows, data]);
+  const last = meta && meta.imports && meta.imports.length ? meta.imports[meta.imports.length - 1] : null;
+  const Row = ({ label, value, sub, warn, action }) => (
+    <li className="flex items-start justify-between gap-3 py-2">
+      <div className="min-w-0">
+        <div className="text-xs font-bold text-slate-800">{label}</div>
+        {sub && <div className="text-[11px] text-slate-600 leading-relaxed">{sub}</div>}
+      </div>
+      <div className="text-right shrink-0">
+        <div className={"text-xs font-extrabold tabular-nums " + (warn ? 'text-amber-700' : 'text-slate-700')}>{value}</div>
+        {action}
+      </div>
+    </li>
+  );
+  const toSettings = <button onClick={() => goTab('settings')} className="text-[11px] font-bold text-sky-700 hover:underline">設定で直す</button>;
+  return (
+    <Card className="p-5">
+      <div className="font-bold text-sm text-slate-800 mb-0.5">データ確認</div>
+      <div className="text-[11px] text-slate-600 mb-2">取込済みデータ {dataRangeLabel(data)}・明細 {num(rows.length)}行。売上の成果とは別に、数字の確からしさに関わる件数を示します。</div>
+      <ul className="divide-y divide-slate-100">
+        <Row label="粗利額・仕入単価のない明細（粗利が未確定）" value={num(c.grossNull) + '行'} warn={c.grossNull > 0}
+          sub={c.grossNull ? '売上 ' + yen(c.grossNullSales) + ' 分。この明細を含む集計の粗利・粗利率は「未確定」と表示します。CSVに粗利額か仕入単価の列を含めて取り込み直してください。' : '以前の取込で粗利額列がなかった明細は0円として保存されているため、ここでは区別できません。'} />
+        <Row label="分類「その他」の商品（直近12ヶ月に売上あり）" value={num(c.other.length) + '商品'} warn={c.other.length > 0}
+          sub={c.other.length ? '売上 ' + yen(c.otherSales) + '。例：' + c.other.slice(0, 3).map(p => p.name).join('、') : ''} action={c.other.length > 0 && toSettings} />
+        <Row label="担当未設定の施設" value={num(c.unassigned.length) + '施設'} warn={c.unassigned.length > 0}
+          sub={c.unassigned.length ? '直近12ヶ月の売上 ' + yen(c.unassignedSales) + '。担当別では「未設定」の行に入ります（消さずに合計へ含めます）。' : ''} action={c.unassigned.length > 0 && toSettings} />
+        <Row label="施設か個人か自動判定に自信がないお客様" value={num(c.uncertain) + '件'} warn={c.uncertain > 0} action={c.uncertain > 0 && toSettings} />
+        <Row label="売上時点の担当者がない明細（施設分）" value={num(c.noRepRows) + '行'}
+          sub="担当別の「売上時点の担当者」では「担当不明」の行に入ります。担当者列のあるCSVを取り込み直すと、金額を変えずに担当者だけ補います。" />
+        <Row label="単位が2種類以上ある商品" value={num(c.mixed.length) + '商品'} warn={c.mixed.length > 0}
+          sub={c.mixed.length ? '数量は合計せず「単位混在」と表示します。例：' + c.mixed.slice(0, 3).map(p => p.name + '（' + [...p.units].filter(Boolean).join('・') + '）').join('、') : ''} />
+        <Row label="返品（数量マイナス）／値引き等（数量0以上で金額マイナス）" value={num(c.retN) + '行 ／ ' + num(c.discN) + '行'}
+          sub={'返品 ' + yen(c.retAmt) + ' ／ 値引き等 ' + yen(c.discAmt) + '。CSVに区分列がないため数量の符号で分けています。取消・赤黒訂正は区別できません。'} />
+      </ul>
+      {last && (
+        <div className="mt-3">
+          <div className="text-[11px] font-bold text-slate-600 mb-1">直近の取込（{stampToLocalDate(last.at)}・{last.file}）</div>
+          <ImportReconcile log={last} />
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs, showToast, data, meta, goTab }) {
   const [dragOver, setDragOver] = useState(false);
   const [preview, setPreview] = useState(null);
   const [result, setResult] = useState(null);
@@ -4422,9 +4972,8 @@ function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs
   const doImport = () => {
     const p = preview;
     if (!p) return;
-    const remaining = rowKeyCounts(rows);
-    const added = [];
-    let skipped = 0;
+    const mg = mergeImportRows(rows, p.rowsParsed);
+    const { added, skipped, addedTotal, skippedTotal } = mg;
     const changed = {};   // 新規・更新した顧客だけ
     const cur = masters.customers;
     for (let i = 0; i < p.rowsParsed.length; i++) {
@@ -4437,14 +4986,17 @@ function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs
         changed[name] = c;
       }
       if (pr.rep && !c.rep) changed[name] = { ...c, rep: pr.rep };  // CSVに担当者列があれば未設定のみ反映
-      const k = rowKey(pr.arr);
-      const rem = remaining.get(k) || 0;
-      if (rem > 0) { remaining.set(k, rem - 1); skipped++; continue; }
-      added.push(pr.arr);
     }
-    if (added.length) setRows(prev => [...prev, ...added]);
+    if (mg.next !== rows) setRows(mg.next);
     if (Object.keys(changed).length) setMasters(prev => ({ ...prev, customers: { ...prev.customers, ...changed } }));
-    setMeta(prev => ({ ...(prev || {}), schema: 1, lastImport: new Date().toISOString() }));
+    // 取込ごとの照合記録（CSVの金額合計 ＝ 新規追加 ＋ 重複スキップ。読み飛ばした行は別に記録）
+    const log = {
+      at: new Date().toISOString(), file: p.fileName, period: p.period,
+      rows: p.rowsParsed.length, bad: p.badRows.length, fileTotal: p.fileTotal, badTotal: p.badTotal,
+      added: added.length, addedTotal, skipped, skippedTotal, repFilled: mg.repFilled,
+      grossUnknown: p.grossUnknown, grossFromCost: p.grossFromCost,
+    };
+    setMeta(prev => ({ ...(prev || {}), schema: 1, lastImport: log.at, imports: [...(((prev || {}).imports) || []).slice(-19), log] }));
 
     const merged = { ...cur, ...changed };
     let fac = 0, per = 0, unc = 0, unas = 0;
@@ -4457,7 +5009,7 @@ function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs
       type: 'ok', file: p.fileName, encoding: p.encoding,
       rowsTotal: p.rowsParsed.length + p.badRows.length,
       added: added.length, skipped, bad: p.badRows, period: p.period,
-      facilities: fac, persons: per, uncertain: unc, unassigned: unas,
+      facilities: fac, persons: per, uncertain: unc, unassigned: unas, log,
     });
     setPreview(null);
     showToast(added.length ? num(added.length) + '行を取り込みました' : '新しい行はありませんでした（すべて重複スキップ）', added.length ? 'success' : 'info');
@@ -4473,6 +5025,7 @@ function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs
           <Trash2 size={13} /> 取り込んだデータを削除
         </button>
       </div>
+      {rows.length > 0 && data && !data.empty && <DataCheckCard rows={rows} data={data} meta={meta} goTab={goTab} />}
       <div
         onDragOver={e => { e.preventDefault(); setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
@@ -4531,6 +5084,7 @@ function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs
           <div className="p-5 space-y-2.5 text-sm text-slate-600">
             <div className="tabular-nums">📄 {result.file} — <b className="text-slate-800">{num(result.rowsTotal)}行</b>を読み込みました（{result.encoding}）</div>
             <div className="tabular-nums">新規追加: <b className="text-slate-800">{num(result.added)}行</b> ／ 重複スキップ: <b className="text-slate-800">{num(result.skipped)}行</b>（売上番号＋商品名＋数量＋金額で重複判定）</div>
+            <ImportReconcile log={result.log} />
             <div className="tabular-nums">期間: {result.period} ／ 施設: {num(result.facilities)}件 ／ 個人（集計対象外）: {num(result.persons)}件</div>
             {result.bad.length > 0 && (
               <div className="bg-rose-50 border border-rose-100 rounded-xl px-4 py-2.5 text-xs text-rose-700">
@@ -4581,6 +5135,7 @@ function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs
               <div className="flex gap-2 flex-wrap text-xs">
                 <span className="bg-slate-100 text-slate-600 font-bold px-2.5 py-1 rounded-full tabular-nums">明細 {num(preview.rowsParsed.length)}行</span>
                 <span className="bg-slate-100 text-slate-600 font-bold px-2.5 py-1 rounded-full tabular-nums">期間 {preview.period}</span>
+                <span className="bg-slate-100 text-slate-600 font-bold px-2.5 py-1 rounded-full tabular-nums">金額合計 {yen(preview.fileTotal)}（税抜・取り込める行）</span>
                 {preview.badRows.length > 0 && (
                   <span className="bg-rose-50 text-rose-600 font-bold px-2.5 py-1 rounded-full tabular-nums">不正な行 {num(preview.badRows.length)}行（読み飛ばします）</span>
                 )}
@@ -4598,7 +5153,11 @@ function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs
                 {/* 任意列が拾えないと 0 が入るだけで取込は成功してしまい、粗利率が全て0%に
                     なるなど数字が静かに壊れる。影響の大きい列は明示的に警告する。 */}
                 {(() => {
-                  const impact = { gross: '粗利額・粗利率がすべて0になります', price: '単価が¥0になり、発注書・見積書の初期価格が入りません', cost: '仕入単価が¥0になり、粗利と利益率が正しく出ません' };
+                  const impact = {
+                    gross: preview.found.cost ? '粗利は「金額－仕入単価×数量」で計算します' : '粗利・粗利率は「未確定」になります（0円としては扱いません）',
+                    price: '単価が¥0になり、発注書・見積書の初期価格が入りません',
+                    cost: '明細の仕入額は表示できません（粗利は粗利額の列を使います）',
+                  };
                   const missing = Object.keys(impact).filter(k => !preview.found[k]);
                   if (!missing.length) return null;
                   return (
@@ -4612,6 +5171,12 @@ function ImportView({ rows, masters, setRows, setMasters, setMeta, docs, setDocs
                     </div>
                   );
                 })()}
+                {(preview.grossUnknown > 0 || preview.grossFromCost > 0) && (
+                  <div className="mt-2 text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 space-y-0.5">
+                    {preview.grossFromCost > 0 && <div>・粗利額が空のため「金額－仕入単価×数量」で粗利を求めた明細: <b>{num(preview.grossFromCost)}行</b></div>}
+                    {preview.grossUnknown > 0 && <div>・粗利額も仕入単価もない明細: <b>{num(preview.grossUnknown)}行</b> → この明細を含む集計の粗利は「未確定」と表示します</div>}
+                  </div>
+                )}
               </div>
               <div>
                 <div className="text-[11px] font-bold text-slate-600 uppercase tracking-wide mb-2">先頭5行のプレビュー</div>
@@ -6857,12 +7422,16 @@ function SalesSearchPanel({ rows, masters, showToast, openPrint }) {
   }, [matched, sortKey, sortDir]);
 
   const summary = useMemo(() => {
-    let qty = 0, sales = 0, cost = 0, gross = 0;
+    let qty = 0, sales = 0, cost = 0, gross = 0, grossUnknown = 0;
     for (const r of matched) {
       qty += (+r[4] || 0); sales += (+r[7] || 0); gross += (+r[8] || 0);
+      if (r[8] === null || r[8] === undefined || r[8] === '') grossUnknown++;
       cost += (+r[4] || 0) * (+r[10] || 0);
     }
-    return { qty, sales, cost, gross, rate: sales !== 0 ? Math.round(gross / sales * 1000) / 10 : 0, count: matched.length };
+    // 数量は単位が違っても足してしまうため、単位が混在するときは表示側で注意を出す
+    const units = new Set(matched.map(r => r[5] || ''));
+    return { qty, sales, cost, gross, grossUnknown, mixedUnit: units.size > 1,
+      rate: sales !== 0 ? Math.round(gross / sales * 1000) / 10 : 0, count: matched.length };
   }, [matched]);
 
   const visible = sorted.slice(0, 200);
@@ -6886,8 +7455,9 @@ function SalesSearchPanel({ rows, masters, showToast, openPrint }) {
     const lines = sorted.map(r => {
       const amount = +r[7] || 0, gross = +r[8] || 0;
       return [
-        r[0], r[1], r[2], custType(r[2]) || '不明', repOf(r[2]), r[3], r[4], r[5], r[6], r[7], r[10], (+r[4] || 0) * (+r[10] || 0), r[8],
-        amount > 0 ? Math.round(gross / amount * 1000) / 10 : '',
+        r[0], r[1], r[2], custType(r[2]) || '不明', repOf(r[2]), r[3], r[4], r[5], r[6], r[7], r[10],
+        r[10] === null || r[10] === undefined ? '' : (+r[4] || 0) * (+r[10] || 0), r[8],
+        amount > 0 && r[8] !== null && r[8] !== undefined ? Math.round(gross / amount * 1000) / 10 : '',
       ];
     });
     downloadText('売上管理_' + q.replace(/[\\/:*?"<>|]/g, '') + '_' + todayCompact() + '.csv', buildCsv([head, ...lines]), 'text/csv');
@@ -6896,7 +7466,7 @@ function SalesSearchPanel({ rows, masters, showToast, openPrint }) {
   const handlePrint = () => {
     openPrint(buildSalesSearchHtml({ query: q, periodLabel, summary, rows: sorted.map(r => ({
       date: r[1], customer: r[2], custType: custType(r[2]) || '', product: r[3], qty: +r[4] || 0, unit: r[5] || '',
-      price: +r[6] || 0, amount: +r[7] || 0, costPrice: +r[10] || 0, gross: +r[8] || 0,
+      price: +r[6] || 0, amount: +r[7] || 0, costPrice: +r[10] || 0, gross: r[8] === null || r[8] === undefined ? null : (+r[8] || 0),
     })) }));
   };
 
@@ -6951,10 +7521,12 @@ function SalesSearchPanel({ rows, masters, showToast, openPrint }) {
         <>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             <KpiCard icon={Package} tint="bg-sky-50 text-sky-600" label="該当件数" value={num(summary.count) + '件'} />
-            <KpiCard icon={ClipboardList} tint="bg-slate-100 text-slate-600" label="数量合計" value={num(summary.qty)} />
+            <KpiCard icon={ClipboardList} tint="bg-slate-100 text-slate-600" label="数量合計" value={summary.mixedUnit ? '単位混在' : num(summary.qty)}
+              note={summary.mixedUnit ? '単位の違う明細は合計しません' : undefined} />
             <KpiCard icon={JapaneseYen} tint="bg-blue-50 text-blue-600" label="販売金額合計" value={yen(summary.sales)} />
             <KpiCard icon={Coins} tint="bg-amber-50 text-amber-600" label="仕入金額合計" value={yen(summary.cost)} />
-            <KpiCard icon={Percent} tint="bg-emerald-50 text-emerald-600" label="粗利額（粗利率）" value={yen(summary.gross)} note={summary.rate + '%'} />
+            <KpiCard icon={Percent} tint="bg-emerald-50 text-emerald-600" label="粗利額（粗利率）" value={summary.grossUnknown ? '未確定' : yen(summary.gross)}
+              note={summary.grossUnknown ? '粗利額のない明細 ' + num(summary.grossUnknown) + '件' : summary.rate + '%'} />
           </div>
 
           <Card className="overflow-x-auto">
@@ -6977,7 +7549,8 @@ function SalesSearchPanel({ rows, masters, showToast, openPrint }) {
               <tbody className="divide-y divide-slate-50">
                 {visible.map((r, i) => {
                   const amount = +r[7] || 0, gross = +r[8] || 0;
-                  const marginPct = amount > 0 ? Math.round(gross / amount * 1000) / 10 : null;
+                  const grossNull = r[8] === null || r[8] === undefined;
+                  const marginPct = amount > 0 && !grossNull ? Math.round(gross / amount * 1000) / 10 : null;
                   return (
                   <tr key={i} className="hover:bg-sky-50/50 transition">
                     <td className="px-5 py-2.5 text-slate-600 tabular-nums whitespace-nowrap">{r[1]}</td>
@@ -6995,7 +7568,7 @@ function SalesSearchPanel({ rows, masters, showToast, openPrint }) {
                     <td className="px-2 py-2.5 pr-4 text-right tabular-nums font-bold text-slate-800">{yen(r[7])}</td>
                     <td className="px-2 py-2.5 pr-4 text-right tabular-nums text-slate-600">{(+r[10] || 0) > 0 ? yen(r[10]) : '—'}</td>
                     <td className="px-2 py-2.5 pr-4 text-right tabular-nums text-slate-600">{(+r[10] || 0) > 0 ? yen((+r[4] || 0) * (+r[10] || 0)) : '—'}</td>
-                    <td className="px-2 py-2.5 pr-4 text-right tabular-nums font-bold text-slate-700">{yen(r[8])}</td>
+                    <td className="px-2 py-2.5 pr-4 text-right tabular-nums font-bold text-slate-700">{grossNull ? <span className="text-amber-700 text-xs">未取得</span> : yen(r[8])}</td>
                     <td className={"px-5 py-2.5 text-right tabular-nums font-bold " + (marginPct === null ? 'text-slate-400' : marginPct < 0 ? 'text-rose-600' : 'text-emerald-600')}>{marginPct === null ? '—' : marginPct + '%'}</td>
                   </tr>
                   );
@@ -7534,7 +8107,7 @@ function App() {
         <main className={"px-5 md:px-8 py-6 " + (['order', 'quote', 'pricerevision'].includes(tab) ? 'max-w-[100rem]' : 'max-w-6xl')}>
           {needData ? <EmptyState goImport={() => setTab('import')} /> : (
             <>
-              {tab === 'dash' && <DashboardView data={data} rows={rows} masters={masters} jumpToFacility={jumpToFacility} openPrint={setPrintHtml} office={masters.settings.office} showToast={showToast} />}
+              {tab === 'dash' && <DashboardView data={data} rows={rows} masters={masters} meta={meta} jumpToFacility={jumpToFacility} openPrint={setPrintHtml} office={masters.settings.office} showToast={showToast} goTab={setTab} />}
               {tab === 'fac' && <FacilitiesView data={data} openId={openFacId} setOpenId={setOpenFacId} repFilter={repFilter} setRepFilter={setRepFilter} showToast={showToast} openPrint={setPrintHtml} startDoc={startDoc} office={masters.settings.office} />}
               {tab === 'factrend' && <FacilityTrendView data={data} jumpToFacility={jumpToFacility} showToast={showToast} />}
               {tab === 'rep' && <RepsView data={data} goFacilities={goFacilities} />}
@@ -7544,7 +8117,7 @@ function App() {
               {tab === 'quote' && <DocComposer docType="quote" data={data} masters={masters} draft={quoteDraft} setDraft={setQuoteDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} goImport={() => setTab('import')} />}
               {tab === 'pricerevision' && <PriceRevisionView data={data} masters={masters} draft={priceRevisionDraft} setDraft={setPriceRevisionDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} />}
               {tab === 'targets' && <TargetsView data={data} masters={masters} targets={targets} setTargets={setTargets} showToast={showToast} jumpToFacility={jumpToFacility} />}
-              {tab === 'import' && <ImportView rows={rows} masters={masters} setRows={setRows} setMasters={setMasters} setMeta={setMeta} docs={docs} setDocs={setDocs} showToast={showToast} />}
+              {tab === 'import' && <ImportView rows={rows} masters={masters} setRows={setRows} setMasters={setMasters} setMeta={setMeta} docs={docs} setDocs={setDocs} showToast={showToast} data={data} meta={meta} goTab={setTab} />}
               {tab === 'settings' && <SettingsView rows={rows} masters={masters} setRows={setRows} setMasters={setMasters} setOffice={setOffice} meta={meta} setMeta={setMeta} docs={docs} setDocs={setDocs} targets={targets} setTargets={setTargets} data={data} showToast={showToast} />}
             </>
           )}
