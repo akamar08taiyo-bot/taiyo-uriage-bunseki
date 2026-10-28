@@ -56,7 +56,7 @@ import {
   Printer, X, Search, AlertTriangle, PhoneCall, ChevronDown, ChevronUp, ChevronRight,
   FileSpreadsheet, Database, Trash2, Download, Info, CheckCircle2, Truck,
   TrendingDown, TrendingUp, FileUp, ClipboardPaste, HardDrive, Sun, ArrowUpRight,
-  ArrowDownRight, JapaneseYen, Percent, Coins, ClipboardList, RotateCcw, Pencil, FilePlus, CalendarDays, Filter, Eye, EyeOff, RefreshCw, Calculator, Delete, Target, Plus, Folder
+  ArrowDownRight, JapaneseYen, Percent, Coins, ClipboardList, RotateCcw, Pencil, FilePlus, CalendarDays, Filter, Eye, EyeOff, RefreshCw, Calculator, Delete, Target, Plus, Folder, Home
 } from 'lucide-react';
 
 /* ============================================================
@@ -178,7 +178,7 @@ const portalSessionOffice = () => {
 const DEFAULT_SETTINGS = { redPct: -50, yellowPct: -25, bufferDays: 7, stockMonths: 1, alertMinBase: 3000, office: null, reps: [], tabLabels: {} };
 const defaultMasters = () => ({
   customers: {}, catOverrides: {}, catRules: [], priceOverrides: {}, itemHandling: {},
-  itemFacilityHandling: {}, stockQtyOverrides: {}, stockMonthOverrides: {},
+  itemFacilityHandling: {}, stockQtyOverrides: {}, stockMonthOverrides: {}, referralOverrides: {},
   settings: { ...DEFAULT_SETTINGS },
 });
 const normalizeMasters = (m) => {
@@ -222,6 +222,8 @@ const normalizeMasters = (m) => {
     itemFacilityHandling: normFacilityHandling(m.itemFacilityHandling),
     stockQtyOverrides: normStockQtyOverrides(m.stockQtyOverrides),
     stockMonthOverrides: normStockMonthOverrides(m.stockMonthOverrides),
+    // 依頼元の手直し（お客様名 → 依頼元名。'' は依頼元なし）
+    referralOverrides: Object.fromEntries(Object.entries(obj(m.referralOverrides)).filter(([, v]) => typeof v === 'string')),
     settings: {
       ...DEFAULT_SETTINGS, ...obj(m.settings),
       office: (m.settings && officeByName(m.settings.office)) ? m.settings.office : null,
@@ -555,18 +557,58 @@ function looksLikeIndividualRecipient(rawName) {
   return false;
 }
 
+// 依頼元（居宅介護支援事業所・地域包括支援センター）をお客様名から取り出す。
+// 実データでは包括・居宅経由の個人が「築上町包括　水ノ江」のように「依頼元＋個人名」で登録されている。
+// ・空白で区切られ、最後の語が人名らしければ（漢字・カタカナ6文字以内）それより前を依頼元にする
+// ・空白がなければ「センター」「包括」などの区切りの言葉の後ろが人名らしいときに分ける（例：○○地域包括支援センター大場）
+// ・依頼元の言葉を含まない名前（「水ノ江」「熊本　千佳」など）は依頼元なし
+// overrides（masters.referralOverrides）に登録があればそれを優先する（'' は依頼元なし）
+const REFERRAL_KWS = ['包括', '居宅', 'ケアプラン', 'ケアマネ', '介護支援', '支援センター', '支援事業所'];
+const REFERRAL_SPLIT = ['支援センター', 'センター', '事業所', 'ケアプラン', 'ケアマネ', '包括', '居宅', 'オフィス', 'ステーション'];
+function parseReferral(rawName, overrides) {
+  const name = String(rawName || '').normalize('NFKC').replace(/\s+/g, ' ').trim();
+  const isSourceWord = (t) => REFERRAL_KWS.some(k => t.includes(k)) || REFERRAL_SPLIT.some(k => t.includes(k));
+  const auto = (() => {
+    if (!REFERRAL_KWS.some(k => name.includes(k))) return { source: '', person: name };
+    const tokens = name.split(' ');
+    if (tokens.length >= 2) {
+      // 依頼元の言葉を含む最後のかたまりまでが依頼元。その後ろがすべて人名らしければ個人名（「田中 花子」のように空白入りも可）
+      let at = -1;
+      tokens.forEach((t, i) => { if (isSourceWord(t)) at = i; });
+      const rest = tokens.slice(at + 1);
+      if (at >= 0 && rest.length && rest.every(t => PERSON_TOKEN_RE.test(t))) return { source: tokens.slice(0, at + 1).join(' '), person: rest.join(' ') };
+      return { source: name, person: '' };
+    }
+    let cut = -1;
+    for (const k of REFERRAL_SPLIT) { const i = name.lastIndexOf(k); if (i >= 0) cut = Math.max(cut, i + k.length); }
+    if (cut > 0 && cut < name.length && PERSON_TOKEN_RE.test(name.slice(cut))) return { source: name.slice(0, cut), person: name.slice(cut) };
+    return { source: name, person: '' };
+  })();
+  if (overrides && Object.prototype.hasOwnProperty.call(overrides, rawName)) {
+    const src = String(overrides[rawName] || '').trim();
+    return { source: src, person: auto.person || name, manual: true };
+  }
+  return { ...auto, manual: false };
+}
+
 /* ============================================================
    商品分類辞書（キーワード自動分類。手直し catOverrides が常に優先）
 ============================================================ */
 const CATEGORY_NAMES = [
   'オムツ・パッド', '紙製品', '手袋・マスク', '清拭・入浴', '衛生用品', '洗剤類', '台所用品', '栄養補助食品',
-  'ポータブルトイレ用品', 'ベッド・車いす・歩行器', 'リハビリ・福祉用具', 'マット・モップ', '部材', 'ゴミ袋・ポリ袋', '住宅改修', 'その他',
+  'ポータブルトイレ用品', 'ベッド・車いす・歩行器', 'リハビリ・福祉用具', 'マット・モップ', '部材', 'ゴミ袋・ポリ袋', '特定福祉用具', '住宅改修', 'その他',
 ];
-// 順番が重要: 上から順に最初に当たった分類を採用
+// 順番が重要: 上から順に最初に当たった分類を採用。3つ目の配列は「含んでいたらこの分類にしない」言葉
 const CAT_RULES = [
   // 「入れ歯洗浄剤」は「入れ歯」キーワード（リハビリ・福祉用具）より先に判定し、その他に分類する
   ['その他', ['入れ歯洗浄剤']],
   ['住宅改修', ['改修', '工事', '住宅', '工務店']],
+  // 特定福祉用具（介護保険で購入する入浴・排泄用の用具）。ポータブルトイレ用の消臭剤・処理袋などの消耗品は
+  // 「ポータブルトイレ用品」のままにするため除外語を持つ。浴槽用の手すりは「リハビリ・福祉用具」の手すりより先に拾う
+  ['特定福祉用具', ['シャワーチェア', 'シャワーベンチ', 'シャワーいす', 'シャワー椅子', '入浴用いす', '入浴いす', '入浴椅子', '入浴用椅子',
+    '浴槽台', 'バスボード', '浴槽手すり', '浴槽用手すり', '入浴用手すり', '入浴台', '浴室すのこ', '浴槽内いす', '浴槽内椅子',
+    '腰掛便座', '補高便座', '据置式便座', 'ポータブルトイレ', '簡易浴槽', 'つり具', '吊り具', '排泄予測'],
+    ['消臭', '脱臭', '芳香', '凝固', '袋', 'ラップ', 'フィルム', 'シート', '処理剤', '洗浄剤', 'ポータブルトイレ用', '交換用']],
   ['部材', ['丸棒', 'ブラケット', 'ベースプレート', 'インテリアバー', 'アッシュ', 'ディンプル', 'エンドキャップ', '部材', 'ジョイント', '座金', 'ビス', 'ネジ', '取付金具', 'フランジ', '支柱']],
   ['栄養補助食品', ['とろみ', 'ゼリー', '栄養', 'ミルク', '飲料', '介護食', '流動食', 'ムース', 'プリン', 'スープ', 'ジュース', 'ドリンク']],
   ['手袋・マスク', ['手袋', 'グローブ', 'マスク', 'エプロン', '指サック', 'ガウン', 'フェイスシールド']],
@@ -588,7 +630,7 @@ const CAT_RULES = [
   ['リハビリ・福祉用具', ['杖', 'ステッキ', '手すり', 'スロープ', 'クッション', 'ポジショニング', 'リハビリ', '福祉', 'スプーン', '自助', '徘徊', 'センサー', '体位', '入れ歯', '補聴']],
 ];
 // 「消耗品のみ」表示で除外する分類（住宅改修・器具本体・部材など、日々使い切る消耗品ではないもの）
-const NON_CONSUMABLE_CATS = new Set(['住宅改修', 'ベッド・車いす・歩行器', 'リハビリ・福祉用具', '部材']);
+const NON_CONSUMABLE_CATS = new Set(['住宅改修', '特定福祉用具', 'ベッド・車いす・歩行器', 'リハビリ・福祉用具', '部材']);
 const _catCache = new Map();
 function autoCategory(rawName) {
   if (_catCache.has(rawName)) return _catCache.get(rawName);
@@ -596,7 +638,8 @@ function autoCategory(rawName) {
   let cat = 'その他';
   outer:
   for (let i = 0; i < CAT_RULES.length; i++) {
-    const kws = CAT_RULES[i][1];
+    const kws = CAT_RULES[i][1], excl = CAT_RULES[i][2];
+    if (excl && excl.some(k => n.includes(k))) continue;
     for (let j = 0; j < kws.length; j++) {
       if (n.includes(kws[j])) { cat = CAT_RULES[i][0]; break outer; }
     }
@@ -1080,6 +1123,89 @@ function decomposeSalesChange(curRows, prevRows) {
     cur: c.total, prev: p.total, diff, volume, price, added, ended, adj, other,
     check: Math.abs(diff - (volume + price + added + ended + adj + other)) < 0.5,
     items: items.sort((x, y) => Math.abs(y.diff) - Math.abs(x.diff)),
+  };
+}
+
+// 住宅改修・特定福祉用具販売の集計（明細を期間で走査）。
+// ・住宅改修＝分類「住宅改修」「部材」の明細と、住宅改修（工事・改修）と同じ伝票に載った「リハビリ・福祉用具」（手すりなど）
+// ・特定福祉用具＝分類「特定福祉用具」の明細
+// ・scope 'person'：個人（依頼元経由を含む）だけ。依頼元が取り出せたお客様と、施設/個人判定が個人のお客様
+//   scope 'all'：施設を含むすべてのお客様
+// ・件数＝期間内に購入があったお客様の数（同じお客様の複数の伝票は1件）。伝票数は slips
+// ・opts.months（明細が1行でもある月）を渡すと、明細のない月に noData を付ける（0円と取り込み漏れを区別するため）
+const REFORM_KINDS = [['reform', '住宅改修'], ['welfare', '特定福祉用具']];
+function buildReformReport(rows, masters, fromIdx, toIdx, scope, opts = {}) {
+  const custs = masters.customers, catOv = masters.catOverrides, catRules = masters.catRules, refOv = masters.referralOverrides || {};
+  const inRange = [];
+  const reformSlips = new Set();
+  for (const r of rows) {
+    const d = parseDateStr(r[1]);
+    if (!d || d.idx < fromIdx || d.idx > toIdx) continue;
+    const cat = categoryOf(r[3], catOv, catRules);
+    inRange.push({ r, d, cat });
+    if (cat === '住宅改修') reformSlips.add(r[0] + '\u0001' + r[2]);
+  }
+  const parseCache = new Map();
+  const refOf = (name) => { if (!parseCache.has(name)) parseCache.set(name, parseReferral(name, refOv)); return parseCache.get(name); };
+  const zero = () => ({ reform: 0, welfare: 0 });
+  const kpi = { reform: { sales: 0, gross: 0, gu: 0, cust: new Set(), slips: new Set() }, welfare: { sales: 0, gross: 0, gu: 0, cust: new Set(), slips: new Set() } };
+  const monMap = new Map(), srcMap = new Map(), custMap = new Map(), prodMap = new Map();
+  for (const { r, d, cat } of inRange) {
+    const kind = (cat === '住宅改修' || cat === '部材' || (cat === 'リハビリ・福祉用具' && reformSlips.has(r[0] + '\u0001' + r[2]))) ? 'reform'
+      : cat === '特定福祉用具' ? 'welfare' : null;
+    if (!kind) continue;
+    const name = r[2];
+    const ref = refOf(name);
+    const c = custs[name] || classifyCustomerName(name);
+    const personal = !!ref.source || c.type === 'person';
+    if (scope === 'person' && !personal) continue;
+    const amt = +r[7] || 0, qty = +r[4] || 0;
+    const gKnown = r[8] !== null && r[8] !== undefined && r[8] !== '';
+    const k = kpi[kind];
+    k.sales += amt; k.gross += gKnown ? (+r[8] || 0) : 0; if (!gKnown) k.gu++;
+    k.cust.add(name); k.slips.add(r[0]);
+    let mo = monMap.get(d.idx);
+    if (!mo) { mo = { ...zero(), cust: { reform: new Set(), welfare: new Set() } }; monMap.set(d.idx, mo); }
+    mo[kind] += amt; mo.cust[kind].add(name);
+    const srcKey = ref.source || '';
+    let sg = srcMap.get(srcKey);
+    if (!sg) { sg = { source: srcKey, none: !srcKey, ...zero(), sales: 0, cust: new Map(), slips: new Set() }; srcMap.set(srcKey, sg); }
+    sg[kind] += amt; sg.sales += amt; sg.slips.add(r[0]);
+    let cu = custMap.get(name);
+    if (!cu) { cu = { name, source: srcKey, person: ref.person || name, manual: ref.manual, personal, ...zero(), sales: 0, slips: new Set(), last: null, products: new Map() }; custMap.set(name, cu); }
+    cu[kind] += amt; cu.sales += amt; cu.slips.add(r[0]);
+    if (!cu.last || d.sort > cu.last.sort) cu.last = d;
+    cu.products.set(r[3], (cu.products.get(r[3]) || 0) + amt);
+    sg.cust.set(name, cu);
+    let pr = prodMap.get(r[3]);
+    if (!pr) { pr = { name: r[3], kind, cat, sales: 0, qty: 0, units: new Set(), cust: new Set() }; prodMap.set(r[3], pr); }
+    pr.sales += amt; pr.qty += qty; pr.units.add(r[5] || ''); pr.cust.add(name);
+  }
+  const haveMonths = opts.months ? new Set(opts.months) : null;
+  const months = [];
+  for (let i = fromIdx; i <= toIdx; i++) {
+    const m = monMap.get(i);
+    months.push({ idx: i, reform: m ? m.reform : 0, welfare: m ? m.welfare : 0,
+      reformCases: m ? m.cust.reform.size : 0, welfareCases: m ? m.cust.welfare.size : 0,
+      noData: haveMonths ? !haveMonths.has(i) : false });
+  }
+  const custOut = (cu) => ({ ...cu, slips: cu.slips.size, cases: 1,
+    topProducts: [...cu.products.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(x => x[0]) });
+  const sources = [...srcMap.values()].map(sg => {
+    const list = [...sg.cust.values()].map(custOut).sort((a, b) => b.sales - a.sales);
+    return { source: sg.source, none: sg.none, reform: sg.reform, welfare: sg.welfare, sales: sg.sales, slips: sg.slips.size,
+      cases: list.length, reformCases: list.filter(x => x.reform !== 0).length, welfareCases: list.filter(x => x.welfare !== 0).length, customers: list };
+  });
+  const total = kpi.reform.sales + kpi.welfare.sales;
+  const kOut = (k) => ({ sales: k.sales, gross: k.gross, grossUnknown: k.gu, cases: k.cust.size, slips: k.slips.size });
+  return {
+    kpi: { reform: kOut(kpi.reform), welfare: kOut(kpi.welfare), total,
+      cases: custMap.size, sources: sources.filter(x => !x.none).length,
+      viaReferral: sources.filter(x => !x.none).reduce((t, x) => t + x.sales, 0) },
+    months, sources,
+    customers: [...custMap.values()].map(custOut).sort((a, b) => b.sales - a.sales),
+    products: [...prodMap.values()].map(p => ({ name: p.name, kind: p.kind, cat: p.cat, sales: p.sales, qty: p.qty,
+      units: [...p.units], mixedUnit: p.units.size > 1, cases: p.cust.size })).sort((a, b) => b.sales - a.sales),
   };
 }
 
@@ -3118,7 +3244,7 @@ function DashboardView({ data, rows, masters, meta, jumpToFacility, openPrint, o
       </div>
       {consumableOnly && (
         <div className="text-[11px] text-sky-700 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2 -mt-2">
-          消耗品のみ表示中：住宅改修・車いす等の器具本体・部材と、個人（地域包括支援センター経由等）向けとみられる売上を除いて集計しています。
+          消耗品のみ表示中：住宅改修・車いす等の器具本体（ポータブルトイレ・シャワーチェアなどの特定福祉用具を含む）・部材と、個人（地域包括支援センター経由等）向けとみられる売上を除いて集計しています。
         </div>
       )}
       <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3">
@@ -4219,6 +4345,400 @@ function RepsView({ data, goFacilities }) {
         <br />担当別の数字は前後の担当変更や単発の大口取引の影響を受けます。担当者の成果と判断する前に、施設ごとの明細をご確認ください。
         {!saleMode && <> 行をクリックすると、その担当者の施設一覧に移動します。担当者の設定は「設定→担当者対応表」で行えます</>}
       </div>
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================
+   画面: 住宅改修・特定福祉用具（売上ランキング・個人の売上推移・依頼元の居宅／包括）
+============================================================ */
+// 2系列の色（色の見え方の違いも含めて検査済み：dataviz の validate_palette で全項目合格）
+const REFORM_COLORS = { reform: '#d97706', welfare: '#0284c7' };
+const manYen = (v) => (Math.abs(v) >= 10000 ? (Math.round(v / 1000) / 10).toLocaleString('ja-JP') + '万' : num(v));
+
+// 月ごとの積み上げ棒。縦軸は金額の1本だけ。棒に指／マウスを乗せると、その月の内訳を出す
+// noteOf(m)：月の下に添える短い注記（「26日まで」など）。m.noData の月は棒を描かず「取込なし」と出す
+function StackedBars({ months, series, height = 230, noteOf }) {
+  const [hover, setHover] = useState(null);
+  const colW = 52, padL = 56, padT = 12, padB = 28;
+  const W = padL + Math.max(months.length, 6) * colW + 8, H = height;
+  const totals = months.map(m => series.reduce((t, s) => t + Math.max(0, m[s.key]), 0));
+  const rawMax = Math.max(...totals, 1);
+  const pow = Math.pow(10, Math.floor(Math.log10(rawMax)));
+  const max = [1, 2, 2.5, 5, 10].map(k => k * pow).find(v => v >= rawMax) || rawMax;
+  const y = (v) => padT + (H - padT - padB) * (1 - v / max);
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map(f => f * max);
+  const bw = 26;
+  return (
+    <div className="relative overflow-x-auto">
+      <svg width={W} height={H} className="block" role="img" aria-label="月ごとの売上（積み上げ棒グラフ）">
+        {ticks.map((t, i) => (
+          <g key={i}>
+            <line x1={padL} x2={W - 4} y1={y(t)} y2={y(t)} stroke="#e2e8f0" strokeWidth="1" />
+            <text x={padL - 6} y={y(t) + 3.5} fontSize="10" textAnchor="end" fill="#64748b">{t === 0 ? '0' : '¥' + manYen(t)}</text>
+          </g>
+        ))}
+        {months.map((m, i) => {
+          const cx = padL + i * colW + colW / 2;
+          let acc = 0;
+          return (
+            <g key={m.idx}>
+              {series.map((s, si) => {
+                const v = Math.max(0, m[s.key]);
+                if (v <= 0) return null;
+                const y1 = y(acc + v), y0 = y(acc);
+                acc += v;
+                // 段と段の間は2pxあける
+                const h = Math.max(1, y0 - y1 - (si > 0 ? 2 : 0));
+                return <rect key={s.key} x={cx - bw / 2} y={y1} width={bw} height={h} rx="3" fill={s.color} />;
+              })}
+              {m.noData && <text x={cx} y={y(0) - 6} fontSize="9" textAnchor="middle" fill="#94a3b8">取込なし</text>}
+              <text x={cx} y={H - 10} fontSize="10" textAnchor="middle" fill="#64748b">{idxShort(m.idx)}</text>
+              <rect x={cx - colW / 2} y={padT} width={colW} height={H - padT - padB} fill="transparent"
+                onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)} onTouchStart={() => setHover(i)} />
+            </g>
+          );
+        })}
+      </svg>
+      {hover !== null && months[hover] && (
+        <div className="absolute top-1 pointer-events-none bg-white border border-slate-200 shadow-lg rounded-lg px-3 py-2 text-[11px] text-slate-700 tabular-nums"
+          style={{ left: Math.min(padL + hover * colW + colW, W - 170) }}>
+          <div className="font-bold text-slate-800 mb-0.5">{idxLabel(months[hover].idx)}{noteOf && noteOf(months[hover]) ? '（' + noteOf(months[hover]) + '）' : ''}</div>
+          {months[hover].noData ? <div className="text-slate-600">この月の明細は取り込まれていません</div> : series.map(s => (
+            <div key={s.key} className="flex items-center gap-1.5">
+              <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: s.color }} />
+              {s.label} {yen(months[hover][s.key])}（{num(months[hover][s.key + 'Cases'])}件）
+            </div>
+          ))}
+          {series.length > 1 && !months[hover].noData && <div className="mt-0.5 pt-0.5 border-t border-slate-100 font-bold">合計 {yen(series.reduce((t, s) => t + months[hover][s.key], 0))}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReformView({ data, rows, masters, setMasters, showToast }) {
+  const [period, setPeriod] = useState('12m');
+  const [scope, setScope] = useState('person');
+  const [kind, setKind] = useState('both');
+  const [srcSort, setSrcSort] = useState('sales');
+  const [openSrc, setOpenSrc] = useState(null);
+  const [showAllSrc, setShowAllSrc] = useState(false);
+  const [judgeOpen, setJudgeOpen] = useState(false);
+  const [edit, setEdit] = useState(null); // { name, value }
+  const fiscalYears = useMemo(() => [...new Set(data.monthsAll.map(i => Math.floor(fiscalStartIdx(i) / 12)))].sort((a, b) => b - a), [data]);
+  const range = useMemo(() => {
+    if (period === 'all') return { from: data.monthsAll[0], to: data.monthsAll[data.monthsAll.length - 1], label: '全期間' };
+    if (period.startsWith('fy:')) {
+      const y = +period.slice(3);
+      return { from: y * 12 + 3, to: Math.min(y * 12 + 14, data.maxIdx), label: y + '年度' };
+    }
+    return { from: data.baseIdx - 11, to: data.baseIdx, label: '直近12ヶ月' };
+  }, [period, data]);
+  const rep = useMemo(() => buildReformReport(rows, masters, range.from, range.to, scope, { months: data.monthsAll }), [rows, masters, range, scope, data]);
+  const rangeDates = idxRangeDates(range.from, range.to, data.latestDate);
+  // 月の注記：取り込みのない月／明細がわずかな最新月／途中の月（〇日まで）
+  const monthNote = (m) => {
+    if (m.noData) return '取込なし';
+    if (data.thinLatest && m.idx === data.thinLatest.idx) return '明細わずか';
+    if (data.latestDate && m.idx === data.latestDate.idx && data.latestDate.d < daysInMonthIdx(m.idx)) return data.latestDate.d + '日まで';
+    return '';
+  };
+  const noDataMonths = rep.months.filter(m => m.noData);
+  const notedMonths = rep.months.filter(m => !m.noData && monthNote(m));
+  const kinds = kind === 'both' ? REFORM_KINDS : REFORM_KINDS.filter(([k]) => k === kind);
+  const valOf = (x) => kind === 'both' ? x.reform + x.welfare : x[kind];
+  const casesOf = (x) => kind === 'both' ? x.cases : x[kind + 'Cases'];
+  const series = kinds.map(([k, label]) => ({ key: k, label, color: REFORM_COLORS[k] }));
+
+  const sources = useMemo(() => {
+    const list = rep.sources.map(s => ({ ...s, v: valOf(s), c: casesOf(s) })).filter(s => s.c > 0 || s.v !== 0);
+    const named = list.filter(s => !s.none).sort((a, b) => srcSort === 'cases' ? (b.c - a.c || b.v - a.v) : (b.v - a.v || b.c - a.c));
+    return { named, none: list.find(s => s.none) || null, total: list.reduce((t, s) => t + s.v, 0) };
+  }, [rep, kind, srcSort]); // eslint-disable-line react-hooks/exhaustive-deps
+  const customers = rep.customers.filter(c => valOf(c) !== 0).sort((a, b) => valOf(b) - valOf(a));
+  const products = rep.products.filter(p => kind === 'both' || p.kind === kind);
+  const viaShare = rep.kpi.total > 0 ? Math.round(rep.kpi.viaReferral / rep.kpi.total * 1000) / 10 : null;
+
+  const setReferral = (name, value) => setMasters(prev => {
+    const ro = { ...(prev.referralOverrides || {}) };
+    if (value === null) delete ro[name]; else ro[name] = value;
+    return { ...prev, referralOverrides: ro };
+  });
+
+  const handleCsv = () => {
+    const head = ['依頼元', 'お客様名（CSVのまま）', '個人名', '住宅改修', '特定福祉用具', '合計', '伝票数', '最終購入日', '主な商品'];
+    const lines = [];
+    for (const s of [...sources.named, ...(sources.none ? [sources.none] : [])]) {
+      for (const c of s.customers) {
+        if (valOf(c) === 0) continue;
+        lines.push([s.none ? '（依頼元の記載なし）' : s.source, c.name, c.person, Math.round(c.reform), Math.round(c.welfare), Math.round(c.reform + c.welfare),
+          c.slips, c.last ? c.last.y + '/' + c.last.mo + '/' + c.last.d : '', c.topProducts.join('・')]);
+      }
+    }
+    downloadText('住宅改修・特定福祉用具_依頼元別_' + range.label + '_' + todayCompact() + '.csv', buildCsvWithConditions([
+      ['対象期間', range.label + '（' + rangeDates + '）'],
+      ['対象', scope === 'person' ? '個人（依頼元経由を含む）' : 'すべてのお客様'],
+      ['表示', kind === 'both' ? '住宅改修・特定福祉用具' : kind === 'reform' ? '住宅改修' : '特定福祉用具'],
+      ['金額', '税抜・返品／値引き反映後'],
+      ['定義', '住宅改修＝分類「住宅改修」「部材」と、工事と同じ伝票の手すり等。特定福祉用具＝分類「特定福祉用具」。依頼元はお客様名から取り出し（手直しを反映）'],
+      ['取込なしの月', noDataMonths.map(m => idxLabel(m.idx)).join('・')],
+      ['集計時点', todayLabel() + '（取込済みデータ ' + dataRangeLabel(data) + '）'],
+    ], [head, ...lines]), 'text/csv');
+    showToast('依頼元別のCSVを出力しました（' + num(lines.length) + '件）');
+  };
+
+  const kindBadge = (k) => (
+    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-600">
+      <span className="inline-block w-2 h-2 rounded-sm" style={{ background: REFORM_COLORS[k] }} />{k === 'reform' ? '住宅改修' : '特定福祉用具'}
+    </span>
+  );
+  const shownSources = showAllSrc ? sources.named : sources.named.slice(0, 15);
+  const srcRow = (s, rank) => {
+    const open = openSrc === (s.none ? '\u0000none' : s.source);
+    const share = sources.total > 0 ? Math.round(s.v / sources.total * 1000) / 10 : 0;
+    return (
+      <React.Fragment key={s.none ? '\u0000none' : s.source}>
+        <tr onClick={() => setOpenSrc(open ? null : (s.none ? '\u0000none' : s.source))}
+          className={"cursor-pointer transition " + (open ? 'bg-sky-50/80' : 'hover:bg-slate-50')}>
+          <td className="px-4 py-2.5 text-xs tabular-nums text-slate-500 w-10">{rank || ''}</td>
+          <td className="px-2 py-2.5 font-bold text-slate-800 text-sm">{s.none ? <span className="text-slate-500">（依頼元の記載なし）</span> : s.source}</td>
+          <td className="px-2 py-2.5 text-right tabular-nums text-sm text-slate-700">{num(s.c)}件</td>
+          <td className="px-2 py-2.5 text-right tabular-nums text-sm font-bold text-slate-800">{yen(s.v)}</td>
+          {kind === 'both' && <td className="px-2 py-2.5 text-right tabular-nums text-[11px] text-slate-600 whitespace-nowrap">住宅改修 {yen(s.reform)}<br />特定福祉用具 {yen(s.welfare)}</td>}
+          <td className="px-2 py-2.5 w-32">
+            <div className="flex items-center gap-1.5">
+              <div className="flex-1 bg-slate-100 rounded-full h-1.5 overflow-hidden"><div className="bg-sky-500 h-1.5 rounded-full" style={{ width: Math.max(0, Math.min(100, share)) + '%' }} /></div>
+              <span className="text-[11px] tabular-nums text-slate-600 w-10 text-right">{share}%</span>
+            </div>
+          </td>
+          <td className="pr-3 text-slate-400">{open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</td>
+        </tr>
+        {open && (
+          <tr><td colSpan={kind === 'both' ? 7 : 6} className="bg-slate-50/70 px-5 py-3">
+            <div className="text-[11px] font-bold text-slate-600 mb-1.5">{s.none ? '依頼元の記載がないお客様' : s.source + ' からの案件'}（{num(s.c)}件・伝票{num(s.slips)}枚）</div>
+            <table className="w-full text-xs">
+              <thead><tr className="text-slate-500 border-b border-slate-200">
+                <th className="text-left font-bold py-1">個人名</th><th className="text-left font-bold py-1">種類</th>
+                <th className="text-right font-bold py-1">金額</th><th className="text-right font-bold py-1">最終購入日</th><th className="text-left font-bold py-1 pl-3">主な商品</th>
+              </tr></thead>
+              <tbody>
+                {s.customers.filter(c => valOf(c) !== 0).map(c => (
+                  <tr key={c.name} className="border-b border-slate-100">
+                    <td className="py-1.5 font-bold text-slate-800">{c.person || c.name}</td>
+                    <td className="py-1.5"><div className="flex flex-col">{c.reform !== 0 && kindBadge('reform')}{c.welfare !== 0 && kindBadge('welfare')}</div></td>
+                    <td className="py-1.5 text-right tabular-nums">{yen(valOf(c))}</td>
+                    <td className="py-1.5 text-right tabular-nums text-slate-600">{c.last ? c.last.y + '/' + c.last.mo + '/' + c.last.d : '—'}</td>
+                    <td className="py-1.5 pl-3 text-slate-600 truncate max-w-[16rem]">{c.topProducts.join('・')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </td></tr>
+        )}
+      </React.Fragment>
+    );
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card className="p-5 space-y-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <select value={period} onChange={e => { setPeriod(e.target.value); setOpenSrc(null); }} aria-label="期間"
+            className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-sm shadow-sm font-bold text-slate-700">
+            <option value="12m">直近12ヶ月</option>
+            {fiscalYears.map(y => <option key={y} value={'fy:' + y}>{y}年度</option>)}
+            <option value="all">全期間</option>
+          </select>
+          <Segmented value={scope} onChange={setScope} options={[['person', '個人（依頼元経由を含む）'], ['all', 'すべてのお客様']]} />
+          <Segmented value={kind} onChange={setKind} options={[['both', '両方'], ['reform', '住宅改修'], ['welfare', '特定福祉用具']]} />
+          <button onClick={handleCsv} className="ml-auto bg-teal-600 hover:bg-teal-700 active:scale-[.98] text-white px-4 py-2.5 rounded-xl shadow-sm text-sm font-bold transition inline-flex items-center gap-1.5">
+            <FileSpreadsheet size={15} /> 依頼元別CSV
+          </button>
+        </div>
+        <div className="text-[11px] text-slate-600 leading-relaxed">
+          対象期間：<span className="tabular-nums">{range.label}（{rangeDates}）</span> ／ 金額は税抜・返品／値引き反映後 ／
+          住宅改修＝分類「住宅改修」「部材」と、工事と同じ伝票に載った手すりなど ／ 特定福祉用具＝分類「特定福祉用具」（シャワーチェア・ポータブルトイレなど）／
+          件数＝期間内に購入があったお客様の数 ／ 依頼元はお客様名（例：築上町包括　水ノ江）から取り出しています。違っていれば下の「依頼元の判定」で直せます。
+        </div>
+        {(noDataMonths.length > 0 || notedMonths.length > 0) && (
+          <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 leading-relaxed">
+            {noDataMonths.length > 0 && <div>明細を取り込んでいない月があります：{noDataMonths.map(m => idxLabel(m.idx)).join('・')}。この月の売上は0円ではなく「不明」で、合計には入っていません。</div>}
+            {notedMonths.map(m => <div key={m.idx}>{idxLabel(m.idx)}は{monthNote(m) === '明細わずか' ? '明細がまだわずかです（取り込みが途中の可能性）' : monthNote(m) + 'の途中の数字です'}。</div>)}
+          </div>
+        )}
+      </Card>
+
+      <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-3">
+        <KpiCard icon={Home} tint="bg-amber-50 text-amber-700" label="住宅改修の売上" value={yen(rep.kpi.reform.sales)}
+          extra={<div className="text-[11px] text-slate-600 tabular-nums">{num(rep.kpi.reform.cases)}件（伝票{num(rep.kpi.reform.slips)}枚）</div>} />
+        <KpiCard icon={Package} tint="bg-sky-50 text-sky-700" label="特定福祉用具の売上" value={yen(rep.kpi.welfare.sales)}
+          extra={<div className="text-[11px] text-slate-600 tabular-nums">{num(rep.kpi.welfare.cases)}件（伝票{num(rep.kpi.welfare.slips)}枚）</div>} />
+        <KpiCard icon={Users} tint="bg-violet-50 text-violet-600" label="依頼元の数（居宅・包括）" value={num(rep.kpi.sources) + 'か所'}
+          extra={<div className="text-[11px] text-slate-600">お客様 {num(rep.kpi.cases)}件</div>} />
+        <KpiCard icon={Percent} tint="bg-teal-50 text-teal-600" label="依頼元経由の売上の割合" value={viaShare === null ? '—' : viaShare + '%'}
+          extra={<div className="text-[11px] text-slate-600 tabular-nums">依頼元経由 {yen(rep.kpi.viaReferral)}</div>} />
+      </div>
+
+      <Card className="p-5">
+        <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+          <div className="font-bold text-sm text-slate-800">{scope === 'person' ? '個人の' : ''}住宅改修・特定福祉用具の売上推移（月ごと）</div>
+          <div className="flex items-center gap-3 text-[11px] text-slate-700">
+            {series.map(s => <span key={s.key} className="inline-flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm" style={{ background: s.color }} />{s.label}</span>)}
+          </div>
+        </div>
+        <StackedBars months={rep.months} series={series} noteOf={monthNote} />
+        <details className="mt-2">
+          <summary className="text-[11px] font-bold text-sky-700 cursor-pointer">月ごとの数字を表で見る</summary>
+          <div className="overflow-x-auto mt-2">
+            <table className="w-full text-xs tabular-nums min-w-[520px]">
+              <thead><tr className="text-slate-500 border-b border-slate-200">
+                <th className="text-left font-bold py-1">月</th>
+                {series.map(s => <React.Fragment key={s.key}><th className="text-right font-bold py-1">{s.label}</th><th className="text-right font-bold py-1">件数</th></React.Fragment>)}
+                {series.length > 1 && <th className="text-right font-bold py-1">合計</th>}
+              </tr></thead>
+              <tbody>
+                {rep.months.map(m => (
+                  <tr key={m.idx} className="border-b border-slate-100">
+                    <td className="py-1">{idxLabel(m.idx)}{monthNote(m) && <span className="ml-1 text-[10px] text-slate-500">（{monthNote(m)}）</span>}</td>
+                    {m.noData
+                      ? <td colSpan={series.length * 2 + (series.length > 1 ? 1 : 0)} className="py-1 text-right text-slate-400">取込なし</td>
+                      : <>
+                        {series.map(s => <React.Fragment key={s.key}><td className="py-1 text-right">{yen(m[s.key])}</td><td className="py-1 text-right">{num(m[s.key + 'Cases'])}</td></React.Fragment>)}
+                        {series.length > 1 && <td className="py-1 text-right font-bold">{yen(m.reform + m.welfare)}</td>}
+                      </>}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      </Card>
+
+      <Card className="overflow-hidden">
+        <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-2.5 flex-wrap">
+          <div className="flex-1 min-w-0">
+            <div className="font-bold text-sm text-slate-800">依頼元ランキング（居宅介護支援事業所・地域包括支援センター）</div>
+            <div className="text-[11px] text-slate-600">行を押すと、その依頼元からの案件の内訳が開きます。構成比＝この表の合計（依頼元の記載なしを含む）に占める割合</div>
+          </div>
+          <Segmented value={srcSort} onChange={setSrcSort} options={[['sales', '売上順'], ['cases', '件数順']]} />
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[640px]">
+            <thead><tr className="text-[11px] text-slate-600 border-b border-slate-100">
+              <th className="px-4 py-2 text-left font-bold">順位</th><th className="px-2 py-2 text-left font-bold">依頼元</th>
+              <th className="px-2 py-2 text-right font-bold">件数</th><th className="px-2 py-2 text-right font-bold">売上</th>
+              {kind === 'both' && <th className="px-2 py-2 text-right font-bold">内訳</th>}
+              <th className="px-2 py-2 text-left font-bold">構成比</th><th></th>
+            </tr></thead>
+            <tbody className="divide-y divide-slate-50">
+              {shownSources.map((s, i) => srcRow(s, i + 1))}
+              {sources.none && srcRow(sources.none, null)}
+              {sources.named.length === 0 && !sources.none && (
+                <tr><td colSpan={7} className="px-5 py-8 text-center text-xs text-slate-600">この期間の住宅改修・特定福祉用具の売上はありません</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        {sources.named.length > 15 && (
+          <div className="px-5 py-2 border-t border-slate-100">
+            <button onClick={() => setShowAllSrc(v => !v)} className="text-xs font-bold text-sky-700 hover:underline">
+              {showAllSrc ? '上位15か所だけ表示' : 'すべて表示（' + num(sources.named.length) + 'か所）'}
+            </button>
+          </div>
+        )}
+      </Card>
+
+      {/* grid-cols-1 と min-w-0 で、長い名前があってもスマホ幅で横にはみ出さない（名前は … で省略） */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 [&>*]:min-w-0">
+        <Card>
+          <div className="px-5 py-3.5 border-b border-slate-100 font-bold text-sm text-slate-800">お客様（案件）の売上ランキング TOP20</div>
+          <div className="divide-y divide-slate-50">
+            {customers.slice(0, 20).map((c, i) => (
+              <div key={c.name} className="px-5 py-2 flex items-center gap-3">
+                <span className="w-6 text-xs font-bold text-slate-500 tabular-nums">{i + 1}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-bold text-slate-800 truncate">{c.person || c.name}</div>
+                  <div className="text-[10px] text-slate-600 truncate">{c.source ? c.source : '依頼元の記載なし'} ・ {c.topProducts.join('・')}</div>
+                </div>
+                <div className="flex flex-col items-end shrink-0">
+                  <span className="text-xs font-extrabold tabular-nums text-slate-800">{yen(valOf(c))}</span>
+                  <span className="flex gap-1.5">{c.reform !== 0 && kindBadge('reform')}{c.welfare !== 0 && kindBadge('welfare')}</span>
+                </div>
+              </div>
+            ))}
+            {customers.length === 0 && <div className="px-5 py-8 text-center text-xs text-slate-600">データがありません</div>}
+          </div>
+        </Card>
+        <Card>
+          <div className="px-5 py-3.5 border-b border-slate-100 font-bold text-sm text-slate-800">商品の売上ランキング TOP20</div>
+          <div className="divide-y divide-slate-50">
+            {products.slice(0, 20).map((p, i) => (
+              <div key={p.name} className="px-5 py-2 flex items-center gap-3">
+                <span className="w-6 text-xs font-bold text-slate-500 tabular-nums">{i + 1}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-bold text-slate-800 truncate">{p.name}</div>
+                  <div className="text-[10px] text-slate-600">{kindBadge(p.kind)} ・ {p.mixedUnit ? '数量は単位混在' : fmtQty(p.qty) + (p.units[0] || '')} ・ {num(p.cases)}件</div>
+                </div>
+                <span className="text-xs font-extrabold tabular-nums text-slate-800 shrink-0">{yen(p.sales)}</span>
+              </div>
+            ))}
+            {products.length === 0 && <div className="px-5 py-8 text-center text-xs text-slate-600">データがありません</div>}
+          </div>
+        </Card>
+      </div>
+
+      <Card className="p-5">
+        <button onClick={() => setJudgeOpen(v => !v)} className="w-full flex items-center justify-between text-left">
+          <span className="font-bold text-sm text-slate-800">依頼元の判定（確認・修正）</span>
+          <span className="text-[11px] text-sky-700 font-bold inline-flex items-center gap-1">{judgeOpen ? '閉じる' : '開く（' + num(rep.customers.length) + '件）'}{judgeOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
+        </button>
+        {judgeOpen && (
+          <div className="mt-3 space-y-2">
+            <div className="text-[11px] text-slate-600 leading-relaxed">
+              お客様名から自動で依頼元を取り出しています。違っているときは「直す」で依頼元の名前を入れてください（空欄で保存すると「依頼元なし」）。
+              直した内容はこのパソコンに保存され、JSONバックアップにも含まれます。
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs min-w-[640px]">
+                <thead><tr className="text-slate-500 border-b border-slate-200">
+                  <th className="text-left font-bold py-1.5">お客様名（CSVのまま）</th><th className="text-left font-bold py-1.5">依頼元</th>
+                  <th className="text-left font-bold py-1.5">個人名</th><th className="text-left font-bold py-1.5">判定</th><th></th>
+                </tr></thead>
+                <tbody>
+                  {rep.customers.map(c => (
+                    <tr key={c.name} className="border-b border-slate-100">
+                      <td className="py-1.5 font-bold text-slate-800">{c.name}</td>
+                      <td className="py-1.5">
+                        {edit && edit.name === c.name ? (
+                          <input autoFocus value={edit.value} onChange={e => setEdit({ ...edit, value: e.target.value })}
+                            onKeyDown={e => { if (e.key === 'Enter') { setReferral(c.name, edit.value.trim()); setEdit(null); } if (e.key === 'Escape') setEdit(null); }}
+                            className="h-8 px-2 rounded-lg border border-sky-300 text-xs w-56" placeholder="依頼元の名前（空欄＝なし）" />
+                        ) : (c.source || <span className="text-slate-400">（なし）</span>)}
+                      </td>
+                      <td className="py-1.5 text-slate-700">{c.person}</td>
+                      <td className="py-1.5">{c.manual ? <span className="text-fuchsia-700 font-bold">手動</span> : <span className="text-slate-500">自動</span>}</td>
+                      <td className="py-1.5 text-right whitespace-nowrap">
+                        {edit && edit.name === c.name ? (
+                          <>
+                            <button onClick={() => { setReferral(c.name, edit.value.trim()); setEdit(null); }} className="text-xs font-bold text-emerald-700 hover:underline mr-2">保存</button>
+                            <button onClick={() => setEdit(null)} className="text-xs font-bold text-slate-500 hover:underline">やめる</button>
+                          </>
+                        ) : (
+                          <>
+                            <button onClick={() => setEdit({ name: c.name, value: c.source })} className="text-xs font-bold text-sky-700 hover:underline inline-flex items-center gap-0.5"><Pencil size={11} />直す</button>
+                            {c.manual && <button onClick={() => setReferral(c.name, null)} className="ml-2 text-xs font-bold text-slate-500 hover:underline inline-flex items-center gap-0.5"><RotateCcw size={11} />自動に戻す</button>}
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </Card>
     </div>
   );
@@ -6979,6 +7499,7 @@ function SettingsView({ rows, masters, setRows, setMasters, setOffice, meta, set
           itemFacilityHandling: { ...imp.masters.itemFacilityHandling, ...prev.itemFacilityHandling },
           stockQtyOverrides: { ...imp.masters.stockQtyOverrides, ...prev.stockQtyOverrides },
           stockMonthOverrides: { ...imp.masters.stockMonthOverrides, ...prev.stockMonthOverrides },
+          referralOverrides: { ...imp.masters.referralOverrides, ...prev.referralOverrides },
           settings: { ...prev.settings, reps: [...new Set([...(prev.settings.reps || []), ...(imp.masters.settings.reps || [])])] },
         };
       });
@@ -7974,6 +8495,7 @@ const TABS = [
   { id: 'fac', label: '施設別', icon: Building2, sub: '施設ごとの売上・粗利・購入傾向' },
   { id: 'factrend', label: '施設別推移', icon: TrendingUp, sub: '月次推移・年度平均比較・伸び施設/減り施設の把握' },
   { id: 'rep', label: '担当別', icon: Users, sub: '担当者ごとの数字とアラート' },
+  { id: 'reform', label: '住宅改修・特定福祉用具', icon: Home, sub: '売上ランキング・個人の売上推移・依頼元（居宅・包括）別の件数と内訳' },
   { id: 'prod', label: '売上管理・商品検索', icon: Package, sub: '商品名・施設名・仕入先の横断検索と、分類別の動き・粗利率チェック' },
   { id: 'stock', label: '適正在庫', icon: Warehouse, sub: '必要在庫 = 月平均 × 在庫回数。商品の扱い分類もここで' },
   { id: 'order', label: '発注書作成', icon: ClipboardList, sub: '施設が当社へ送る発注書を代理作成（初期は金額なし）' },
@@ -8107,7 +8629,7 @@ function App() {
 
   const current = TABS.find(t => t.id === tab);
   const labelOf = (t) => (masters.settings.tabLabels && masters.settings.tabLabels[t.id]) || t.label;
-  const needData = data.empty && ['dash', 'fac', 'rep', 'prod', 'stock', 'lookup'].includes(tab);
+  const needData = data.empty && ['dash', 'fac', 'rep', 'reform', 'prod', 'stock', 'lookup'].includes(tab);
   const office = officeByName(masters.settings.office);
 
   // 営業所が未選択なら、まず選んでもらう（初回のみ）
@@ -8216,6 +8738,7 @@ function App() {
               {tab === 'fac' && <FacilitiesView data={data} openId={openFacId} setOpenId={setOpenFacId} repFilter={repFilter} setRepFilter={setRepFilter} showToast={showToast} openPrint={setPrintHtml} startDoc={startDoc} office={masters.settings.office} />}
               {tab === 'factrend' && <FacilityTrendView data={data} jumpToFacility={jumpToFacility} showToast={showToast} />}
               {tab === 'rep' && <RepsView data={data} goFacilities={goFacilities} />}
+              {tab === 'reform' && <ReformView data={data} rows={rows} masters={masters} setMasters={setMasters} showToast={showToast} />}
               {tab === 'prod' && <ProductsView data={data} rows={rows} masters={masters} setMasters={setMasters} showToast={showToast} openPrint={setPrintHtml} />}
               {tab === 'stock' && <StockView data={data} masters={masters} setMasters={setMasters} showToast={showToast} openPrint={setPrintHtml} />}
               {tab === 'order' && <DocComposer docType="order" data={data} masters={masters} draft={orderDraft} setDraft={setOrderDraft} docs={docs} setDocs={setDocs} showToast={showToast} openPrint={setPrintHtml} goImport={() => setTab('import')} />}
