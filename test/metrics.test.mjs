@@ -10,9 +10,10 @@ import fs from 'node:fs'
 
 const src = fs.readFileSync(new URL('../src/index.html', import.meta.url), 'utf8')
 const slice = (from, to) => src.slice(src.indexOf(from), src.indexOf(to))
-const code = slice('const yen = ', 'function Segmented(') + '\n' + slice('function buyerBreakdown(', 'function BuyersModal(')
+const code = slice('const yen = ', 'function Segmented(') + '\n' + slice('function buyerBreakdown(', 'function BuyersModal(') +
+  '\n' + slice('function buildFacilityComparison(', '// KPIカードの施設別内訳')
 const NAMES = ['comparisonWindow', 'buildPeriodReport', 'buildAnalytics', 'decomposeSalesChange', 'mergeImportRows',
-  'analyzeCsv', 'buyerBreakdown', 'pctChange', 'withinCut']
+  'analyzeCsv', 'buyerBreakdown', 'pctChange', 'withinCut', 'buildFacilityComparison']
 const load = (y, mo, d) => {
   class FixedDate extends Date {
     constructor(...a) { if (a.length) super(...a); else super(y, mo - 1, d, 10, 0, 0) }
@@ -124,9 +125,10 @@ test('前年データ未取得と、確認済みの0円を区別する', () => {
   const latest = { y: 2026, mo: 10, d: 27, idx: idx(2026, 10) }
   // 取込が2026年4月からなら、前年同月は未取得
   assert.equal(L.comparisonWindow(idx(2026, 10), idx(2026, 10), latest, { idx: idx(2026, 4) }).prevCovered, false)
-  // 前年も取り込まれていて、その施設の前年同期の売上がない → 差額は出す（当期－0）、増減率は算出対象外
+  // 前年も取り込まれていて（前年10月にほかの施設の売上がある）、A施設の前年同期の売上がない
+  // → 確認済みの0円なので差額は出す（当期－0）、増減率は算出対象外
   const rows = [
-    row('1', '2025/4/3', 'B施設', '見本の品', 1, '個', 500, 500, 100),
+    row('1', '2025/10/3', 'B施設', '見本の品', 1, '個', 500, 500, 100),
     row('2', '2026/10/5', 'A施設', '見本の品', 1, '個', 3000, 3000, 600),
   ]
   const data = L.buildAnalytics(rows, masters({ A施設: facility(), B施設: facility() }))
@@ -137,6 +139,30 @@ test('前年データ未取得と、確認済みの0円を区別する', () => {
   const onlyNow = L.buildAnalytics([rows[1]], masters({ A施設: facility() }))
   assert.equal(onlyNow.facByName.get('A施設').yoyDiff, null)
   assert.equal(onlyNow.hasYoy, false)
+})
+
+test('取り込み漏れの月（営業所全体で明細が1件もない月）は0円として比べない', () => {
+  const rows = []
+  // 2025年は7・8月の明細がない（取り込み漏れ）。2026年は毎月ある
+  for (const m of [4, 5, 6, 9, 10, 11, 12]) rows.push(row('p' + m, `2025/${m}/10`, 'A施設', '見本の品', 1, '個', 1000, 1000, 200))
+  for (let m = 1; m <= 10; m++) rows.push(row('c' + m, `2026/${m}/10`, 'A施設', '見本の品', 1, '個', 1000, 1000, 200))
+  const data = L.buildAnalytics(rows, masters({ A施設: facility() }))
+  const latest = data.latestDate, first = data.firstDate
+  // 8月どうしの比較：前年8月が漏れているので比較しない
+  const aug = L.comparisonWindow(idx(2026, 8), idx(2026, 8), latest, first, { months: data.monthsAll })
+  assert.equal(aug.prevCovered, false)
+  assert.deepEqual(aug.prevMissing, [idx(2025, 8)])
+  // 年度の比較：前年度同期に7・8月の漏れがあるので比較しない（担当別の前年度同期差も出さない）
+  assert.equal(data.fyCmp.prevCovered, false)
+  assert.deepEqual(data.fyCmp.prevMissing, [idx(2025, 7), idx(2025, 8)])
+  assert.equal(data.hasFyPrev, false)
+  assert.equal(data.reps[0].fyDiff, null)
+  // 10月どうしは前年10月があるので比べられる
+  assert.equal(data.hasYoy, true)
+  assert.equal(data.facByName.get('A施設').yoyDiff, 0)
+  // 当期側に漏れがあれば curMissing で知らせる
+  const custom = L.comparisonWindow(idx(2025, 6), idx(2025, 9), latest, first, { months: data.monthsAll })
+  assert.deepEqual(custom.curMissing, [idx(2025, 7), idx(2025, 8)])
 })
 
 test('施設・担当の前年差は月途中なら前年同月も同じ日まで。担当の合計＋施設以外＝ダッシュボードの売上', () => {
@@ -249,4 +275,67 @@ test('購入得意先数は返品・値引き後の売上がプラスの得意�
   const k = L.buildPeriodReport(rows, masters({ A施設: facility(), B施設: facility(), '見本 花子': { type: 'person' } }), idx(2026, 9), idx(2026, 9)).kpi
   assert.equal(k.buyers, 2)
   assert.equal(k.buyersFacility, 1)
+})
+
+test('境目：1月は前年の1月と、4月はじめ（年度の切り替わり）は前年4月と比べる', () => {
+  const D = (y, m, d) => ({ y, mo: m, d, idx: idx(y, m), sort: y * 10000 + m * 100 + d })
+  const jan = load(2027, 1, 10).comparisonWindow(idx(2027, 1), idx(2027, 1), D(2027, 1, 9), D(2025, 4, 1))
+  assert.equal(jan.prevRange, '2026/1/1〜2026/1/9')
+  const apr = load(2027, 4, 5).comparisonWindow(idx(2027, 4), idx(2028, 3), D(2027, 4, 3), D(2025, 4, 1))
+  assert.equal(apr.curRange, '2027/4/1〜2027/4/3')
+  assert.equal(apr.prevRange, '2026/4/1〜2026/4/3')
+  // 翌月になってから前月末までのデータで年度を見る：年度は途中、比較は前年の同じ日（10/31）まで
+  const fy = load(2026, 11, 2).comparisonWindow(idx(2026, 4), idx(2027, 3), D(2026, 10, 31), D(2025, 4, 1))
+  assert.equal(fy.inProgress, true)
+  assert.equal(fy.prevRange, '2025/4/1〜2025/10/31')
+})
+
+test('境目：月途中の前月比は、前月が短い月なら前月末まで（10/31 → 9/30まで）', () => {
+  const W = load(2026, 10, 31)
+  const rows = [
+    row('1', '2025/4/1', 'A施設', '見本の品', 1, '個', 1, 1, 0),
+    row('2', '2026/9/30', 'A施設', '見本の品', 1, '個', 900, 900, 180),
+    row('3', '2026/10/31', 'A施設', '見本の品', 1, '個', 1000, 1000, 200),
+  ]
+  assert.equal(W.buildAnalytics(rows, masters({ A施設: facility() })).facByName.get('A施設').mom, 11)
+})
+
+test('粗利率の施設別比較：売上0円以下の期間は比べない。前年データがなければ当期だけ並べる', () => {
+  const cur = [{ name: 'A', repName: '', sales: 1000, gross: 300, margin: 30, grossUnknown: 0 },
+    { name: 'B', repName: '', sales: -500, gross: -500, margin: 100, grossUnknown: 0 }]
+  const prev = [{ name: 'A', repName: '', sales: 1000, gross: 200, margin: 20, grossUnknown: 0 },
+    { name: 'B', repName: '', sales: 800, gross: 160, margin: 20, grossUnknown: 0 }]
+  const rows = L.buildFacilityComparison(cur, prev, 'margin')
+  assert.deepEqual(rows.map(r => r.name), ['A'])
+  assert.equal(rows[0].diff, 10)
+  const noPrev = L.buildFacilityComparison(cur, [], 'margin', false)
+  assert.deepEqual(noPrev.map(r => r.name), ['A'])
+})
+
+test('売上の施設別比較は減少額の大きい順。片方だけの施設は「新規」「離脱」とせず onlyCur / onlyPrev で示す', () => {
+  const cur = [{ name: 'A', sales: 500 }, { name: 'C', sales: 300 }]
+  const prev = [{ name: 'A', sales: 1000 }, { name: 'B', sales: 2000 }]
+  const rows = L.buildFacilityComparison(cur, prev, 'sales')
+  assert.deepEqual(rows.map(r => [r.name, r.diff]), [['B', -2000], ['A', -500], ['C', 300]])
+  assert.equal(rows[0].onlyPrev, true)
+  assert.equal(rows[2].onlyCur, true)
+})
+
+test('古い形式の明細（11列・担当者なし）でも集計でき、売上時点の担当は「担当不明」に入る', () => {
+  const old = [
+    ['1', '2025/10/3', 'A施設', '見本の品', 1, '個', 500, 500, 100, '見本商事', 400],
+    ['2', '2026/10/5', 'A施設', '見本の品', 2, '個', 500, 1000, 200, '見本商事', 400],
+  ]
+  const data = L.buildAnalytics(old, masters({ A施設: facility('山田') }))
+  assert.equal(data.facByName.get('A施設').yoyDiff, 500)
+  assert.equal(data.repSaleRows, 0)
+  assert.deepEqual(data.repsSale.map(r => r.rep), ['担当不明（明細に担当者なし）'])
+  assert.equal(data.reps[0].rep, '山田')
+})
+
+test('JSONに書き出して読み戻しても、粗利不明（null）は0円に変わらない', () => {
+  const rows = [row('1', '2026/9/1', 'A施設', '見本の品', 1, '個', 900, 900, null, null)]
+  const back = JSON.parse(JSON.stringify(rows))
+  assert.equal(back[0][8], null)
+  assert.equal(L.buildPeriodReport(back, masters({ A施設: facility() }), idx(2026, 9), idx(2026, 9)).kpi.grossUnknown, 1)
 })
