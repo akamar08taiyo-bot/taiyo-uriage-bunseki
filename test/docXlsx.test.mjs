@@ -10,7 +10,8 @@ import fs from 'node:fs'
 
 const src = fs.readFileSync(new URL('../src/index.html', import.meta.url), 'utf8')
 const code = src.slice(src.indexOf('const yen = '), src.indexOf('function Segmented('))
-const { buildDocXlsx, buildQuoteHtml } = new Function('zipSync', 'strToU8', code + '\nreturn { buildDocXlsx, buildQuoteHtml }')(
+const { buildDocXlsx, buildQuoteHtml, buildPriceRevisionXlsx, buildPriceRevisionHtml } = new Function('zipSync', 'strToU8',
+  code + '\nreturn { buildDocXlsx, buildQuoteHtml, buildPriceRevisionXlsx, buildPriceRevisionHtml }')(
   (files) => files, // zip にせず、パート名 → XML の文字列のまま返す
   (s) => s,
 )
@@ -84,4 +85,62 @@ test('発注書：数量は空欄（手書き欄）、A4 1枚に収める、営�
   for (const t of ['太陽シルバーサービス株式会社　行橋営業所 ', '発注元', '見本の里', 'ご担当者：', '商品名']) assert.ok(s.includes(t), t)
   assert.doesNotThrow(() => buildDocXlsx('order', { ...order, office: null }))
   assert.doesNotThrow(() => buildDocXlsx('quote', quote({ office: null })))
+})
+
+// ---- 価格改定のご案内 ----
+const revItems = [
+  { name: 'ニトリル手袋 Mサイズ 100枚入', cat: '手袋', unit: '箱', caseSize: '20', currentPrice: 680, newPrice: 720 },  // 上げ
+  { name: 'とろみ調整食品 2.5kg', cat: '食品', unit: '袋', caseSize: '', currentPrice: 7200, newPrice: 6900 },        // 下げ
+  { name: '尿とりパッド 夜用 30枚', cat: '紙おむつ', unit: '袋', caseSize: '', currentPrice: 1980, newPrice: 1980 },   // 据え置き
+  { name: '新規取扱の見本', cat: 'その他', unit: '個', caseSize: '', currentPrice: 0, newPrice: 500 },                 // 現状価格なし
+]
+const rev = (over = {}) => ({
+  facilityName: '見本の里', title: '価格改定のご案内', issued: '2026年10月28日', note: '2026年11月1日〜の改定価格となります。\n・見本の備考',
+  items: revItems, office: '行橋営業所', repName: '見本 太郎',
+  showCaseSize: false, showAmounts: true, showRate: true, showCat: true, showDiff: true, ...over,
+})
+
+test('価格改定：価格差・変動率は計算式で、値は印刷と同じ。現状価格0の変動率は「―」', () => {
+  const m = rev()
+  const html = buildPriceRevisionHtml(m)
+  for (const t of ['+¥40', '−¥300', '+5.9%', '−4.2%']) assert.ok(html.includes(t), '印刷 ' + t)
+  const files = buildPriceRevisionXlsx(m)
+  const xml = sheetOf(files)
+  assert.match(xml, /<f>[A-Z]+\d+-[A-Z]+\d+<\/f><v>40<\/v>/)
+  assert.match(xml, /<f>[A-Z]+\d+-[A-Z]+\d+<\/f><v>-300<\/v>/)
+  assert.match(xml, /<f>[A-Z]+\d+-[A-Z]+\d+<\/f><v>0<\/v>/)
+  const rate = [...xml.matchAll(/<f>\(([A-Z]+\d+)-([A-Z]+\d+)\)\/([A-Z]+\d+)<\/f><v>([^<]+)<\/v>/g)]
+  assert.equal(rate.length, 3) // 現状価格0の行は計算式にしない
+  assert.equal(Math.round(Number(rate[0][4]) * 1000) / 10, 5.9)
+  assert.equal(Math.round(Number(rate[1][4]) * 1000) / 10, -4.2)
+  assert.equal(rate[0][2], rate[0][3]) // 分母は現状価格のセル
+  assert.ok(strings(files).includes('―'))
+  // 上げ・下げ・差なしの表示形式（+／−／―）が登録されている
+  assert.ok(files['xl/styles.xml'].includes('formatCode="&quot;+¥&quot;#,##0;&quot;−¥&quot;#,##0;&quot;―&quot;"'))
+  assert.ok(files['xl/styles.xml'].includes('formatCode="&quot;+&quot;0.0%;&quot;−&quot;0.0%;&quot;―&quot;"'))
+})
+
+test('価格改定：宛名・発行元・備考・見出しが入り、A4 縦で2ページ目以降にも表の見出しが出る', () => {
+  const files = buildPriceRevisionXlsx(rev())
+  const s = strings(files)
+  for (const t of ['見本の里 ', '御中', '発行日：2026年10月28日', '行橋営業所', '担当：見本 太郎', '【備考】', '・見本の備考',
+    'No.', 'カテゴリ', '商品名', '現状価格\n（税抜）', '改定価格\n（税抜）', '価格差', '変動率', '下記のとおり価格を改定いたしますので、ご案内申し上げます。']) {
+    assert.ok(s.includes(t), t)
+  }
+  assert.ok(!s.includes('入数')) // 入数は既定で出さない（印刷と同じ）
+  assert.match(files['xl/workbook.xml'], /<sheet name="価格改定"/)
+  assert.match(files['xl/workbook.xml'], /_xlnm\.Print_Titles/)
+  assert.match(sheetOf(files), /paperSize="9" orientation="portrait" fitToWidth="1" fitToHeight="0"/)
+})
+
+test('価格改定：金額を出さない設定では価格の列も計算式もない。宛先・営業所・備考が空でも作れる', () => {
+  const files = buildPriceRevisionXlsx(rev({ showAmounts: false, showCaseSize: true, showCat: false }))
+  const s = strings(files)
+  assert.doesNotMatch(sheetOf(files), /<f>/)
+  for (const t of ['現状価格\n（税抜）', '改定価格\n（税抜）', '価格差', '変動率', 'カテゴリ']) assert.ok(!s.includes(t), t)
+  assert.ok(s.includes('入数'))
+  assert.doesNotThrow(() => buildPriceRevisionXlsx(rev({ facilityName: '', office: null, note: '', repName: '' })))
+  // 価格差だけ消す・変動率だけ消す
+  assert.ok(!strings(buildPriceRevisionXlsx(rev({ showDiff: false }))).includes('価格差'))
+  assert.ok(!strings(buildPriceRevisionXlsx(rev({ showRate: false }))).includes('変動率'))
 })

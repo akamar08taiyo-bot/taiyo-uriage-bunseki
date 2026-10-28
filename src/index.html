@@ -1765,6 +1765,163 @@ function buildDocXlsx(kind, m) {
   if (isQuote) ws.page.printTitles = [thRow, thRow]; // 2ページ目以降にも表の見出し（印刷の thead と同じ）
   return book.toBytes({ title: isQuote ? '御見積書' : title.replace(/\s/g, '') });
 }
+
+// 価格改定のご案内の Excel。印刷の buildPriceRevisionHtml と同じ m を受け取り、同じ並び・列・配色で書く。
+// 価格差（改定－現状）と変動率は計算式なので、Excel で改定価格を直すと計算し直される（色は保存した時点の上げ・下げで付ける）。
+function buildPriceRevisionXlsx(m) {
+  const sc = m.showCaseSize === true, sa = m.showAmounts !== false;
+  const sd = sa && m.showDiff !== false, sr = sa && m.showRate !== false, scat = m.showCat !== false;
+  const o = officeByName(m.office);
+  const PT = XL_PT_MM;
+  const W = 184, RX = W - 68; // 本文の幅（A4 の 210mm − 左右の余白 13mm）と、右の枠（幅 68mm）の左端
+  const C = {
+    navy: '1E3A8A', blue: '2563EB', blue3: '3B82F6', blue4: '93C5FD', blue5: '60A5FA', line: 'BFDBFE', head: 'DBEAFE', headNew: 'BFDBFE',
+    tint: 'F0F7FF', tint2: 'EFF6FF', zebra: 'F8FBFF', ink: '1F2937', sub: '4B5563',
+    up: 'B91C1C', upFill: 'FEF2F2', upLine: 'FECACA', down: '15803D', downFill: 'F0FDF4', downLine: 'BBF7D0',
+  };
+  const F = (sz, o2) => Object.assign({ name: XL_MINCHO, sz, color: C.ink }, o2);
+  const mmOf = (text, pt) => xlTextEm(text) * pt / PT;
+  const priceOf = (v) => Number(v) || 0;
+
+  // --- 表の列（印刷の colgroup と同じ割合。合計が 100 になるように割り戻す） ---
+  const cols = [{ key: 'no', head: 'No.', w: 6 }];
+  if (scat) cols.push({ key: 'cat', head: 'カテゴリ', w: 12 });
+  cols.push({ key: 'name', head: '商品名', w: (scat ? 18 : 30) + (sc ? 0 : 9) + (sa ? 0 : 27) + (sd ? 0 : 9.5) + (sr ? 0 : 9.5) });
+  if (sc) cols.push({ key: 'case', head: '入数', w: 9 });
+  cols.push({ key: 'unit', head: '単位', w: 9 });
+  // 見出しは「（税抜）」の途中で折り返さないよう、2行に分けておく
+  if (sa) cols.push({ key: 'cur', head: '現状価格\n（税抜）', w: 13 }, { key: 'new', head: '改定価格\n（税抜）', w: 13, accent: true });
+  if (sd) cols.push({ key: 'diff', head: '価格差', w: 9.5, accent: true });
+  if (sr) cols.push({ key: 'rate', head: '変動率', w: 9.5, accent: true });
+  const wSum = cols.reduce((s, c) => s + c.w, 0);
+  let cx = 0;
+  const col = {};
+  cols.forEach(c => { c.x1 = cx; cx += W * c.w / wSum; c.x2 = cx; col[c.key] = c; });
+
+  // --- 頭の部分：印刷と同じ位置に枠を並べる（横は mm・縦は pt） ---
+  const els = [];
+  const put = (x1, x2, y1, y2, v, s) => els.push({ x1, x2: Math.min(x2, W), y1, y2, v, s });
+  const title = m.title || '価格改定のご案内';
+  let ly = 20 * 1.5 + 1.5 * PT; // 行の高さ（20pt×1.5）＋下の余白 1.5mm
+  put(0, Math.min(RX - 2, mmOf(title, 20) + [...title].length * 10 / PT + 1), 0, ly, xlLetterSpace(title),
+    { font: F(20, { color: C.navy }), border: { b: 'medium:' + C.blue3 }, align: { v: 'center', shrink: true } });
+  if (m.facilityName) {
+    const name = String(m.facilityName).replace(/\s*\n\s*/g, ' ');
+    ly += 4 * PT;
+    const h = 13 * 1.5 + 1 * PT;
+    put(0, Math.min(RX - 2, mmOf(name + ' ', 13) + mmOf('御中', 10) + 11), ly, ly + h,
+      { rich: [{ t: name + ' ', font: F(13) }, { t: '御中', font: F(10, { color: C.blue }) }] },
+      { font: F(13), border: { b: 'thin:' + C.blue4 }, align: { v: 'center', shrink: true } });
+    ly += h;
+  }
+  ly += 2.5 * PT;
+  put(0, RX - 2, ly, ly + 12.8, '下記のとおり価格を改定いたしますので、ご案内申し上げます。', { font: F(8, { color: C.sub }), align: { v: 'center' } });
+  ly += 12.8;
+  // 右：発行日と発行元の枠（officeBlockHtml と同じ並び）
+  let ry = 0;
+  put(RX, W, ry, ry + 12.8, '発行日：' + m.issued, { font: F(8, { color: C.sub }), align: { h: 'right', v: 'center' } });
+  ry += 12.8 + 3 * PT;
+  const lines = [{ t: '太陽シルバーサービス株式会社', pt: 9.5, b: true, color: C.navy }, { t: o ? o.name : '営業本部', pt: 8, b: true }];
+  if (o) lines.push({ t: '〒' + o.zip, pt: 8, mt: 0.5 }, { t: o.addr, pt: 8 }, { t: 'TEL：' + o.tel, pt: 8, mt: 1 }, { t: 'FAX：' + o.fax, pt: 8 });
+  else lines.push({ t: 'TEL：　　　　　', pt: 8, mt: 1 }, { t: 'FAX：　　　　　', pt: 8 });
+  if (m.repName) lines.push({ t: '担当：' + m.repName, pt: 8, mt: 1 });
+  {
+    const bd = 'thin:' + C.blue4, fill = C.tint, side = { l: bd, r: bd }, pad = 2.5 * PT;
+    put(RX, W, ry, ry + pad, null, { fill, border: Object.assign({ t: bd }, side) });
+    ry += pad;
+    lines.forEach(ln => {
+      if (ln.mt) { put(RX, W, ry, ry + ln.mt * PT, null, { fill, border: side }); ry += ln.mt * PT; }
+      const n = xlLineCount(ln.t, 68 - 5 + 4, ln.pt);
+      const h = n * ln.pt * 1.5;
+      put(RX, W, ry, ry + h, ln.t, { font: F(ln.pt, { b: !!ln.b, color: ln.color || C.sub }), fill, border: side, align: { h: 'left', v: 'center', wrap: n > 1, indent: 1 } });
+      ry += h;
+    });
+    put(RX, W, ry, ry + pad, null, { fill, border: Object.assign({ b: bd }, side) });
+    ry += pad;
+  }
+
+  // --- 列・行の境目：表の列の境目を優先し、近すぎる境目（横 2mm・縦 1pt 未満）はまとめる ---
+  const xs = [0, ...cols.map(c => c.x2)];
+  els.forEach(e => [e.x1, e.x2].forEach(v => { if (!xs.some(u => Math.abs(u - v) < 2)) xs.push(v); }));
+  xs.sort((a, b) => a - b);
+  const ys = [0, Math.max(ly, ry)];
+  els.forEach(e => [e.y1, e.y2].forEach(v => { if (!ys.some(u => Math.abs(u - v) < 1)) ys.push(v); }));
+  ys.sort((a, b) => a - b);
+  const nearest = (list, v) => list.reduce((best, u, i) => (Math.abs(u - v) < Math.abs(list[best] - v) ? i : best), 0);
+  const span = (x1, x2) => { const c1 = nearest(xs, x1); return [c1, Math.max(c1, nearest(xs, x2) - 1)]; };
+  const last = xs.length - 2;
+
+  const book = createXlsxBook();
+  const ws = book.addSheet('価格改定', { margins: { l: 13, r: 13, t: 11, b: 11, h: 6, f: 6 }, fitWidth: 1, fitHeight: 0 });
+  ws.setCols(xs.slice(1).map((v, i) => v - xs[i]));
+  ys.slice(1).forEach((v, i) => ws.height(i, v - ys[i]));
+
+  // --- 表 ---
+  let r = ys.length - 1;
+  ws.height(r, 5 * PT); r++; // 表の上のあき 5mm
+  const thRow = r;
+  cols.forEach(c => {
+    const [c1, c2] = span(c.x1, c.x2);
+    const bd = 'thin:' + (c.accent ? C.blue5 : C.blue4);
+    ws.box(r, c1, r, c2, c.head, { font: F(8, { b: true, color: C.navy }), fill: c.accent ? C.headNew : C.head, border: { l: bd, r: bd, t: bd, b: bd }, align: { h: 'center', v: 'center', wrap: true } });
+  });
+  ws.height(r, Math.max(...cols.map(c => xlLineCount(c.head, c.x2 - c.x1, 8))) * 8 * 1.5 + 2 * 1.4 * PT);
+  r++;
+  const at = (key) => span(col[key].x1, col[key].x2)[0];
+  const BL = 'thin:' + C.line;
+  // 価格差・変動率の表示形式：上げは「+」、下げは「−」、差なしは「―」（印刷と同じ）
+  const FMT_DIFF = '"+¥"#,##0;"−¥"#,##0;"―"';
+  const FMT_RATE = '"+"0.0%;"−"0.0%;"―"';
+  m.items.forEach((it, i) => {
+    const fill = i % 2 === 1 ? C.zebra : undefined;
+    const box = (key, v, s) => { const [c1, c2] = span(col[key].x1, col[key].x2); ws.box(r, c1, r, c2, v, Object.assign({ fill, border: { l: BL, r: BL, b: BL } }, s)); };
+    const cur = priceOf(it.currentPrice), nw = priceOf(it.newPrice), diff = nw - cur;
+    const name = String(it.name || '');
+    box('no', i + 1, { font: F(9), align: { h: 'right', v: 'center', indent: 1 } });
+    if (scat) box('cat', String(it.cat || ''), { font: F(8, { b: true, color: C.blue }), align: { h: 'left', v: 'center', wrap: true, indent: 1 } });
+    box('name', name, { font: F(9), align: { h: 'left', v: 'center', wrap: true, indent: 1 } });
+    if (sc) box('case', String(it.caseSize || ''), { font: F(9), align: { h: 'center', v: 'center', shrink: true } });
+    box('unit', String(it.unit || ''), { font: F(9), align: { h: 'center', v: 'center', shrink: true } });
+    const numAlign = { h: 'right', v: 'center', indent: 1, shrink: true };
+    if (sa) {
+      box('cur', cur, { font: F(9), fmt: XL_YEN, align: numAlign });
+      box('new', nw, { font: F(9, { b: true, color: C.navy }), fill: C.tint2, fmt: XL_YEN, border: { l: 'thin:' + C.blue4, r: 'thin:' + C.blue4, b: 'thin:' + C.blue4 }, align: numAlign });
+    }
+    // 上げ＝赤、下げ＝緑、差なし＝ふつうの行（印刷の tdUp／tdDown と同じ）
+    const sign = diff > 0 ? { font: F(9, { b: true, color: C.up }), fill: C.upFill, border: { l: 'thin:' + C.upLine, r: 'thin:' + C.upLine, b: 'thin:' + C.upLine } }
+      : diff < 0 ? { font: F(9, { b: true, color: C.down }), fill: C.downFill, border: { l: 'thin:' + C.downLine, r: 'thin:' + C.downLine, b: 'thin:' + C.downLine } }
+      : { font: F(9) };
+    const curRef = sa ? xlRef(r, at('cur')) : null, newRef = sa ? xlRef(r, at('new')) : null;
+    if (sd) box('diff', { f: `${newRef}-${curRef}`, v: diff }, Object.assign({ fmt: FMT_DIFF, align: numAlign }, sign));
+    // 現状価格が0（新規取扱など）は変動率を出せないので「―」（印刷と同じ）
+    if (sr) box('rate', cur > 0 ? { f: `(${newRef}-${curRef})/${curRef}`, v: diff / cur } : '―', Object.assign({ fmt: FMT_RATE, align: numAlign }, sign));
+    const h = Math.max(xlLineCount(name, col.name.x2 - col.name.x1, 9), scat ? xlLineCount(it.cat || '', col.cat.x2 - col.cat.x1, 8) : 1) * 9 * 1.5;
+    ws.height(r, h + 2 * 1.5 * PT + 0.75);
+    r++;
+  });
+  // 備考（枠の内側の余白 2.5mm）
+  if (m.note) {
+    ws.height(r, 5 * PT); r++;
+    const bd = { l: BL, r: BL };
+    const pad = 2.5 * PT;
+    ws.box(r, 0, r, last, null, { fill: C.tint2, border: Object.assign({ t: BL }, bd) }); ws.height(r, pad); r++;
+    ['【備考】', ...String(m.note).split('\n')].forEach(line => {
+      const n = xlLineCount(line, W - 5 + 4, 9);
+      ws.box(r, 0, r, last, line, { font: F(9, { color: C.sub }), fill: C.tint2, border: bd, align: { h: 'left', v: 'center', wrap: n > 1, indent: 1 } });
+      ws.height(r, n * 9 * 1.5); r++;
+    });
+    ws.box(r, 0, r, last, null, { fill: C.tint2, border: Object.assign({ b: BL }, bd) }); ws.height(r, pad); r++;
+  }
+
+  els.forEach(e => {
+    const [c1, c2] = span(e.x1, e.x2);
+    const r1 = nearest(ys, e.y1), r2 = Math.max(r1, nearest(ys, e.y2) - 1);
+    ws.box(r1, c1, r2, c2, e.v, e.s);
+  });
+  ws.page.printArea = [0, 0, r - 1, last];
+  ws.page.printTitles = [thRow, thRow]; // 2ページ目以降にも表の見出し
+  return book.toBytes({ title });
+}
 /* Excel ここまで */
 
 /* ============================================================
@@ -1843,7 +2000,7 @@ function buildReportHtml(m) {
     <table style="width:100%;border-collapse:collapse;margin-top:2mm;table-layout:fixed;">
       <tr>
         <th style="${th}">売上</th><th style="${th}">粗利</th><th style="${th}">粗利率</th>
-        <th style="${th}">前年より増えた・減った売上</th><th style="${th}">前年より増えた・減った粗利</th><th style="${th}">購入得意先数</th>
+        <th style="${th}">売上 前年同期比</th><th style="${th}">粗利 前年同期比</th><th style="${th}">購入得意先数</th>
       </tr>
       <tr>
         <td style="${tdR}font-size:10.5pt;">${yen(kp.sales)}</td>
@@ -2700,7 +2857,7 @@ function BuyersModal({ curRep, prevRep, noCompare, win, firstBuy, dataFrom, onJu
           <InfoNote>購入得意先＝期間内の売上（返品・値引き後）がプラスの得意先（お客様名）の数。同じ得意先の複数伝票は1件と数えます。</InfoNote>
           {noCompare && <Group title="期間内に購入" list={curRep.customers.filter(c => c.sales > 0)} />}
           {noCompare ? (
-            <InfoNote>全期間の表示のため、前年との比較（継続・当期だけ・前年同期だけ）はしません。月次・年度・期間指定で確認できます。</InfoNote>
+            <InfoNote>全期間の表示のため、前年との比較（継続・当期のみ・前年同期のみ）はしません。月次・年度・期間指定で確認できます。</InfoNote>
           ) : !prevRep ? (
             <InfoNote tone="warn">前年同期の明細が取り込まれていない（または途中の月が抜けている）ため、継続・当期のみの区別はできません。</InfoNote>
           ) : (
@@ -2713,9 +2870,9 @@ function BuyersModal({ curRep, prevRep, noCompare, win, firstBuy, dataFrom, onJu
                 </span>
               </div>
               <Group title="前年同期・当期とも購入" list={both} />
-              <Group title="当期だけ購入" list={curOnly}
+              <Group title="当期のみ購入" list={curOnly}
                 hint={'うち取得データ内で初購入：' + num(firstInData.length) + '件（取込済みデータは ' + dataFrom + ' から。それ以前の取引は分からないため「新規」とは断定しません）'} />
-              <Group title={win.inProgress ? '前年同期だけ購入（当期はまだ購入なし）' : '前年同期だけ購入（当期は購入なし）'} list={prevOnly}
+              <Group title={win.inProgress ? '前年同期のみ購入（当期はまだ購入なし）' : '前年同期のみ購入（当期は購入なし）'} list={prevOnly}
                 hint={win.inProgress ? '月の途中です。これから購入される場合があり、取引終了とは判定しません。' : '購入がなかった事実だけを示します。理由（購入時期の変更・利用量など）は確認が必要です。'} />
             </>
           )}
@@ -3261,14 +3418,14 @@ function DashboardView({ data, rows, masters, meta, jumpToFacility, openPrint, o
           value={k.rateOk ? k.rate + '%' : (k.sales > 0 ? '未確定' : '算出対象外')}
           onClick={() => drill('粗利率', 'margin', '%')}
           extra={showCompare && pk ? prevLine(pk.rateOk ? pk.rate + '%' : (pk.sales > 0 ? '未確定' : '算出対象外')) : null} />
-        <KpiCard icon={TrendingUp} tint="bg-sky-50 text-sky-600" label="前年より増えた・減った売上"
+        <KpiCard icon={TrendingUp} tint="bg-sky-50 text-sky-600" label="売上 前年同期比"
           value={!showCompare ? '比較なし' : salesDiff === null ? '比較データ不足' : <DiffText v={salesDiff} className="text-2xl" />}
           delta={salesDiff !== null && pctChange(k.sales, pk.sales) !== null ? pctChange(k.sales, pk.sales) : undefined} note={salesDiff !== null ? '増減率' : undefined}
           onClick={showCompare ? () => drill('売上', 'sales', '¥') : undefined}
           extra={showCompare && (pk
             ? <div className="text-[11px] text-slate-600 tabular-nums">当期 {yen(k.sales)} － 前年同期 {yen(pk.sales)}{pctChange(k.sales, pk.sales) === null ? '（前年同期が0円以下のため増減率は算出対象外）' : ''}</div>
             : <div className="text-[11px] text-amber-800">{noPrevText}</div>)} />
-        <KpiCard icon={TrendingUp} tint="bg-teal-50 text-teal-600" label="前年より増えた・減った粗利"
+        <KpiCard icon={TrendingUp} tint="bg-teal-50 text-teal-600" label="粗利 前年同期比"
           value={!showCompare ? '比較なし' : grossDiff === null ? (pk ? '未確定' : '比較データ不足') : <DiffText v={grossDiff} className="text-2xl" />}
           delta={grossDiff !== null && pctChange(k.gross, pk.gross) !== null ? pctChange(k.gross, pk.gross) : undefined} note={grossDiff !== null ? '増減率' : undefined}
           onClick={showCompare ? () => drill('粗利', 'gross', '¥') : undefined}
@@ -3276,7 +3433,7 @@ function DashboardView({ data, rows, masters, meta, jumpToFacility, openPrint, o
             ? <div className="text-[11px] text-slate-600 tabular-nums">当期 {yen(k.gross)} － 前年同期 {yen(pk.gross)}{pctChange(k.gross, pk.gross) === null ? '（前年同期が0円以下のため増減率は算出対象外）' : ''}</div>
             : <div className="text-[11px] text-amber-800">{pk ? '粗利額が不明な明細があるため差額を出しません' : noPrevText}</div>)} />
         <KpiCard icon={Users} tint="bg-amber-50 text-amber-600" label="購入得意先数" value={num(k.buyers) + '件'}
-          title="内訳（継続・当期だけ・前年同期だけ）を見る" linkLabel="内訳を見る"
+          title="内訳（継続・当期のみ・前年同期のみ）を見る" linkLabel="内訳を見る"
           onClick={() => setBuyersOpen(true)}
           extra={(
             <div className="space-y-0.5 text-[11px]">
@@ -3316,7 +3473,7 @@ function DashboardView({ data, rows, masters, meta, jumpToFacility, openPrint, o
           <li><b>売上</b>：販売管理システムの「金額」（税抜）の合計。返品・値引きのマイナス明細を含めた純額です。</li>
           <li><b>粗利</b>：明細ごとの粗利額（その明細の売上－売れた数量の原価）の合計。当月の仕入総額は引きません。粗利額が空の明細は「金額－仕入単価×数量」で求め、どちらもない明細があると「未確定」と表示します（0円としては扱いません）。</li>
           <li><b>粗利率</b>：合計粗利 ÷ 合計売上 × 100。商品ごとの粗利率の平均ではありません。売上が0円以下なら算出対象外です。</li>
-          <li><b>前年より増えた・減った売上／粗利</b>：当期 － 前年同期（前年の同じ月・同じ範囲）。月の途中は前年も同じ日までで比べます。増減率は補助表示で、前年同期が0円以下なら算出しません。前年の明細が取り込まれていない期間は「比較データ不足」とし、0円とは区別します。</li>
+          <li><b>売上・粗利の前年同期比</b>：増減額（当期 － 前年同期）を大きく、増減率（当期 ÷ 前年同期 － 1）を補助で表示します。前年同期＝前年の同じ月・同じ範囲。月の途中は前年も同じ日までで比べます。増減率は補助表示で、前年同期が0円以下なら算出しません。前年の明細が取り込まれていない期間は「比較データ不足」とし、0円とは区別します。</li>
           <li><b>購入得意先数</b>：期間内の売上（返品・値引き後）がプラスの得意先（お客様名）の数。同じ得意先の複数伝票は1件です。請求先と納品先の区別はCSVにないため、お客様名ごとに数えています。</li>
           <li>増減は色だけでなく「＋／−」と矢印でも示しています。</li>
         </ul>
@@ -3463,15 +3620,15 @@ function DecompCard({ decomp, kind, setKind, fyLabel }) {
   const parts = d && !d.none ? [
     ['数量の変化分', d.volume, '同じ商品・単位で、数量が増減した分（前年の平均単価で計算）'],
     ['価格の変化分', d.price, '同じ商品・単位で、平均単価が変わった分（数量と価格が同時に変わった分も含む）'],
-    ['前年同期になかった商品', d.added, '当期だけ売れた商品・単位'],
-    ['当期に販売のない商品', d.ended, '前年同期だけ売れた商品・単位'],
+    ['前年同期になかった商品', d.added, '当期のみ販売の商品・単位'],
+    ['当期に販売のない商品', d.ended, '前年同期のみ販売の商品・単位'],
     ['返品・値引き等の差', d.adj, '金額がマイナスの明細の差。数量・価格には配分しません'],
     ['比較できない明細', d.other, '数量が0以下などで単価を出せない商品'],
   ] : [];
   return (
     <Card className="p-4">
       <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
-        <div className="text-[11px] font-bold text-slate-600 uppercase tracking-wide">前年同期との売上差の内訳</div>
+        <div className="text-[11px] font-bold text-slate-600 uppercase tracking-wide">前年同期比 売上増減の内訳</div>
         <Segmented value={kind} onChange={setKind} options={[['month', '今月'], ['fy', fyLabel + '累計']]} />
       </div>
       {!d || d.none ? (
@@ -3820,7 +3977,7 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
             extra={(
               <div className="space-y-0.5">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <span className="text-[11px] text-slate-600 font-bold whitespace-nowrap">前年同期差</span>
+                  <span className="text-[11px] text-slate-600 font-bold whitespace-nowrap">前年同期比</span>
                   {f.yoyDiff === null ? <span className="text-[11px] text-slate-500 font-bold">比較データ不足</span>
                     : <span className="inline-flex items-center gap-1.5"><DiffText v={f.yoyDiff} className="text-xs" /><RateSub v={f.yoyPct} /></span>}
                 </div>
@@ -3946,7 +4103,7 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
             className="h-11 px-3 rounded-xl border border-slate-200 text-sm bg-white shadow-sm font-bold text-slate-600">
             <option value="sales">今月売上順</option>
             <option value="avg">月平均順</option>
-            <option value="yoyDiff">前年差額順（減少が大きい順）</option>
+            <option value="yoyDiff">前年同期比の増減額順（減少が大きい順）</option>
             <option value="name">名前順</option>
           </select>
         </div>
@@ -3965,12 +4122,12 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
       <Card className="overflow-x-auto">
         <div className="px-5 py-2.5 border-b border-slate-100 text-[11px] text-slate-600">
           行をクリックすると、その施設だけの詳細分析を表示します（全 {num(rows.length)}施設）
-          <span className="ml-2">前年差は 当期 {cmp.curRange} と 前年同期 {cmp.prevRange} の差額（税抜）。増減率は補助表示です。</span>
+          <span className="ml-2">前年同期比は 当期 {cmp.curRange} と 前年同期 {cmp.prevRange} の増減額（税抜）。増減率は補助表示です。</span>
           {cmp.inProgress && (
             <InfoNote className="mt-2">月の途中です。前月・前年同月も同じ日までの明細で比べています（今月はまだ購入のない施設も、減少・取引終了とは判定しません）。</InfoNote>
           )}
           {!data.hasYoy && (
-            <InfoNote tone="warn" className="mt-2">前年同月の明細が取り込まれていないため、前年差は「—」と表示します（0円とは区別しています）。</InfoNote>
+            <InfoNote tone="warn" className="mt-2">前年同月の明細が取り込まれていないため、前年同期比は「—」と表示します（0円とは区別しています）。</InfoNote>
           )}
         </div>
         <div className="overflow-x-auto">
@@ -3980,8 +4137,8 @@ function FacilitiesView({ data, openId, setOpenId, repFilter, setRepFilter, show
               <th className="text-left font-bold px-5 py-3">施設名</th>
               <th className="text-center font-bold px-2 py-3 pr-4">今月売上</th>
               <th className="text-center font-bold px-2 py-3 pr-4">月平均</th>
-              <th className="text-center font-bold px-2 py-3">前年差（売上）</th>
-              <th className="text-center font-bold px-2 py-3">前年差（粗利）</th>
+              <th className="text-center font-bold px-2 py-3">売上 前年同期比</th>
+              <th className="text-center font-bold px-2 py-3">粗利 前年同期比</th>
               <th className="text-center font-bold px-2 py-3">前月比</th>
               <th className="text-center font-bold px-2 py-3 pr-4">粗利率</th>
               <th className="text-center font-bold px-2 py-3">担当</th>
@@ -4294,7 +4451,7 @@ function RepsView({ data, goFacilities }) {
             <th className="text-left font-bold px-5 py-3">担当者</th>
             <th className="text-center font-bold px-2 py-3 pr-4">施設数</th>
             <th className="text-center font-bold px-2 py-3 pr-4">今月売上</th>
-            <th className="text-center font-bold px-2 py-3">前年同期差</th>
+            <th className="text-center font-bold px-2 py-3">前年同期比</th>
             <th className="text-center font-bold px-2 py-3">前月比</th>
             <th className="text-center font-bold px-2 py-3 pr-4">今年度累計</th>
             <th className="text-center font-bold px-2 py-3">前年度同期差</th>
@@ -4334,7 +4491,7 @@ function RepsView({ data, goFacilities }) {
         )}
       </table>
       <div className="px-5 py-2.5 text-[11px] text-slate-600 border-t border-slate-50 leading-relaxed">
-        前年同期差＝今月（{cmp ? cmp.curRange : ''}）－ 前年同期（{cmp ? cmp.prevRange : ''}）。今年度累計＝{data.fyRangeLabel}（{data.fyLabel}・4月始まり）の合計、
+        前年同期比＝今月（{cmp ? cmp.curRange : ''}）－ 前年同期（{cmp ? cmp.prevRange : ''}）。今年度累計＝{data.fyRangeLabel}（{data.fyLabel}・4月始まり）の合計、
         前年度同期差＝その1年前の同じ期間との差額。増減率は補助表示で、比較対象が0円以下なら算出しません。
         {cmp && cmp.inProgress && <span className="text-sky-700 font-bold"> 月の途中のため、前月・前年同月も同じ日までの明細で比べています。</span>}
         {(!data.hasYoy || !data.hasFyPrev) && (
@@ -6102,12 +6259,14 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
     });
   };
 
-  const buildHtml = () => buildPriceRevisionHtml({
+  // 印刷・PDF・Excel で同じ中身を使う
+  const revModel = () => ({
     facilityName: draft.facility, title: draft.title, issued: isoToJa(draft.issued),
     note: draft.note, items: draft.items, office: masters.settings.office, repName: draft.rep || '未設定',
     showCaseSize: !!draft.showCaseSize, showAmounts: draft.showAmounts !== false, showRate: draft.showRate !== false,
     showCat: draft.showCat !== false, showDiff: draft.showDiff !== false,
   });
+  const buildHtml = () => buildPriceRevisionHtml(revModel());
   const validate = () => {
     if (draft.items.length === 0) { showToast('価格改定表に商品を追加してください', 'error'); return false; }
     return true;
@@ -6120,12 +6279,23 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
       note: draft.note, items: draft.items, office: masters.settings.office, repName: draft.rep || '未設定',
     }));
   };
+  const revFileName = (ext) => '価格改定_' + (draft.facility ? String(draft.facility).replace(/[\\/:*?"<>|]/g, '') + '_' : '') + (draft.issued || todayISO()) + ext;
+  // 印刷・PDF と同じ中身・同じ形の Excel（.xlsx）。印刷プレビューでの手直しは入らない（PDF と同じ）
+  const handleExcel = () => {
+    if (!validate()) return;
+    try {
+      downloadText(revFileName('.xlsx'), buildPriceRevisionXlsx(revModel()), XL_MIME);
+      showToast('Excelを保存しました');
+    } catch (e) {
+      showToast('Excelの作成に失敗しました', 'error', 7000);
+    }
+  };
   const handlePdf = async () => {
     if (!validate()) return;
     setBusy(true);
     showToast('PDFを作成しています…', 'info');
     try {
-      const fname = '価格改定_' + (draft.facility ? String(draft.facility).replace(/[\\/:*?"<>|]/g, '') + '_' : '') + (draft.issued || todayISO()) + '.pdf';
+      const fname = revFileName('.pdf');
       await exportPdf(buildHtml(), fname);
       showToast('PDFを保存しました');
     } catch (e) {
@@ -6240,6 +6410,10 @@ function PriceRevisionView({ data, masters, draft, setDraft, docs, setDocs, show
           </button>
           <button onClick={handlePdf} disabled={busy} className="bg-sky-600 hover:bg-sky-700 disabled:opacity-60 active:scale-[.98] text-white px-4 py-2.5 rounded-xl shadow-sm shadow-sky-200 text-sm font-bold transition inline-flex items-center gap-1.5">
             <Download size={15} /> PDF保存
+          </button>
+          <button onClick={handleExcel} title="印刷と同じ形の Excel ファイル（.xlsx）で保存します。Excel で改定価格を直すと価格差・変動率も計算し直されます"
+            className="bg-[#1d6f42] hover:bg-[#185c37] active:scale-[.98] text-white px-4 py-2.5 rounded-xl shadow-sm shadow-green-200 text-sm font-bold transition inline-flex items-center gap-1.5">
+            <FileSpreadsheet size={15} /> Excel保存
           </button>
           <button onClick={handlePrint} className="bg-white hover:bg-slate-50 active:scale-[.98] text-slate-700 border border-slate-200 px-4 py-2.5 rounded-xl shadow-sm text-sm font-bold transition inline-flex items-center gap-1.5">
             <Printer size={15} /> 印刷
@@ -7010,7 +7184,7 @@ function DocComposer({ docType, data, masters, draft, setDraft, docs, setDocs, s
             <Download size={15} /> {busy ? '作成中…' : 'PDF保存'}
           </button>
           <button onClick={handleExcel} title="印刷と同じ形の Excel ファイル（.xlsx）で保存します"
-            className="bg-white border border-emerald-300 hover:bg-emerald-50 hover:border-emerald-400 active:scale-[.98] text-emerald-700 px-4 py-2.5 rounded-xl shadow-sm text-sm font-bold transition inline-flex items-center gap-1.5">
+            className="bg-[#1d6f42] hover:bg-[#185c37] active:scale-[.98] text-white px-4 py-2.5 rounded-xl shadow-sm shadow-green-200 text-sm font-bold transition inline-flex items-center gap-1.5">
             <FileSpreadsheet size={15} /> Excel保存
           </button>
           <button onClick={handlePrint}
