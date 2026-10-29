@@ -180,6 +180,7 @@ const defaultMasters = () => ({
   customers: {}, catOverrides: {}, catRules: [], priceOverrides: {}, itemHandling: {},
   itemFacilityHandling: {}, stockQtyOverrides: {}, stockMonthOverrides: {}, referralOverrides: {},
   settings: { ...DEFAULT_SETTINGS },
+  migrations: { referralPerson: true }, // 新しいデータは取り込み時の自動判定（classifyCustomerName）で個人になる
 });
 const normalizeMasters = (m) => {
   if (!m || typeof m !== 'object') return defaultMasters();
@@ -213,8 +214,21 @@ const normalizeMasters = (m) => {
     for (const prod in src) { const n = Number(src[prod]); if (isFinite(n) && n > 0) out[prod] = n; }
     return out;
   };
+  const referralOverrides = Object.fromEntries(Object.entries(obj(m.referralOverrides)).filter(([, v]) => typeof v === 'string'));
+  const migrations = obj(m.migrations);
+  // 一度だけ：「依頼元＋個人名」（例：築上町包括　水ノ江）の登録が自動判定で施設になっていたものを個人に直す（2026-10-29 指示）。
+  // 名前に「包括」「センター」を含むため施設と判定されていたが、包括・居宅経由の個人。依頼元の手直しで「依頼元なし」にした名前は直さない。
+  // 済んだら migrations.referralPerson を立て、あとで設定の「←施設へ」で戻したものを再び個人にしない
+  let customers = obj(m.customers);
+  if (!migrations.referralPerson) {
+    customers = { ...customers };
+    for (const n in customers) {
+      const c = customers[n];
+      if (c && c.type === 'facility' && referralOverrides[n] !== '' && isReferralPersonName(n)) customers[n] = { ...c, type: 'person', uncertain: false };
+    }
+  }
   return {
-    customers: obj(m.customers),
+    customers,
     catOverrides: obj(m.catOverrides),
     catRules: Array.isArray(m.catRules) ? m.catRules.filter(r => r && r.kw && r.cat) : [],
     priceOverrides: obj(m.priceOverrides),
@@ -223,7 +237,8 @@ const normalizeMasters = (m) => {
     stockQtyOverrides: normStockQtyOverrides(m.stockQtyOverrides),
     stockMonthOverrides: normStockMonthOverrides(m.stockMonthOverrides),
     // 依頼元の手直し（お客様名 → 依頼元名。'' は依頼元なし）
-    referralOverrides: Object.fromEntries(Object.entries(obj(m.referralOverrides)).filter(([, v]) => typeof v === 'string')),
+    referralOverrides,
+    migrations: { ...migrations, referralPerson: true },
     settings: {
       ...DEFAULT_SETTINGS, ...obj(m.settings),
       office: (m.settings && officeByName(m.settings.office)) ? m.settings.office : null,
@@ -520,6 +535,9 @@ const HAS_KANJI_RE = /[一-龥々〆ヶ]/;
 
 function classifyCustomerName(rawName) {
   const name = String(rawName || '').normalize('NFKC').trim();
+  // 「依頼元＋個人名」（例：築上町包括　水ノ江、春風ケアプランセンター　山田）は包括・居宅経由の個人。
+  // 「包括」「センター」で施設と判定される前に個人にする（依頼元そのもの〈行橋市地域包括支援センター〉は施設のまま）
+  if (isReferralPersonName(name)) return { type: 'person', uncertain: false };
   for (let i = 0; i < FACILITY_KEYWORDS_STRONG.length; i++) {
     if (name.includes(FACILITY_KEYWORDS_STRONG[i])) return { type: 'facility', uncertain: false };
   }
@@ -591,13 +609,10 @@ function parseReferral(rawName, overrides) {
   return { ...auto, manual: false };
 }
 
-// 購入得意先の件数に入れる「施設」か。施設/個人判定が施設で、かつ「依頼元＋個人名」（例：築上町包括　水ノ江）でないお客様。
-// 包括・居宅経由の個人は名前に「包括」「センター」などを含むため自動判定では施設になっているが、個人なので得意先の件数には入れない。
-// 依頼元そのもの（例：行橋市地域包括支援センター）は施設として数える。依頼元の手直し（referralOverrides）も反映する
-function isFacilityBuyer(name, type, referralOverrides) {
-  if (type !== 'facility') return false;
-  const ref = parseReferral(name, referralOverrides);
-  return !(ref.source && ref.person);
+// 「依頼元＋個人名」の登録か（例：築上町包括　水ノ江 → true、行橋市地域包括支援センター → false）。お客様名からの自動判定
+function isReferralPersonName(name) {
+  const ref = parseReferral(name, null);
+  return !!(ref.source && ref.person);
 }
 
 /* ============================================================
@@ -1000,7 +1015,7 @@ function buildAnalytics(rows, masters, baseSel) {
 // cutoff（{idx, d}）を渡すと、その日までの明細だけを集計する（月途中の前年同期比較用）。
 // 粗利は明細の粗利額の合計。粗利額が不明（null）の明細は grossUnknown に数え、0円としては足さない。
 function buildPeriodReport(rows, masters, fromIdx, toIdx, consumableOnly, cutoff) {
-  const custs = masters.customers, catOv = masters.catOverrides, catRules = masters.catRules, refOv = masters.referralOverrides || {};
+  const custs = masters.customers, catOv = masters.catOverrides, catRules = masters.catRules;
   const facMap = new Map(), prodMap = new Map(), monMap = new Map(), custMap = new Map();
   let sales = 0, gross = 0, grossUnknown = 0, grossUnknownSales = 0;
   let returnAmt = 0, returnCount = 0, discountAmt = 0, discountCount = 0;
@@ -1024,7 +1039,7 @@ function buildPeriodReport(rows, masters, fromIdx, toIdx, consumableOnly, cutoff
     if (amt < 0) { if (qty < 0) { returnAmt += amt; returnCount++; } else { discountAmt += amt; discountCount++; } }
 
     let cu = custMap.get(name);
-    if (!cu) { cu = { name, type: c.type, facilityBuyer: isFacilityBuyer(name, c.type, refOv), sales: 0, gross: 0 }; custMap.set(name, cu); }
+    if (!cu) { cu = { name, type: c.type, sales: 0, gross: 0 }; custMap.set(name, cu); }
     cu.sales += amt; cu.gross += g;
 
     // 施設別ランキング等が個人客で長くならないよう、施設のみに限定する
@@ -1062,9 +1077,9 @@ function buildPeriodReport(rows, masters, fromIdx, toIdx, consumableOnly, cutoff
   // 見出しの期間（例: 4月〜8月の5ヶ月）と計算が食い違う。
   const nMonths = Math.max(1, toIdx - fromIdx + 1);
   const customers = [...custMap.values()];
-  // 購入得意先は施設だけ（個人・包括や居宅経由の個人は数えない）
+  // 購入得意先は施設だけ（施設/個人判定どおり。包括・居宅経由の個人は個人に区分している）
   const buyersAll = customers.filter(c => c.sales > 0);
-  const buyers = buyersAll.filter(c => c.facilityBuyer);
+  const buyers = buyersAll.filter(c => c.type === 'facility');
   // 単位が2種類以上ある商品（ケースと袋など）は数量を合計しない（mixedUnit）
   const prodOut = (p) => ({ name: p.name, cat: p.cat, qty: p.qty, unit: p.unit, units: [...p.units], mixedUnit: p.units.size > 1,
     sales: p.sales, gross: p.gross, grossUnknown: p.grossUnknown, margin: rate(p.gross, p.sales) });
@@ -2821,8 +2836,8 @@ function KpiDrilldownModal({ title, curLabel, prevLabel, curRanking, prevRanking
 // curCustomers/prevCustomers は buildPeriodReport の customers。firstBuy は得意先→最初の購入日（sort値）。
 // rate は比較元（前年同期）の購入先のうち当期も購入した割合（％、比較元0件なら null）
 function buyerBreakdown(curCustomers, prevCustomers, firstBuy, curStartSort) {
-  // 施設だけを比べる（facilityBuyer がなければ施設/個人判定で）
-  const isFac = (c) => (c.facilityBuyer !== undefined ? c.facilityBuyer : c.type === 'facility');
+  // 施設だけを比べる（施設/個人判定どおり）
+  const isFac = (c) => c.type === 'facility';
   const curB = curCustomers.filter(c => c.sales > 0 && isFac(c));
   const prevB = prevCustomers.filter(c => c.sales > 0 && isFac(c));
   const prevSet = new Set(prevB.map(c => c.name)), curSet = new Set(curB.map(c => c.name));
@@ -7687,6 +7702,9 @@ function SettingsView({ rows, masters, setRows, setMasters, setOffice, meta, set
           stockQtyOverrides: { ...imp.masters.stockQtyOverrides, ...prev.stockQtyOverrides },
           stockMonthOverrides: { ...imp.masters.stockMonthOverrides, ...prev.stockMonthOverrides },
           referralOverrides: { ...imp.masters.referralOverrides, ...prev.referralOverrides },
+          // 学習ルールは手元のものを残し、バックアップ側は同じキーワードでないものだけ足す（以前は統合で消えていた）
+          catRules: [...(prev.catRules || []), ...(imp.masters.catRules || []).filter(r => !(prev.catRules || []).some(p => p.kw === r.kw))],
+          migrations: { ...imp.masters.migrations, ...prev.migrations },
           settings: { ...prev.settings, reps: [...new Set([...(prev.settings.reps || []), ...(imp.masters.settings.reps || [])])] },
         };
       });
@@ -7956,6 +7974,10 @@ function SettingsView({ rows, masters, setRows, setMasters, setOffice, meta, set
       {sub === 'person' && (
         <div className="space-y-4">
           <div>{searchBox('お客様名で検索')}</div>
+          <div className="text-[11px] text-slate-600 leading-relaxed">
+            「築上町包括　水ノ江」のような「依頼元（包括・居宅）＋個人名」の登録は、包括・居宅経由の個人として自動で「個人」に分けています（<span className="bg-violet-100 text-violet-700 font-bold px-1.5 py-0.5 rounded-full">包括・居宅経由</span> の印）。
+            施設として扱うものは「←施設へ」で戻せます（戻したものはそのまま残ります）。
+          </div>
           <div className="grid md:grid-cols-2 gap-4">
             <Card>
               <div className="px-5 py-3.5 border-b border-slate-100 font-bold text-sm text-slate-800">🏢 施設（集計対象）<span className="text-slate-600 font-normal ml-1">{num(facNamesPerson.length)}件</span></div>
@@ -7965,6 +7987,7 @@ function SettingsView({ rows, masters, setRows, setMasters, setOffice, meta, set
                     <span className="truncate">
                       {n}
                       {customers[n].uncertain && <span className="ml-2 bg-amber-400 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">要確認</span>}
+                      {isReferralPersonName(n) && <span className="ml-2 bg-violet-100 text-violet-700 text-[10px] font-bold px-2 py-0.5 rounded-full">包括・居宅経由</span>}
                     </span>
                     <button onClick={() => updateCustomer(n, { type: 'person', uncertain: false })}
                       className="text-[11px] text-slate-400 hover:text-rose-500 font-bold transition shrink-0">個人へ→</button>
@@ -7981,6 +8004,7 @@ function SettingsView({ rows, masters, setRows, setMasters, setOffice, meta, set
                     <span className="truncate">
                       {n}
                       {customers[n].uncertain && <span className="ml-2 bg-amber-400 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">要確認</span>}
+                      {isReferralPersonName(n) && <span className="ml-2 bg-violet-100 text-violet-700 text-[10px] font-bold px-2 py-0.5 rounded-full">包括・居宅経由</span>}
                     </span>
                     <button onClick={() => updateCustomer(n, { type: 'facility', uncertain: false })}
                       className="text-[11px] text-slate-400 hover:text-blue-500 font-bold transition shrink-0">←施設へ</button>
