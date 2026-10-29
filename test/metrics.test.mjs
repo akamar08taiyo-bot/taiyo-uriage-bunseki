@@ -13,7 +13,7 @@ const slice = (from, to) => src.slice(src.indexOf(from), src.indexOf(to))
 const code = slice('const yen = ', 'function Segmented(') + '\n' + slice('function buyerBreakdown(', 'function BuyersModal(') +
   '\n' + slice('function buildFacilityComparison(', '// KPIカードの施設別内訳')
 const NAMES = ['comparisonWindow', 'buildPeriodReport', 'buildAnalytics', 'decomposeSalesChange', 'mergeImportRows',
-  'analyzeCsv', 'buyerBreakdown', 'pctChange', 'withinCut', 'buildFacilityComparison', 'autoCategory', 'parseReferral', 'buildReformReport', 'isFacilityBuyer']
+  'analyzeCsv', 'buyerBreakdown', 'pctChange', 'withinCut', 'buildFacilityComparison', 'autoCategory', 'parseReferral', 'buildReformReport', 'isReferralPersonName', 'classifyCustomerName', 'normalizeMasters']
 const load = (y, mo, d) => {
   class FixedDate extends Date {
     constructor(...a) { if (a.length) super(...a); else super(y, mo - 1, d, 10, 0, 0) }
@@ -67,8 +67,8 @@ test('第9節：継続購入率の例（A・B・C → B・C・D は 2/3 ＝ 66.7
   assert.deepEqual(b.prevOnly.map(c => c.name), ['A'])
   assert.equal(b.rate, 66.7)
   // D は取り込んだ明細の中で最初の購入が当期にある（それ以前の履歴が取り込まれていれば新規と判断できる）
-  assert.deepEqual(b.firstInData.map(c => c.name), ['D'])  // 個人（facilityBuyer:false や type:person）は比べない
-  const withPersons = [...cust(['B', 'C', 'D']), { name: '築上町包括　水ノ江', type: 'facility', facilityBuyer: false, sales: 500 }, { name: '見本 花子', type: 'person', sales: 300 }]
+  assert.deepEqual(b.firstInData.map(c => c.name), ['D'])  // 個人（type:person）は比べない
+  const withPersons = [...cust(['B', 'C', 'D']), { name: '築上町包括　水ノ江', type: 'person', sales: 500 }, { name: '見本 花子', type: 'person', sales: 300 }]
   const b2 = L.buyerBreakdown(withPersons, [...cust(['A', 'B', 'C']), { name: '見本 花子', type: 'person', sales: 300 }], new Map(), 20260901)
   assert.deepEqual([b2.curB.length, b2.prevB.length, b2.curOnly.map(c => c.name).join(), b2.prevOnly.map(c => c.name).join()], [3, 3, 'D', 'A'])
 })
@@ -274,34 +274,54 @@ test('購入得意先数は施設だけ：返品・値引き後の売上がプ�
     row('3', '2026/9/2', 'B施設', '見本の品', 1, '個', 1000, 1000, 200),
     row('4', '2026/9/9', 'B施設', '見本の品', -1, '個', 1000, -1000, -200), // 全額返品 → 0円
     row('5', '2026/9/3', '見本 花子', '見本の品', 1, '個', 500, 500, 100),
-    // 包括経由の個人：自動判定で施設として保存されていても数えない
+    // 包括経由の個人：以前の自動判定で施設として保存されていたもの
     row('6', '2026/9/4', '築上町包括　水ノ江', '見本の品', 1, '個', 800, 800, 100),
-    // 包括そのもの（個人名がない）は施設として数える
+    // 包括そのもの（個人名がない）は施設
     row('7', '2026/9/6', '行橋市地域包括支援センター', '見本の品', 1, '個', 300, 300, 50),
   ]
-  const m = masters({ A施設: facility(), B施設: facility(), '見本 花子': { type: 'person' },
-    '築上町包括　水ノ江': facility(), '行橋市地域包括支援センター': facility() })
+  const saved = { customers: { A施設: facility(), B施設: facility(), '見本 花子': { type: 'person' },
+    '築上町包括　水ノ江': facility(), '行橋市地域包括支援センター': facility() } }
+  // 読み込み時の移行（normalizeMasters）で「依頼元＋個人名」は個人になる
+  const m = L.normalizeMasters(saved)
   const rep = L.buildPeriodReport(rows, m, idx(2026, 9), idx(2026, 9))
   assert.equal(rep.kpi.buyers, 2)       // A施設・行橋市地域包括支援センター
   assert.equal(rep.kpi.buyersOther, 2)  // 見本 花子・築上町包括　水ノ江
-  // 月ごとの取引施設数も施設だけ（合計の行の施設数と同じ数え方。B施設は売上0円でも取引あり）
-  assert.equal(rep.monthly[0].count, 4) // A施設・B施設・築上町包括　水ノ江（施設として保存）・行橋市地域包括支援センター
+  // 月ごとの取引施設数も施設だけ（合計の行の施設数と同じ。B施設は売上0円でも取引あり）
+  assert.equal(rep.monthly[0].count, 3)
   assert.equal(rep.monthly[0].count, rep.kpi.count)
-  // 依頼元の手直しで「依頼元なし」にした名前は、施設/個人判定どおり施設として数える
-  const m2 = { ...m, referralOverrides: { '築上町包括　水ノ江': '' } }
-  assert.equal(L.buildPeriodReport(rows, m2, idx(2026, 9), idx(2026, 9)).kpi.buyers, 3)
+  assert.ok(!rep.ranking.some(f => f.name === '築上町包括　水ノ江')) // 施設のランキングにも出ない
 })
 
-test('得意先として数える施設の判定（isFacilityBuyer）', () => {
-  assert.equal(L.isFacilityBuyer('ケアハイツぶぜん', 'facility', {}), true)
-  assert.equal(L.isFacilityBuyer('行橋市地域包括支援センター', 'facility', {}), true)
-  assert.equal(L.isFacilityBuyer('春風ケアプランセンター', 'facility', {}), true)
-  assert.equal(L.isFacilityBuyer('築上町包括　水ノ江', 'facility', {}), false)
-  assert.equal(L.isFacilityBuyer('春風ケアプランセンター　山田', 'facility', {}), false)
-  assert.equal(L.isFacilityBuyer('神奈川地域包括支援センター大場', 'facility', {}), false)
-  assert.equal(L.isFacilityBuyer('熊本　千佳', 'person', {}), false)
-  // 依頼元を手で付けた名前は個人として扱う
-  assert.equal(L.isFacilityBuyer('水ノ江', 'facility', { 水ノ江: '築上町包括' }), false)
+test('包括・居宅経由の個人の区分：自動判定は個人。保存済みの施設は一度だけ個人に直し、戻したものは残す', () => {
+  assert.equal(L.isReferralPersonName('築上町包括　水ノ江'), true)
+  assert.equal(L.isReferralPersonName('春風ケアプランセンター　山田'), true)
+  assert.equal(L.isReferralPersonName('神奈川地域包括支援センター大場'), true)
+  assert.equal(L.isReferralPersonName('行橋市地域包括支援センター'), false)
+  assert.equal(L.isReferralPersonName('春風ケアプランセンター'), false)
+  assert.equal(L.isReferralPersonName('ケアハイツぶぜん'), false)
+  // 取り込み時の自動判定
+  assert.equal(L.classifyCustomerName('築上町包括　水ノ江').type, 'person')
+  assert.equal(L.classifyCustomerName('みやこ居宅介護支援事業所 田中 花子').type, 'person')
+  assert.equal(L.classifyCustomerName('行橋市地域包括支援センター').type, 'facility')
+  assert.equal(L.classifyCustomerName('特別養護老人ホーム誠松園').type, 'facility')
+  // 保存済みデータの移行
+  const saved = { customers: {
+    '築上町包括　水ノ江': { type: 'facility', rep: '鈴木', direct: false, uncertain: false },
+    '春風ケアプランセンター　山田': { type: 'facility', rep: '', uncertain: false },
+    '行橋市地域包括支援センター': { type: 'facility', rep: '', uncertain: false },
+    'みやこ居宅介護支援事業所 本店': { type: 'facility', rep: '', uncertain: false }, // 依頼元の手直しで「依頼元なし」
+  }, referralOverrides: { 'みやこ居宅介護支援事業所 本店': '' } }
+  const m = L.normalizeMasters(saved)
+  assert.deepEqual(m.customers['築上町包括　水ノ江'], { type: 'person', rep: '鈴木', direct: false, uncertain: false }) // 担当者などはそのまま
+  assert.equal(m.customers['春風ケアプランセンター　山田'].type, 'person')
+  assert.equal(m.customers['行橋市地域包括支援センター'].type, 'facility')
+  assert.equal(m.customers['みやこ居宅介護支援事業所 本店'].type, 'facility')
+  assert.equal(m.migrations.referralPerson, true)
+  // 移行のあとで「←施設へ」と戻したものは、読み込み直しても施設のまま
+  const back = { ...m, customers: { ...m.customers, '築上町包括　水ノ江': { ...m.customers['築上町包括　水ノ江'], type: 'facility' } } }
+  assert.equal(L.normalizeMasters(JSON.parse(JSON.stringify(back))).customers['築上町包括　水ノ江'].type, 'facility')
+  // 新しい保存データ（空）は移行済み
+  assert.equal(L.normalizeMasters(null).migrations.referralPerson, true)
 })
 
 test('境目：1月は前年の1月と、4月はじめ（年度の切り替わり）は前年4月と比べる', () => {
