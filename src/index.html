@@ -591,6 +591,15 @@ function parseReferral(rawName, overrides) {
   return { ...auto, manual: false };
 }
 
+// 購入得意先の件数に入れる「施設」か。施設/個人判定が施設で、かつ「依頼元＋個人名」（例：築上町包括　水ノ江）でないお客様。
+// 包括・居宅経由の個人は名前に「包括」「センター」などを含むため自動判定では施設になっているが、個人なので得意先の件数には入れない。
+// 依頼元そのもの（例：行橋市地域包括支援センター）は施設として数える。依頼元の手直し（referralOverrides）も反映する
+function isFacilityBuyer(name, type, referralOverrides) {
+  if (type !== 'facility') return false;
+  const ref = parseReferral(name, referralOverrides);
+  return !(ref.source && ref.person);
+}
+
 /* ============================================================
    商品分類辞書（キーワード自動分類。手直し catOverrides が常に優先）
 ============================================================ */
@@ -991,7 +1000,7 @@ function buildAnalytics(rows, masters, baseSel) {
 // cutoff（{idx, d}）を渡すと、その日までの明細だけを集計する（月途中の前年同期比較用）。
 // 粗利は明細の粗利額の合計。粗利額が不明（null）の明細は grossUnknown に数え、0円としては足さない。
 function buildPeriodReport(rows, masters, fromIdx, toIdx, consumableOnly, cutoff) {
-  const custs = masters.customers, catOv = masters.catOverrides, catRules = masters.catRules;
+  const custs = masters.customers, catOv = masters.catOverrides, catRules = masters.catRules, refOv = masters.referralOverrides || {};
   const facMap = new Map(), prodMap = new Map(), monMap = new Map(), custMap = new Map();
   let sales = 0, gross = 0, grossUnknown = 0, grossUnknownSales = 0;
   let returnAmt = 0, returnCount = 0, discountAmt = 0, discountCount = 0;
@@ -1015,7 +1024,7 @@ function buildPeriodReport(rows, masters, fromIdx, toIdx, consumableOnly, cutoff
     if (amt < 0) { if (qty < 0) { returnAmt += amt; returnCount++; } else { discountAmt += amt; discountCount++; } }
 
     let cu = custMap.get(name);
-    if (!cu) { cu = { name, type: c.type, sales: 0, gross: 0 }; custMap.set(name, cu); }
+    if (!cu) { cu = { name, type: c.type, facilityBuyer: isFacilityBuyer(name, c.type, refOv), sales: 0, gross: 0 }; custMap.set(name, cu); }
     cu.sales += amt; cu.gross += g;
 
     // 施設別ランキング等が個人客で長くならないよう、施設のみに限定する
@@ -1035,7 +1044,8 @@ function buildPeriodReport(rows, masters, fromIdx, toIdx, consumableOnly, cutoff
 
     let mo = monMap.get(d.idx);
     if (!mo) { mo = { idx: d.idx, sales: 0, gross: 0, grossUnknown: 0, facs: new Set() }; monMap.set(d.idx, mo); }
-    mo.sales += amt; mo.gross += g; mo.facs.add(name);
+    mo.sales += amt; mo.gross += g;
+    if (c.type === 'facility') mo.facs.add(name); // 取引施設数（合計の行の施設数と同じく施設だけ）
     if (!gKnown) mo.grossUnknown++;
   }
   const rate = (g2, s2) => (s2 !== 0 ? Math.round(g2 / s2 * 1000) / 10 : 0);
@@ -1052,7 +1062,9 @@ function buildPeriodReport(rows, masters, fromIdx, toIdx, consumableOnly, cutoff
   // 見出しの期間（例: 4月〜8月の5ヶ月）と計算が食い違う。
   const nMonths = Math.max(1, toIdx - fromIdx + 1);
   const customers = [...custMap.values()];
-  const buyers = customers.filter(c => c.sales > 0);
+  // 購入得意先は施設だけ（個人・包括や居宅経由の個人は数えない）
+  const buyersAll = customers.filter(c => c.sales > 0);
+  const buyers = buyersAll.filter(c => c.facilityBuyer);
   // 単位が2種類以上ある商品（ケースと袋など）は数量を合計しない（mixedUnit）
   const prodOut = (p) => ({ name: p.name, cat: p.cat, qty: p.qty, unit: p.unit, units: [...p.units], mixedUnit: p.units.size > 1,
     sales: p.sales, gross: p.gross, grossUnknown: p.grossUnknown, margin: rate(p.gross, p.sales) });
@@ -1062,7 +1074,7 @@ function buildPeriodReport(rows, masters, fromIdx, toIdx, consumableOnly, cutoff
       grossUnknown, grossUnknownSales,
       // 粗利率は売上が正で、粗利額の不明な明細がないときだけ出す
       rateOk: sales > 0 && grossUnknown === 0,
-      buyers: buyers.length, buyersFacility: buyers.filter(c => c.type === 'facility').length,
+      buyers: buyers.length, buyersOther: buyersAll.length - buyers.length,
       returnAmt, returnCount, discountAmt, discountCount,
     },
     monthly,
@@ -2000,7 +2012,7 @@ function buildReportHtml(m) {
     <table style="width:100%;border-collapse:collapse;margin-top:2mm;table-layout:fixed;">
       <tr>
         <th style="${th}">売上</th><th style="${th}">粗利</th><th style="${th}">粗利率</th>
-        <th style="${th}">売上 前年同期比</th><th style="${th}">粗利 前年同期比</th><th style="${th}">購入得意先数</th>
+        <th style="${th}">売上 前年同期比</th><th style="${th}">粗利 前年同期比</th><th style="${th}">購入得意先数（施設）</th>
       </tr>
       <tr>
         <td style="${tdR}font-size:10.5pt;">${yen(kp.sales)}</td>
@@ -2656,7 +2668,7 @@ function RateSub({ v, className }) {
 function ThinMonthNote({ data, className }) {
   const t = data.thinLatest;
   if (!t) return null;
-  const detail = idxLabel(t.idx) + 'の明細はまだ' + num(t.rows) + '行（得意先' + num(t.customers) + '件・' + yen(t.sales) + '）しかありません' +
+  const detail = idxLabel(t.idx) + 'の明細はまだ' + num(t.rows) + '行（お客様' + num(t.customers) + '件・' + yen(t.sales) + '）しかありません' +
     '（ふだんの月は' + num(t.medianRows) + '行ほど）。';
   return data.baseIdx === t.idx
     ? <InfoNote tone="warn" className={className}>{detail}売上を月末にまとめて入力している場合や、CSVが途中までの場合に起こります。この月の数字と前年比較は、実態より少なく出ます。</InfoNote>
@@ -2803,14 +2815,16 @@ function KpiDrilldownModal({ title, curLabel, prevLabel, curRanking, prevRanking
   );
 }
 
-// 購入得意先の内訳：前年同期と当期の両方に購入（継続）／当期だけ／前年同期だけ。
+// 購入得意先（施設）の内訳：前年同期と当期の両方に購入（継続）／当期のみ／前年同期のみ。
 // 「取得データ内で初購入」は、取り込んだ全明細の中で最初の購入が当期にある得意先（それ以前の履歴が
 // 取り込まれていなければ、営業所としての新規取引とは断定できない）。継続購入率は締め済みの期間だけで出す。
 // curCustomers/prevCustomers は buildPeriodReport の customers。firstBuy は得意先→最初の購入日（sort値）。
 // rate は比較元（前年同期）の購入先のうち当期も購入した割合（％、比較元0件なら null）
 function buyerBreakdown(curCustomers, prevCustomers, firstBuy, curStartSort) {
-  const curB = curCustomers.filter(c => c.sales > 0);
-  const prevB = prevCustomers.filter(c => c.sales > 0);
+  // 施設だけを比べる（facilityBuyer がなければ施設/個人判定で）
+  const isFac = (c) => (c.facilityBuyer !== undefined ? c.facilityBuyer : c.type === 'facility');
+  const curB = curCustomers.filter(c => c.sales > 0 && isFac(c));
+  const prevB = prevCustomers.filter(c => c.sales > 0 && isFac(c));
   const prevSet = new Set(prevB.map(c => c.name)), curSet = new Set(curB.map(c => c.name));
   const both = curB.filter(c => prevSet.has(c.name));
   const curOnly = curB.filter(c => !prevSet.has(c.name));
@@ -2825,11 +2839,10 @@ function BuyersModal({ curRep, prevRep, noCompare, win, firstBuy, dataFrom, onJu
   // 継続購入率は締め済みの同じ長さの期間どうしで出す（月途中の「まだ購入なし」を離脱と数えない）
   const rateOk = !!prevRep && !win.inProgress && rate !== null;
   const Group = ({ title, list, hint }) => {
-    const facs = list.filter(c => c.type === 'facility').sort((a, b) => b.sales - a.sales);
-    const others = list.length - facs.length;
+    const facs = list.slice().sort((a, b) => b.sales - a.sales);
     return (
       <div>
-        <div className="text-xs font-bold text-slate-800 mb-1">{title}：{num(list.length)}件 <span className="text-slate-600 font-normal">（施設 {num(facs.length)}・個人ほか {num(others)}）</span></div>
+        <div className="text-xs font-bold text-slate-800 mb-1">{title}：{num(list.length)}施設</div>
         {hint && <div className="text-[11px] text-slate-600 mb-1">{hint}</div>}
         <div className="flex flex-wrap gap-1.5">
           {facs.slice(0, 40).map(c => (
@@ -2848,14 +2861,14 @@ function BuyersModal({ curRep, prevRep, noCompare, win, firstBuy, dataFrom, onJu
         <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-3 bg-gradient-to-r from-sky-50 to-blue-50">
           <span className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-sky-100 text-sky-600"><Users size={17} /></span>
           <div className="flex-1 min-w-0">
-            <div className="font-extrabold text-slate-800">購入得意先の内訳</div>
+            <div className="font-extrabold text-slate-800">購入得意先（施設）の内訳</div>
             <div className="text-[11px] text-slate-600">当期 {win.curRange}{noCompare ? '' : ' ／ 前年同期 ' + win.prevRange}</div>
           </div>
           <button onClick={onClose} className="text-slate-600 hover:text-slate-800 transition"><X size={20} /></button>
         </div>
         <div className="px-6 py-4 space-y-4 max-h-[65vh] overflow-auto">
-          <InfoNote>購入得意先＝期間内の売上（返品・値引き後）がプラスの得意先（お客様名）の数。同じ得意先の複数伝票は1件と数えます。</InfoNote>
-          {noCompare && <Group title="期間内に購入" list={curRep.customers.filter(c => c.sales > 0)} />}
+          <InfoNote>購入得意先＝期間内の売上（返品・値引き後）がプラスの施設の数。個人（包括・居宅経由の「築上町包括　水ノ江」のような登録を含む）は数えません。同じ施設の複数伝票は1件です。施設か個人かは「設定」の「施設/個人判定」で直せます。</InfoNote>
+          {noCompare && <Group title="期間内に購入" list={buyerBreakdown(curRep.customers, [], firstBuy, curStartSort).curB} />}
           {noCompare ? (
             <InfoNote>全期間の表示のため、前年との比較（継続・当期のみ・前年同期のみ）はしません。月次・年度・期間指定で確認できます。</InfoNote>
           ) : !prevRep ? (
@@ -2865,8 +2878,8 @@ function BuyersModal({ curRep, prevRep, noCompare, win, firstBuy, dataFrom, onJu
               <div className="text-sm font-bold text-slate-800">
                 継続購入率：{rateOk ? rate.toFixed(1) + '%' : '—'}
                 <span className="text-[11px] text-slate-600 font-normal ml-2">
-                  {rateOk ? '（前年同期の購入先 ' + num(prevB.length) + '件のうち、当期も購入 ' + num(both.length) + '件）'
-                    : win.inProgress ? '（月途中のため算出しません。締め済みの月で確認してください）' : '（前年同期の購入先がないため算出対象外）'}
+                  {rateOk ? '（前年同期に購入した施設 ' + num(prevB.length) + '件のうち、当期も購入 ' + num(both.length) + '件）'
+                    : win.inProgress ? '（月途中のため算出しません。締め済みの月で確認してください）' : '（前年同期に購入した施設がないため算出対象外）'}
                 </span>
               </div>
               <Group title="前年同期・当期とも購入" list={both} />
@@ -3432,12 +3445,12 @@ function DashboardView({ data, rows, masters, meta, jumpToFacility, openPrint, o
           extra={showCompare && (grossDiff !== null
             ? <div className="text-[11px] text-slate-600 tabular-nums">当期 {yen(k.gross)} － 前年同期 {yen(pk.gross)}{pctChange(k.gross, pk.gross) === null ? '（前年同期が0円以下のため増減率は算出対象外）' : ''}</div>
             : <div className="text-[11px] text-amber-800">{pk ? '粗利額が不明な明細があるため差額を出しません' : noPrevText}</div>)} />
-        <KpiCard icon={Users} tint="bg-amber-50 text-amber-600" label="購入得意先数" value={num(k.buyers) + '件'}
+        <KpiCard icon={Users} tint="bg-amber-50 text-amber-600" label="購入得意先数（施設）" value={num(k.buyers) + '件'}
           title="内訳（継続・当期のみ・前年同期のみ）を見る" linkLabel="内訳を見る"
           onClick={() => setBuyersOpen(true)}
           extra={(
             <div className="space-y-0.5 text-[11px]">
-              <div className="text-slate-600">施設 {num(k.buyersFacility)}・個人ほか {num(k.buyers - k.buyersFacility)}</div>
+              <div className="text-slate-600">個人（包括・居宅経由を含む）は数えません</div>
               {showCompare && pk && (
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-slate-600 font-bold">前年同期 {num(pk.buyers)}件</span>
@@ -3474,7 +3487,7 @@ function DashboardView({ data, rows, masters, meta, jumpToFacility, openPrint, o
           <li><b>粗利</b>：明細ごとの粗利額（その明細の売上－売れた数量の原価）の合計。当月の仕入総額は引きません。粗利額が空の明細は「金額－仕入単価×数量」で求め、どちらもない明細があると「未確定」と表示します（0円としては扱いません）。</li>
           <li><b>粗利率</b>：合計粗利 ÷ 合計売上 × 100。商品ごとの粗利率の平均ではありません。売上が0円以下なら算出対象外です。</li>
           <li><b>売上・粗利の前年同期比</b>：増減額（当期 － 前年同期）を大きく、増減率（当期 ÷ 前年同期 － 1）を補助で表示します。前年同期＝前年の同じ月・同じ範囲。月の途中は前年も同じ日までで比べます。増減率は補助表示で、前年同期が0円以下なら算出しません。前年の明細が取り込まれていない期間は「比較データ不足」とし、0円とは区別します。</li>
-          <li><b>購入得意先数</b>：期間内の売上（返品・値引き後）がプラスの得意先（お客様名）の数。同じ得意先の複数伝票は1件です。請求先と納品先の区別はCSVにないため、お客様名ごとに数えています。</li>
+          <li><b>購入得意先数（施設）</b>：期間内の売上（返品・値引き後）がプラスの施設の数。個人と、包括・居宅経由の個人（「築上町包括　水ノ江」のような「依頼元＋個人名」の登録）は数えません。前年同期の件数・内訳も同じ決まりです。同じ施設の複数伝票は1件です。請求先と納品先の区別はCSVにないため、お客様名ごとに数えています。</li>
           <li>増減は色だけでなく「＋／−」と矢印でも示しています。</li>
         </ul>
       </details>
@@ -5654,7 +5667,7 @@ function DataCheckCard({ rows, data, meta, goTab }) {
       <ul className="divide-y divide-slate-100">
         {data.thinLatest && (
           <Row label="一番新しい月の明細がわずか" value={num(data.thinLatest.rows) + '行'} warn
-            sub={idxLabel(data.thinLatest.idx) + 'は ' + dateLabel(data.latestDate.idx, data.latestDate.d) + ' までで ' + num(data.thinLatest.rows) + '行（得意先' + num(data.thinLatest.customers) + '件）。この日までの目安は約' + num(data.thinLatest.expectedRows) + '行（ふだんの月は' + num(data.thinLatest.medianRows) + '行ほど）。基準月は自動で' + idxLabel(data.thinLatest.prevIdx) + 'にしています。最新のCSVを取り込むと解消します。'} />
+            sub={idxLabel(data.thinLatest.idx) + 'は ' + dateLabel(data.latestDate.idx, data.latestDate.d) + ' までで ' + num(data.thinLatest.rows) + '行（お客様' + num(data.thinLatest.customers) + '件）。この日までの目安は約' + num(data.thinLatest.expectedRows) + '行（ふだんの月は' + num(data.thinLatest.medianRows) + '行ほど）。基準月は自動で' + idxLabel(data.thinLatest.prevIdx) + 'にしています。最新のCSVを取り込むと解消します。'} />
         )}
         <Row label="明細が1件もない月（取り込み漏れの可能性）" value={num(c.gapMonths.length) + 'か月'} warn={c.gapMonths.length > 0}
           sub={c.gapMonths.length ? c.gapMonths.map(idxLabel).join('・') + '。この月を含む前年比較は「比較データ不足」になります。その月のCSVを取り込んでください。' : '取込済みの期間に、明細のない月はありません。'} />
